@@ -1,0 +1,294 @@
+(function installIdmDownloader(root) {
+  "use strict";
+
+  const core = root.__BILI_RANGE_CORE__;
+  if (!core) return;
+
+  function abortError(reason) {
+    if (reason instanceof Error || reason instanceof DOMException) return reason;
+    return new DOMException("播放器任务已取消", "AbortError");
+  }
+
+  class Semaphore {
+    constructor(limit) {
+      this.limit = limit;
+      this.active = 0;
+      this.queue = [];
+    }
+
+    setLimit(limit) {
+      this.limit = Math.max(1, Math.min(512, Math.trunc(limit) || 1));
+      this.drain();
+    }
+
+    drain() {
+      while (this.active < this.limit && this.queue.length) {
+        const entry = this.queue.shift();
+        if (entry.signal?.aborted) {
+          entry.reject(abortError(entry.signal.reason));
+          continue;
+        }
+        this.active += 1;
+        entry.resolve(() => {
+          if (entry.released) return;
+          entry.released = true;
+          this.active = Math.max(0, this.active - 1);
+          this.drain();
+        });
+      }
+    }
+
+    acquire(signal) {
+      if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+      return new Promise((resolve, reject) => {
+        const entry = { reject, resolve, signal, released: false };
+        this.queue.push(entry);
+        this.drain();
+      });
+    }
+  }
+
+  function createDownloader(options) {
+    const nativeFetch = options.nativeFetch || root.fetch.bind(root);
+    const getSettings = options.getSettings;
+    const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
+    const semaphore = new Semaphore(core.normalizeSettings(getSettings()).concurrency);
+
+    async function readBody(response, controller, transferId, settings) {
+      if (!response.body?.getReader) {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        onTransfer({ phase: "progress", id: transferId, bytes: bytes.byteLength });
+        return bytes;
+      }
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+      let stallTimer = null;
+      const armStall = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块停止传输", "TimeoutError")), settings.stallTimeoutMs);
+      };
+      armStall();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          armStall();
+          const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+          chunks.push(chunk);
+          total += chunk.byteLength;
+          onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
+        }
+      } finally {
+        clearTimeout(stallTimer);
+        reader.releaseLock?.();
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
+    }
+
+    async function attempt(piece, url, signal, kind, resolver) {
+      const settings = core.normalizeSettings(getSettings());
+      const release = await semaphore.acquire(signal);
+      const controller = new AbortController();
+      const cancel = () => controller.abort(abortError(signal?.reason));
+      if (signal?.aborted) cancel();
+      else signal?.addEventListener("abort", cancel, { once: true });
+      const firstByteTimer = setTimeout(() => controller.abort(new DOMException("CDN 首字节超时", "TimeoutError")), settings.firstByteTimeoutMs);
+      const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
+      const transferId = onTransfer({ phase: "start", kind, totalBytes: piece.length, url });
+      const startedAt = performance.now();
+      try {
+        const response = await nativeFetch(url, {
+          method: "GET",
+          headers: { Range: `bytes=${piece.start}-${piece.end}` },
+          credentials: "omit",
+          cache: "no-store",
+          mode: "cors",
+          referrer: root.location?.href,
+          referrerPolicy: "strict-origin-when-cross-origin",
+          signal: controller.signal
+        });
+        clearTimeout(firstByteTimer);
+        const contentRange = core.parseContentRange(response.headers.get("content-range"));
+        if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
+          throw new Error(`Range 校验失败：HTTP ${response.status}`);
+        }
+        const bytes = await readBody(response, controller, transferId, settings);
+        if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
+        const seconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+        resolver.success(url, bytes.byteLength / seconds);
+        onTransfer({ phase: "done", id: transferId });
+        return { bytes, total: contentRange.total, url };
+      } catch (error) {
+        resolver.failure(url, error);
+        const canceled = error?.name === "AbortError";
+        onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
+        throw error;
+      } finally {
+        clearTimeout(firstByteTimer);
+        clearTimeout(totalTimer);
+        signal?.removeEventListener("abort", cancel);
+        release();
+      }
+    }
+
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls) {
+      const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
+      const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
+      const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
+      const rescue = (typeof resolver.rescueCandidates === "function" ? resolver.rescueCandidates() : resolver.ordered(piece.index))
+        .filter((url) => !rotatedPreferred.includes(url));
+      const candidates = [];
+      const width = Math.max(rotatedPreferred.length, rescue.length);
+      for (let index = 0; index < width; index += 1) {
+        if (rotatedPreferred[index]) candidates.push(rotatedPreferred[index]);
+        if (rescue[index]) candidates.push(rescue[index]);
+      }
+      for (const url of resolver.ordered(piece.index)) {
+        if (!candidates.includes(url)) candidates.push(url);
+      }
+      const settings = core.normalizeSettings(getSettings());
+      const limit = Math.min(8, candidates.length);
+      let lastError = null;
+
+      for (let offset = 0; offset < limit; offset += 2) {
+        if (signal?.aborted) throw abortError(signal.reason);
+        const pair = candidates.slice(offset, offset + 2);
+        const controllers = pair.map(() => new AbortController());
+        const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
+        if (signal?.aborted) cancelAll();
+        else signal?.addEventListener("abort", cancelAll, { once: true });
+        const attempts = pair.map((url, pairIndex) => (async () => {
+          if (pairIndex) await new Promise((resolve, reject) => {
+            const timer = setTimeout(resolve, settings.hedgeDelayMs);
+            const canceled = () => {
+              clearTimeout(timer);
+              reject(abortError(controllers[pairIndex].signal.reason));
+            };
+            if (controllers[pairIndex].signal.aborted) canceled();
+            else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
+          });
+          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver);
+        })());
+        try {
+          const winner = await Promise.any(attempts);
+          controllers.forEach((controller) => {
+            if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
+          });
+          return winner;
+        } catch (aggregate) {
+          lastError = aggregate?.errors?.at?.(-1) || aggregate;
+          if (signal?.aborted) throw abortError(signal.reason);
+        } finally {
+          signal?.removeEventListener("abort", cancelAll);
+        }
+      }
+      throw lastError || new Error("没有可用 CDN");
+    }
+
+    async function delayedAttempt(piece, url, delayMs, signal, kind, resolver, controller) {
+      if (delayMs > 0) {
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(resolve, delayMs);
+          const canceled = () => {
+            clearTimeout(timer);
+            reject(abortError(controller.signal.reason));
+          };
+          if (controller.signal.aborted) canceled();
+          else controller.signal.addEventListener("abort", canceled, { once: true });
+        });
+      }
+      if (signal?.aborted) throw abortError(signal.reason);
+      return attempt(piece, url, controller.signal, kind, resolver);
+    }
+
+    async function downloadStartupRange(range, resolver, options) {
+      const candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
+        .filter((url, index, all) => all.indexOf(url) === index)
+        .slice(0, 3);
+      if (!candidates.length) throw new Error("没有可用 CDN");
+      semaphore.setLimit(candidates.length);
+      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+      const controllers = candidates.map(() => new AbortController());
+      const cancelAll = () => controllers.forEach((controller) => {
+        if (!controller.signal.aborted) controller.abort(abortError(options.signal?.reason));
+      });
+      if (options.signal?.aborted) cancelAll();
+      else options.signal?.addEventListener("abort", cancelAll, { once: true });
+      try {
+        let winner;
+        try {
+          winner = await Promise.any(candidates.map((url, index) => delayedAttempt(
+            piece,
+            url,
+            index === 0 ? 0 : index === 1 ? 120 : 300,
+            options.signal,
+            options.kind || "meta",
+            resolver,
+            controllers[index]
+          )));
+        } catch (aggregate) {
+          if (options.signal?.aborted) throw abortError(options.signal.reason);
+          throw aggregate?.errors?.at?.(-1) || aggregate;
+        }
+        controllers.forEach((controller) => {
+          if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
+        });
+        return {
+          bytes: winner.bytes,
+          pieceCount: 1,
+          total: winner.total || null,
+          hosts: [new URL(winner.url).hostname]
+        };
+      } finally {
+        options.signal?.removeEventListener("abort", cancelAll);
+      }
+    }
+
+    async function downloadRange(range, resolver, options = {}) {
+      const settings = core.normalizeSettings(getSettings());
+      if (options.kind === "meta") return downloadStartupRange(range, resolver, options);
+      const parallel = options.parallel !== false;
+      const preferredUrls = parallel && typeof resolver.rangeCandidates === "function"
+        ? resolver.rangeCandidates()
+        : resolver.urls();
+      const effectiveConcurrency = parallel ? settings.concurrency : 1;
+      semaphore.setLimit(effectiveConcurrency);
+      const rescueReserve = parallel && effectiveConcurrency >= 8
+        ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
+        : 0;
+      const pieceConcurrency = Math.max(1, effectiveConcurrency - rescueReserve);
+      const pieces = core.splitRange(
+        range.start,
+        range.end,
+        pieceConcurrency,
+        parallel ? settings.minChunkBytes : Number.MAX_SAFE_INTEGER
+      );
+      const results = await Promise.all(pieces.map((piece) => downloadPiece(
+        piece,
+        resolver,
+        options.signal,
+        options.kind || "media",
+        preferredUrls
+      )));
+      const totals = results.map((item) => item.total).filter(Number.isSafeInteger);
+      if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
+      return {
+        bytes: core.concatChunks(results.map((item) => item.bytes), range.length),
+        pieceCount: pieces.length,
+        total: totals[0] || null,
+        hosts: [...new Set(results.map((item) => new URL(item.url).hostname))]
+      };
+    }
+
+    return Object.freeze({ downloadRange });
+  }
+
+  root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
+})(globalThis);

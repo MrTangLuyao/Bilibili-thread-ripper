@@ -1,0 +1,69 @@
+{
+  "manifest_version": 3,
+  "name": "Bilibili 线程撕裂者",
+  "short_name": "线程撕裂者",
+  "version": "0.8.1",
+  "description": "把视频分段拆成多个字节区间并发下载，支持大陆与海外节点切换，改善哔哩哔哩视频的缓冲速度。",
+  "minimum_chrome_version": "114",
+  "permissions": [
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://comment.bilibili.com/*",
+    "https://api.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "src/service-worker.js"
+  },
+  "action": {
+    "default_title": "打开 Bilibili 线程撕裂者侧边栏",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "popup/popup.html"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://m.bilibili.com/*"
+      ],
+      "js": [
+        "vendor/artplayer-5.4.0.js",
+        "vendor/artplayer-plugin-danmuku-5.3.0.js",
+        "src/range-core.js",
+        "src/cdn-resolver.js",
+        "src/sidx.js",
+        "src/idm-downloader.js",
+        "src/bilibili-danmaku.js",
+        "src/mse-player.js",
+        "src/page-hook.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.bilibili.com/*",
+        "https://m.bilibili.com/*"
+      ],
+      "js": [
+        "src/bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

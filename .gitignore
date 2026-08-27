@@ -1,0 +1,17 @@
+# 扩展签名私钥，绝对不能提交
+private/
+*.pem
+
+# 本地构建结果
+dist/
+*.crx
+*.zip
+
+# 编辑器和系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bilibili 线程撕裂者</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="logo" aria-hidden="true">B</div>
+        <h1>线程撕裂者</h1>
+        <label class="switch" title="启用或停用">
+          <input id="enabled" type="checkbox">
+          <span></span>
+        </label>
+      </header>
+
+      <section class="mode-select" aria-label="CDN 模式">
+        <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
+        <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
+      </section>
+
+      <section class="controls">
+        <div class="control-title">
+          <label for="concurrency">线程加载数</label>
+          <output id="thread-value" for="concurrency">32</output>
+        </div>
+        <div class="slider">
+          <div id="slider-fill" class="slider-fill" aria-hidden="true"></div>
+          <input id="concurrency" type="range" min="0" max="5" step="1" value="3" aria-label="线程加载数" aria-valuetext="32">
+        </div>
+        <div class="scale" aria-hidden="true">
+          <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
+        </div>
+      </section>
+
+      <section class="current-threads" aria-live="polite">
+        <span>目前总线程</span>
+        <b id="active-count">0</b>
+      </section>
+
+      <section class="monitor" aria-live="polite">
+        <div class="player-state">
+          <span id="player-state">等待视频</span>
+          <b id="quality"></b>
+        </div>
+        <div class="speed-summary">
+          <span>总速度</span>
+          <b id="total-speed">0 B/s</b>
+        </div>
+        <div id="thread-list" class="thread-list"><p class="empty">暂无线程</p></div>
+        <p id="last-error" class="last-error" hidden></p>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
