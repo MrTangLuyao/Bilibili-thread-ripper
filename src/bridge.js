@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.8.4";
+  const VERSION = "0.8.5";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
   const DEFAULTS = { enabled: true, concurrency: 32, mode: "mainland" };
   let latestSettings = { ...DEFAULTS };

@@ -14,6 +14,7 @@
       this.limit = limit;
       this.active = 0;
       this.queue = [];
+      this.sequence = 0;
     }
 
     setLimit(limit) {
@@ -38,11 +39,19 @@
       }
     }
 
-    acquire(signal) {
+    acquire(signal, priority = 0) {
       if (signal?.aborted) return Promise.reject(abortError(signal.reason));
       return new Promise((resolve, reject) => {
-        const entry = { reject, resolve, signal, released: false };
+        const entry = {
+          reject,
+          resolve,
+          signal,
+          released: false,
+          priority: Number(priority) || 0,
+          sequence: this.sequence++
+        };
         this.queue.push(entry);
+        this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
       });
     }
@@ -92,9 +101,9 @@
       return bytes;
     }
 
-    async function attempt(piece, url, signal, kind, resolver) {
+    async function attempt(piece, url, signal, kind, resolver, priority = 0) {
       const settings = core.normalizeSettings(getSettings());
-      const release = await semaphore.acquire(signal);
+      const release = await semaphore.acquire(signal, priority);
       const controller = new AbortController();
       const cancel = () => controller.abort(abortError(signal?.reason));
       if (signal?.aborted) cancel();
@@ -138,7 +147,7 @@
       }
     }
 
-    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false) {
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
       const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
@@ -178,7 +187,7 @@
             if (controllers[pairIndex].signal.aborted) canceled();
             else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
           });
-          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver);
+          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
         })());
         try {
           const winner = await Promise.any(attempts);
@@ -196,7 +205,7 @@
       throw lastError || new Error("没有可用 CDN");
     }
 
-    async function delayedAttempt(piece, url, delayMs, signal, kind, resolver, controller) {
+    async function delayedAttempt(piece, url, delayMs, signal, kind, resolver, controller, priority = 0) {
       if (delayMs > 0) {
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, delayMs);
@@ -209,7 +218,7 @@
         });
       }
       if (signal?.aborted) throw abortError(signal.reason);
-      return attempt(piece, url, controller.signal, kind, resolver);
+      return attempt(piece, url, controller.signal, kind, resolver, priority);
     }
 
     async function downloadStartupRange(range, resolver, options) {
@@ -235,7 +244,8 @@
             options.signal,
             options.kind || "meta",
             resolver,
-            controllers[index]
+            controllers[index],
+            220
           )));
         } catch (aggregate) {
           if (options.signal?.aborted) throw abortError(options.signal.reason);
@@ -273,10 +283,12 @@
         options.signal,
         options.kind || "media",
         candidateUrls,
-        "probe"
+        "probe",
+        220
       );
       await options.onOrderedChunk(headResult.bytes, head);
       if (head.end >= range.end) {
+        options.onStartupScheduled?.();
         return {
           bytes: null,
           byteLength: range.length,
@@ -287,13 +299,16 @@
         };
       }
 
-      const rescueReserve = effectiveConcurrency >= 8
-        ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
-        : 0;
+      const rescueReserve = Math.max(1, Math.min(16, Math.ceil(effectiveConcurrency / 8)));
+      const mediaBudget = Math.max(1, effectiveConcurrency - rescueReserve);
+      const audioBudget = Math.max(1, Math.min(mediaBudget, Math.ceil(effectiveConcurrency / 8)));
+      const pieceBudget = options.kind === "audio"
+        ? audioBudget
+        : Math.max(1, mediaBudget - audioBudget);
       const pieces = core.splitRange(
         head.end + 1,
         range.end,
-        Math.max(1, effectiveConcurrency - rescueReserve),
+        pieceBudget,
         settings.minChunkBytes
       ).map((piece, index) => ({ ...piece, index: index + 1 }));
       const ordered = new Array(pieces.length);
@@ -310,19 +325,22 @@
         });
         return flushOperation;
       };
-      const results = await Promise.all(pieces.map(async (piece, orderedIndex) => {
+      const pendingPieces = pieces.map(async (piece, orderedIndex) => {
         const result = await downloadPiece(
           piece,
           resolver,
           options.signal,
           options.kind || "media",
           [headResult.url],
-          true
+          true,
+          120 - Math.min(30, piece.index)
         );
         ordered[orderedIndex] = result;
         await flushOrdered();
         return result;
-      }));
+      });
+      options.onStartupScheduled?.();
+      const results = await Promise.all(pendingPieces);
       await flushOperation;
       const totals = [headResult, ...results].map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
@@ -348,6 +366,7 @@
         : resolver.urls();
       const effectiveConcurrency = parallel ? settings.concurrency : 1;
       semaphore.setLimit(effectiveConcurrency);
+      const basePriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 50;
       const rescueReserve = parallel && effectiveConcurrency >= 8
         ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
         : 0;
@@ -382,7 +401,8 @@
           options.signal,
           options.kind || "media",
           preferredUrls,
-          options.startup === true
+          options.startup === true,
+          basePriority - Math.min(20, piece.index)
         );
         if (progressive) {
           ordered[piece.index] = result;
