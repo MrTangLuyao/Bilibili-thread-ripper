@@ -9,6 +9,7 @@
   if (!core || !sidxTools || !resolverFactory || !downloaderFactory || !root.MediaSource || !root.Artplayer) return;
 
   const PLAYER_ID = "__bilibili_thread_ripper_player__";
+  const STARTUP_BUFFER_SECONDS = 1.5;
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
   const QUALITY_NAMES = Object.freeze({
     127: "8K",
@@ -112,7 +113,7 @@
 
   function isBufferedAt(sourceBuffer, time) {
     for (let index = 0; index < sourceBuffer.buffered.length; index += 1) {
-      if (sourceBuffer.buffered.start(index) <= time + 0.05 && sourceBuffer.buffered.end(index) >= time - 0.05) return true;
+      if (sourceBuffer.buffered.start(index) <= time + 0.25 && sourceBuffer.buffered.end(index) >= time - 0.25) return true;
     }
     return false;
   }
@@ -127,18 +128,17 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.1";
+    overlay.dataset.version = "0.8.4";
     overlay.dataset.mode = settings.mode;
-    overlay.dataset.handoff = "false";
+    overlay.dataset.handoff = "true";
     overlay.innerHTML = `
       <div class="btr-art-mount"></div>
       <div class="btr-status">正在连接视频节点…</div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.1";
+    style.dataset.btrPlayerStyle = "0.8.4";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
-      #${PLAYER_ID}[data-handoff="false"]{visibility:hidden!important;pointer-events:none!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
       #${PLAYER_ID} .btr-status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:8px 12px;background:#17191f;color:#fff;font:13px/1.4 "Microsoft YaHei",sans-serif;border-radius:4px;pointer-events:none;z-index:20}
       #${PLAYER_ID}[data-ready="true"] .btr-status{display:none}
@@ -197,9 +197,15 @@
     let destroyed = false;
     let generationSequence = 0;
     let videoEventsBound = false;
-    let nativeTakenOver = nativeVideos.length === 0;
+    let nativeTakenOver = true;
     let seekReloads = 0;
-    if (nativeTakenOver) ui.overlay.dataset.handoff = "true";
+    let seekTimer = null;
+    for (const entry of nativeVideos) {
+      if (!entry.video.paused) entry.video.pause();
+      entry.video.muted = true;
+      entry.video.style.visibility = "hidden";
+      entry.video.style.pointerEvents = "none";
+    }
 
     function modeText(mode) {
       return mode === "overseas" ? "海外 CDN" : "大陆 CDN";
@@ -251,7 +257,7 @@
       const currentTime = Number(video?.currentTime) || 0;
       options.onState?.({
         mode: core.normalizeSettings(getSettings()).mode,
-        playerState: session?.fatal ? "error" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
+        playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
         quality: currentQuality(),
         bufferedAhead: session?.tracks?.length
           ? Math.max(0, Math.min(...session.tracks.map((track) => bufferedEndAt(track.sourceBuffer, currentTime))) - currentTime)
@@ -309,6 +315,7 @@
         sourceBuffer,
         sidx,
         nextIndex: sidxTools.segmentIndexAt(sidx.segments, startTime),
+        complete: false,
         filling: false,
         started: false,
         operation: Promise.resolve()
@@ -318,13 +325,17 @@
     }
 
     async function fillTrack(candidate, track) {
-      if (track.filling || !sessionIsCurrent(candidate) || candidate.fatal) return;
+      if (track.filling || track.complete || !sessionIsCurrent(candidate) || candidate.fatal) return;
       track.filling = true;
       const generation = candidate.generation;
       const signal = candidate.controller.signal;
       try {
         while (sessionIsCurrent(candidate) && generation === candidate.generation && !signal.aborted) {
           const current = Number(video.currentTime) || 0;
+          if (track.nextIndex >= track.sidx.segments.length) {
+            track.complete = true;
+            break;
+          }
           const ahead = bufferedEndAt(track.sourceBuffer, current) - current;
           if (ahead >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
           const batchSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
@@ -334,10 +345,17 @@
             const index = track.nextIndex + offset;
             const segment = track.sidx.segments[index];
             if (!segment || projectedEnd - current >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
+            const startup = !track.started && offset === 0;
             batch.push(downloader.downloadRange(segment, track.resolver, {
               signal,
               parallel: true,
-              kind: track.kind
+              kind: track.kind,
+              startup,
+              onOrderedChunk: startup ? async (bytes) => {
+                if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) return;
+                await append(candidate, track, bytes, generation);
+                ensureBuffer(candidate);
+              } : null
             }).then(
               (result) => ({ index, result }),
               (error) => ({ error, index })
@@ -349,12 +367,12 @@
             const settled = await pending;
             if (settled.error) throw settled.error;
             if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
-            await append(candidate, track, settled.result.bytes, generation);
+            if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
             track.nextIndex = settled.index + 1;
             track.started = true;
             options.onSegment?.({
               kind: track.kind,
-              bytes: settled.result.bytes.byteLength,
+              bytes: settled.result.byteLength,
               pieces: settled.result.pieceCount,
               hosts: settled.result.hosts
             });
@@ -365,7 +383,56 @@
         if (!signal.aborted && sessionIsCurrent(candidate)) fatal(candidate, error);
       } finally {
         track.filling = false;
+        maybeEndStream(candidate);
       }
+    }
+
+    function maybeEndStream(candidate = session) {
+      if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || candidate.streamEnded || candidate.ending) return;
+      if (!candidate.tracks.length || !candidate.tracks.every((track) => track.complete)) return;
+      candidate.ending = true;
+      Promise.all(candidate.tracks.map((track) => track.operation.catch(() => {}))).then(() => {
+        if (!sessionIsCurrent(candidate) || candidate.fatal || candidate.streamEnded) return;
+        if (candidate.mediaSource.readyState === "ended") {
+          candidate.streamEnded = true;
+          publishState();
+          return;
+        }
+        if (candidate.mediaSource.readyState !== "open") return;
+        if (candidate.tracks.some((track) => track.sourceBuffer.updating)) {
+          candidate.ending = false;
+          candidate.endRetryTimer = setTimeout(() => maybeEndStream(candidate), 50);
+          return;
+        }
+        const trackEnds = candidate.tracks
+          .map((track) => track.sidx.segments.at(-1)?.endTime)
+          .filter((value) => Number.isFinite(value) && value > 0);
+        const playableEnd = trackEnds.length ? Math.min(...trackEnds) : 0;
+        if (!candidate.finalDurationAdjusted && playableEnd > 0) {
+          candidate.finalDurationAdjusted = true;
+          if (Math.abs(candidate.mediaSource.duration - playableEnd) > 0.01) {
+            candidate.mediaSource.duration = playableEnd;
+          }
+          if (candidate.tracks.some((track) => track.sourceBuffer.updating)) {
+            candidate.ending = false;
+            candidate.endRetryTimer = setTimeout(() => maybeEndStream(candidate), 50);
+            return;
+          }
+        }
+        candidate.mediaSource.endOfStream();
+        candidate.streamEnded = true;
+        publishState();
+      }).catch((error) => {
+        if (!sessionIsCurrent(candidate)) return;
+        if (error?.name === "InvalidStateError") {
+          candidate.ending = false;
+          candidate.endRetryTimer = setTimeout(() => maybeEndStream(candidate), 50);
+          return;
+        }
+        fatal(candidate, error);
+      }).finally(() => {
+        if (sessionIsCurrent(candidate) && !candidate.streamEnded) candidate.ending = false;
+      });
     }
 
     function pauseNativeVideos() {
@@ -384,19 +451,19 @@
     }
 
     function performHandoff(candidate) {
-      if (nativeTakenOver || !sessionIsCurrent(candidate) || !candidate.tracks.length) return;
+      if (candidate.playbackActivated || !sessionIsCurrent(candidate) || !candidate.tracks.length) return;
       const nativeVideo = firstNative?.video;
-      const target = Math.max(0, Number(nativeVideo?.currentTime) || initialTime);
+      const target = Math.max(0, Number(video?.currentTime) || candidate.startTime || initialTime);
       const ends = candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, target));
       const ready = candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, target));
-      const requiredAhead = Math.max(0.25, Math.min(2, (Number(candidate.mediaSource.duration) || target + 2) - target));
+      const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || target + STARTUP_BUFFER_SECONDS) - target);
+      const requiredAhead = Math.max(0.5, Math.min(STARTUP_BUFFER_SECONDS, remaining));
       if (!ready || Math.min(...ends) - target < requiredAhead) return;
 
-      const nativeWasPlaying = nativeVideos.some((entry) => !entry.video.paused);
       const handoffVolume = nativeVideo && nativeVideo.volume > 0 ? nativeVideo.volume : initialVolume;
       const handoffRate = Number(nativeVideo?.playbackRate) || initialPlaybackRate;
-      candidate.resumeWanted = nativeWasPlaying || shouldAutoplay;
       candidate.playAttempted = false;
+      candidate.playbackActivated = true;
       setCurrentTimeInternal(candidate, target);
       video.volume = handoffVolume;
       video.muted = false;
@@ -407,7 +474,6 @@
         entry.video.style.visibility = "hidden";
         entry.video.style.pointerEvents = "none";
       }
-      nativeTakenOver = true;
       ui.overlay.dataset.handoff = "true";
       ui.overlay.dataset.ready = "true";
       attemptAutoplay(candidate);
@@ -426,8 +492,8 @@
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || !candidate.tracks.length) return;
       if (nativeTakenOver) pauseNativeVideos();
       for (const track of candidate.tracks) fillTrack(candidate, track);
-      if (!nativeTakenOver) performHandoff(candidate);
-      const ready = nativeTakenOver && candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, Number(video.currentTime) || 0));
+      performHandoff(candidate);
+      const ready = candidate.playbackActivated && candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, Number(video.currentTime) || 0));
       if (ready) {
         ui.overlay.dataset.ready = "true";
         attemptAutoplay(candidate);
@@ -448,39 +514,45 @@
         candidate.suppressSeek = false;
         return;
       }
-      seekReloads += 1;
       const target = Number(video.currentTime) || 0;
       if (candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, target))) {
         ensureBuffer(candidate);
         return;
       }
-      candidate.generation = ++generationSequence;
-      candidate.controller.abort(new DOMException("播放器跳转，取消旧 Range", "AbortError"));
-      candidate.controller = new AbortController();
-      candidate.resumeWanted = !video.paused;
-      candidate.playAttempted = false;
+      seekReloads += 1;
       ui.overlay.dataset.ready = "false";
       ui.setStatus("正在加载跳转位置…");
-      await Promise.all(candidate.tracks.map(async (track) => {
-        await track.operation.catch(() => {});
-        if (!sessionIsCurrent(candidate)) return;
-        if (track.sourceBuffer.buffered.length) {
-          const end = track.sourceBuffer.buffered.end(track.sourceBuffer.buffered.length - 1);
-          await removeRange(candidate, track, 0, end).catch(() => {});
-        }
-        track.nextIndex = sidxTools.segmentIndexAt(track.sidx.segments, target);
-        track.filling = false;
-        track.started = false;
-      }));
-      ensureBuffer(candidate);
+      await startSession(selectedVideo, {
+        time: target,
+        resume: !video.paused,
+        volume: Number(video.volume) || initialVolume,
+        muted: Boolean(video.muted),
+        playbackRate: Number(video.playbackRate) || 1
+      });
+    }
+
+    function scheduleSeek() {
+      clearTimeout(seekTimer);
+      seekTimer = setTimeout(() => {
+        seekTimer = null;
+        seek().catch((error) => {
+          const candidate = session;
+          if (candidate && sessionIsCurrent(candidate)) fatal(candidate, error);
+        });
+      }, 140);
     }
 
     function bindVideoEvents() {
       if (videoEventsBound || !video) return;
       videoEventsBound = true;
-      video.addEventListener("seeking", seek);
+      video.addEventListener("seeking", scheduleSeek);
       video.addEventListener("timeupdate", () => ensureBuffer());
       video.addEventListener("waiting", () => ensureBuffer());
+      video.addEventListener("ended", () => {
+        ui.overlay.dataset.ready = "true";
+        if (art?.notice) art.notice.show = "播放结束";
+        publishState({ playerState: "ended", bufferedAhead: 0 });
+      });
     }
 
     function disposeSession(candidate) {
@@ -489,6 +561,7 @@
       candidate.generation = ++generationSequence;
       candidate.controller.abort(new DOMException("播放器任务已取消", "AbortError"));
       clearInterval(candidate.timer);
+      clearTimeout(candidate.endRetryTimer);
       if (video && video.src === candidate.objectUrl) {
         video.pause();
         video.removeAttribute("src");
@@ -514,7 +587,7 @@
       if (session) disposeSession(session);
       selectedVideo = representation;
       ui.overlay.dataset.ready = "false";
-      ui.setStatus(core.normalizeSettings(getSettings()).mode === "mainland" ? "正在预热大陆 CDN…" : "正在预热海外 CDN…");
+      ui.setStatus(core.normalizeSettings(getSettings()).mode === "mainland" ? "正在建立大陆 CDN 连续缓冲…" : "正在建立海外 CDN 连续缓冲…");
       const mediaSource = new MediaSource();
       const objectUrl = URL.createObjectURL(mediaSource);
       const candidate = {
@@ -525,9 +598,15 @@
         mediaSource,
         objectUrl,
         timer: null,
+        endRetryTimer: null,
         tracks: [],
+        ending: false,
+        streamEnded: false,
+        finalDurationAdjusted: false,
         playAttempted: false,
+        playbackActivated: false,
         resumeWanted: playbackState.resume,
+        startTime: Math.max(0, Number(playbackState.time) || 0),
         suppressSeek: false,
         videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode),
         audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode)
@@ -655,6 +734,7 @@
     function destroy({ resumeNative = true } = {}) {
       if (destroyed) return;
       destroyed = true;
+      clearTimeout(seekTimer);
       const customTime = Number(video?.currentTime) || 0;
       const customWasPlaying = video ? !video.paused : false;
       if (session) disposeSession(session);
@@ -688,19 +768,24 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.1",
+        version: "0.8.4",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
-        playerState: session?.fatal ? "error" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
+        playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
         quality: currentQuality(),
         codec: selectedVideo.codecs,
         currentTime: Number(video?.currentTime) || 0,
         muted: Boolean(video?.muted),
         volume: Number(video?.volume) || 0,
         nativeTakenOver,
+        playbackActivated: Boolean(session?.playbackActivated),
+        startupBufferSeconds: STARTUP_BUFFER_SECONDS,
         seekReloads,
+        ended: Boolean(video?.ended),
+        mediaSourceState: session?.mediaSource?.readyState || "closed",
+        streamEnded: Boolean(session?.streamEnded),
         danmaku: Boolean(art?.plugins?.artplayerPluginDanmuku),
-        tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
+        tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, complete: track.complete, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       }),
       switchRepresentation,
       video: art.video

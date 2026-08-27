@@ -138,7 +138,7 @@
       }
     }
 
-    async function downloadPiece(piece, resolver, signal, kind, preferredUrls) {
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
       const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
@@ -157,16 +157,20 @@
       const limit = Math.min(8, candidates.length);
       let lastError = null;
 
-      for (let offset = 0; offset < limit; offset += 2) {
+      const startup = startupMode === true || startupMode === "probe";
+      const probe = startupMode === "probe";
+      const batchWidth = probe ? limit : 2;
+      for (let offset = 0; offset < limit; offset += batchWidth) {
         if (signal?.aborted) throw abortError(signal.reason);
-        const pair = candidates.slice(offset, offset + 2);
+        const pair = candidates.slice(offset, offset + batchWidth);
         const controllers = pair.map(() => new AbortController());
         const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
         if (signal?.aborted) cancelAll();
         else signal?.addEventListener("abort", cancelAll, { once: true });
         const attempts = pair.map((url, pairIndex) => (async () => {
           if (pairIndex) await new Promise((resolve, reject) => {
-            const timer = setTimeout(resolve, settings.hedgeDelayMs);
+            const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
+            const timer = setTimeout(resolve, delay);
             const canceled = () => {
               clearTimeout(timer);
               reject(abortError(controllers[pairIndex].signal.reason));
@@ -213,7 +217,7 @@
         .filter((url, index, all) => all.indexOf(url) === index)
         .slice(0, 3);
       if (!candidates.length) throw new Error("没有可用 CDN");
-      semaphore.setLimit(candidates.length);
+      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
       const piece = { index: 0, start: range.start, end: range.end, length: range.length };
       const controllers = candidates.map(() => new AbortController());
       const cancelAll = () => controllers.forEach((controller) => {
@@ -251,10 +255,94 @@
       }
     }
 
+    async function downloadStartupMediaRange(range, resolver, options, settings) {
+      const effectiveConcurrency = settings.concurrency;
+      semaphore.setLimit(effectiveConcurrency);
+      const candidateUrls = (typeof resolver.rangeCandidates === "function" ? resolver.rangeCandidates() : resolver.urls())
+        .filter((url, index, all) => all.indexOf(url) === index);
+      const headLength = Math.min(range.length, Math.max(64 * 1024, settings.minChunkBytes));
+      const head = {
+        index: 0,
+        start: range.start,
+        end: range.start + headLength - 1,
+        length: headLength
+      };
+      const headResult = await downloadPiece(
+        head,
+        resolver,
+        options.signal,
+        options.kind || "media",
+        candidateUrls,
+        "probe"
+      );
+      await options.onOrderedChunk(headResult.bytes, head);
+      if (head.end >= range.end) {
+        return {
+          bytes: null,
+          byteLength: range.length,
+          pieceCount: 1,
+          streamed: true,
+          total: headResult.total || null,
+          hosts: [new URL(headResult.url).hostname]
+        };
+      }
+
+      const rescueReserve = effectiveConcurrency >= 8
+        ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
+        : 0;
+      const pieces = core.splitRange(
+        head.end + 1,
+        range.end,
+        Math.max(1, effectiveConcurrency - rescueReserve),
+        settings.minChunkBytes
+      ).map((piece, index) => ({ ...piece, index: index + 1 }));
+      const ordered = new Array(pieces.length);
+      let nextOrderedIndex = 0;
+      let flushOperation = Promise.resolve();
+      const flushOrdered = () => {
+        flushOperation = flushOperation.then(async () => {
+          while (ordered[nextOrderedIndex]) {
+            const item = ordered[nextOrderedIndex];
+            ordered[nextOrderedIndex] = null;
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            nextOrderedIndex += 1;
+          }
+        });
+        return flushOperation;
+      };
+      const results = await Promise.all(pieces.map(async (piece, orderedIndex) => {
+        const result = await downloadPiece(
+          piece,
+          resolver,
+          options.signal,
+          options.kind || "media",
+          [headResult.url],
+          true
+        );
+        ordered[orderedIndex] = result;
+        await flushOrdered();
+        return result;
+      }));
+      await flushOperation;
+      const totals = [headResult, ...results].map((item) => item.total).filter(Number.isSafeInteger);
+      if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
+      return {
+        bytes: null,
+        byteLength: range.length,
+        pieceCount: pieces.length + 1,
+        streamed: true,
+        total: totals[0] || null,
+        hosts: [...new Set([headResult, ...results].map((item) => new URL(item.url).hostname))]
+      };
+    }
+
     async function downloadRange(range, resolver, options = {}) {
       const settings = core.normalizeSettings(getSettings());
       if (options.kind === "meta") return downloadStartupRange(range, resolver, options);
       const parallel = options.parallel !== false;
+      if (options.startup === true && parallel && typeof options.onOrderedChunk === "function") {
+        return downloadStartupMediaRange(range, resolver, options, settings);
+      }
       const preferredUrls = parallel && typeof resolver.rangeCandidates === "function"
         ? resolver.rangeCandidates()
         : resolver.urls();
@@ -263,25 +351,53 @@
       const rescueReserve = parallel && effectiveConcurrency >= 8
         ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
         : 0;
-      const pieceConcurrency = Math.max(1, effectiveConcurrency - rescueReserve);
+      const pieceConcurrency = options.startup === true
+        ? Math.max(1, Math.min(22, effectiveConcurrency))
+        : Math.max(1, effectiveConcurrency - rescueReserve);
       const pieces = core.splitRange(
         range.start,
         range.end,
         pieceConcurrency,
         parallel ? settings.minChunkBytes : Number.MAX_SAFE_INTEGER
       );
-      const results = await Promise.all(pieces.map((piece) => downloadPiece(
-        piece,
-        resolver,
-        options.signal,
-        options.kind || "media",
-        preferredUrls
-      )));
+      const progressive = typeof options.onOrderedChunk === "function";
+      const ordered = new Array(pieces.length);
+      let nextOrderedIndex = 0;
+      let flushOperation = Promise.resolve();
+      const flushOrdered = () => {
+        flushOperation = flushOperation.then(async () => {
+          while (ordered[nextOrderedIndex]) {
+            const item = ordered[nextOrderedIndex];
+            ordered[nextOrderedIndex] = null;
+            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex]);
+            nextOrderedIndex += 1;
+          }
+        });
+        return flushOperation;
+      };
+      const results = await Promise.all(pieces.map(async (piece) => {
+        const result = await downloadPiece(
+          piece,
+          resolver,
+          options.signal,
+          options.kind || "media",
+          preferredUrls,
+          options.startup === true
+        );
+        if (progressive) {
+          ordered[piece.index] = result;
+          await flushOrdered();
+        }
+        return result;
+      }));
+      if (progressive) await flushOperation;
       const totals = results.map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
-        bytes: core.concatChunks(results.map((item) => item.bytes), range.length),
+        bytes: progressive ? null : core.concatChunks(results.map((item) => item.bytes), range.length),
+        byteLength: range.length,
         pieceCount: pieces.length,
+        streamed: progressive,
         total: totals[0] || null,
         hosts: [...new Set(results.map((item) => new URL(item.url).hostname))]
       };

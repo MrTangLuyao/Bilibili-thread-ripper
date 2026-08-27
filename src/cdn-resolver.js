@@ -94,10 +94,17 @@
 
     function rangeCandidates() {
       const now = Date.now();
-      const pool = urls().filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
+      const pool = urls()
+        .filter((url) => (health.get(url)?.blockedUntil || 0) <= now)
+        .sort((a, b) => {
+          const ah = health.get(a) || {};
+          const bh = health.get(b) || {};
+          return Number(Boolean(bh.lastSuccessAt)) - Number(Boolean(ah.lastSuccessAt)) ||
+            (bh.bps || 0) - (ah.bps || 0);
+        });
       if (!pool.length) return urls();
       const firstRange = mediaRangeCount === 0;
-      const width = Math.min(firstRange ? 1 : 3, pool.length);
+      const width = Math.min(firstRange ? pool.length : 3, pool.length);
       let selected;
       const warmupRanges = getMode?.() === "mainland" ? 1 : 4;
       if (mediaRangeCount < warmupRanges) {
@@ -123,7 +130,7 @@
       const candidates = [...originals, ...urls()]
         .filter((url, index, all) => all.indexOf(url) === index)
         .filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
-      return candidates.slice(0, 3);
+      return candidates.slice(0, 8);
     }
 
     function rescueCandidates() {

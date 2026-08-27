@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { Readable } = require("stream");
 
 const root = path.resolve(__dirname, "..");
 const port = 18763;
@@ -54,7 +55,16 @@ http.createServer(async (request, response) => {
         if (value) outputHeaders[name] = value;
       }
       response.writeHead(upstream.status, outputHeaders);
-      response.end(Buffer.from(await upstream.arrayBuffer()));
+      if (upstream.body) {
+        const mediaStream = Readable.fromWeb(upstream.body);
+        mediaStream.on("error", () => {
+          if (!response.destroyed) response.destroy();
+        });
+        response.on("close", () => {
+          if (!response.writableEnded && !mediaStream.destroyed) mediaStream.destroy();
+        });
+        mediaStream.pipe(response);
+      } else response.end(Buffer.from(await upstream.arrayBuffer()));
       return;
     }
     const relative = url.pathname === "/" ? "dev/harness.html" : decodeURIComponent(url.pathname).replace(/^\/+/, "");

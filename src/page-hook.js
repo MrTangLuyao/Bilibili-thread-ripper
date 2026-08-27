@@ -2,11 +2,12 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const INSTALL_FLAG = "__biliThreadRipper081Installed";
+  const INSTALL_FLAG = "__biliThreadRipper084Installed";
   if (root[INSTALL_FLAG]) return;
 
   const core = root.__BILI_RANGE_CORE__;
   const playerFactory = root.__BILI_MSE_PLAYER_FACTORY__;
+  const earlyMask = root.__BILI_THREAD_RIPPER_EARLY_MASK__;
   if (!core || !playerFactory || typeof root.fetch !== "function") return;
   Object.defineProperty(root, INSTALL_FLAG, { value: true });
 
@@ -20,7 +21,7 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.1",
+    version: "0.8.4",
     architecture: "artplayer-mse-idm-range-danmaku",
     mode: settings.mode,
     playerState: "waiting",
@@ -199,11 +200,19 @@
     restartTimer = null;
     if (!settings.enabled || !/\/video\//.test(location.pathname)) {
       if (player) stopPlayer(true);
+      earlyMask?.release?.();
       return;
     }
     const route = `${location.pathname}${location.search}`;
-    if (!player && failedRoute === route) return;
-    if (player && playerRoute === route) return;
+    if (!player && failedRoute === route) {
+      earlyMask?.release?.();
+      return;
+    }
+    if (player && playerRoute === route) {
+      earlyMask?.release?.();
+      return;
+    }
+    earlyMask?.arm?.();
     const playinfo = currentPlayinfo();
     const container = findContainer();
     if (!playinfo || !container) {
@@ -258,6 +267,7 @@
           setTimeout(() => {
             if (player && stats.playerState === "error") {
               stopPlayer(true);
+              earlyMask?.release?.();
               stats.playerState = "native-fallback";
               publish();
             }
@@ -266,10 +276,12 @@
         playinfo
       });
       playerRoute = route;
+      earlyMask?.release?.();
     } catch (error) {
       stats.playerState = "error";
       stats.lastError = String(error?.message || error).slice(0, 180);
       publish();
+      earlyMask?.release?.();
       restartTimer = setTimeout(startPlayer, 2000);
     }
   }
@@ -277,6 +289,8 @@
   function restartPlayer() {
     clearTimeout(restartTimer);
     failedRoute = "";
+    if (settings.enabled && /\/video\//.test(location.pathname)) earlyMask?.arm?.();
+    else earlyMask?.release?.();
     if (player) stopPlayer(true);
     restartTimer = setTimeout(startPlayer, 100);
   }
@@ -314,7 +328,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: restartPlayer,
-      version: "0.8.1"
+      version: "0.8.4"
     })
   });
   publish();
