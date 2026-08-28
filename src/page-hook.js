@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const INSTALL_FLAG = "__biliThreadRipper085Installed";
+  const INSTALL_FLAG = "__biliThreadRipper087Installed";
   if (root[INSTALL_FLAG]) return;
 
   const core = root.__BILI_RANGE_CORE__;
@@ -15,13 +15,17 @@
   let settings = core.normalizeSettings({});
   let player = null;
   let playerRoute = "";
+  let playerContainer = null;
   let failedRoute = "";
+  let startingRoute = "";
+  let routeGeneration = 0;
+  let routeRequestController = null;
   let restartTimer = null;
   let publishTimer = null;
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.5",
+    version: "0.8.7",
     architecture: "artplayer-mse-idm-adaptive-startup-danmaku",
     mode: settings.mode,
     playerState: "waiting",
@@ -162,18 +166,144 @@
     return null;
   }
 
-  function currentPlayinfo() {
+  function routeIdentity() {
+    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
+    if (!match) return null;
+    const rawId = match[1];
+    const bvid = /^BV/i.test(rawId) ? rawId : "";
+    const aid = /^av/i.test(rawId) ? Number(rawId.slice(2)) || 0 : 0;
+    const part = Math.max(1, Number(new URLSearchParams(location.search).get("p")) || 1);
+    const videoKey = bvid ? bvid.toLowerCase() : `av${aid}`;
+    return { aid, bvid, part, key: `${videoKey}:p${part}`, videoKey };
+  }
+
+  function stateIdentity(state) {
+    const videoData = state?.videoData || state?.videoInfo || {};
+    const bvid = String(videoData.bvid || "");
+    const aid = Number(videoData.aid || videoData.id) || 0;
+    if (!bvid && !aid) return null;
+    return { aid, bvid, videoKey: bvid ? bvid.toLowerCase() : `av${aid}` };
+  }
+
+  function isDashPlayinfo(playinfo) {
+    return Boolean((playinfo?.data || playinfo)?.dash);
+  }
+
+  const routePlayinfo = new Map();
+
+  function cachePlayinfo(identity, playinfo) {
+    if (!identity || !isDashPlayinfo(playinfo)) return false;
+    routePlayinfo.delete(identity.key);
+    routePlayinfo.set(identity.key, playinfo);
+    while (routePlayinfo.size > 8) routePlayinfo.delete(routePlayinfo.keys().next().value);
+    return true;
+  }
+
+  function currentPlayinfo(identity) {
+    const cached = routePlayinfo.get(identity?.key);
+    if (isDashPlayinfo(cached)) return cached;
     try {
-      if ((root.__playinfo__?.data || root.__playinfo__)?.dash) return root.__playinfo__;
+      const initialIdentity = stateIdentity(root.__INITIAL_STATE__);
+      if (initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
+        cachePlayinfo(identity, root.__playinfo__);
+        return root.__playinfo__;
+      }
     } catch (_error) {}
     const scripts = Array.from(document.scripts || []).reverse();
     for (const script of scripts) {
       const text = script.textContent || "";
-      if (!text.includes("__playinfo__")) continue;
+      if (!text.includes("__playinfo__") || !text.includes("__INITIAL_STATE__")) continue;
+      const embeddedIdentity = stateIdentity(extractJsonObject(text, "__INITIAL_STATE__"));
+      if (embeddedIdentity?.videoKey !== identity?.videoKey) continue;
       const parsed = extractJsonObject(text, "__playinfo__");
-      if ((parsed?.data || parsed)?.dash) return parsed;
+      if (cachePlayinfo(identity, parsed)) return parsed;
     }
     return null;
+  }
+
+  function requestedVideoKey(url) {
+    try {
+      const parsed = new URL(String(url), location.href);
+      const bvid = String(parsed.searchParams.get("bvid") || "");
+      const aid = Number(parsed.searchParams.get("avid") || parsed.searchParams.get("aid")) || 0;
+      return bvid ? bvid.toLowerCase() : aid ? `av${aid}` : "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function observePlayinfo(url, payload) {
+    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+    const identity = routeIdentity();
+    if (!identity || requestedVideoKey(url) !== identity.videoKey) return;
+    cachePlayinfo(identity, payload);
+    if (!player || playerRoute !== identity.key) {
+      clearTimeout(restartTimer);
+      restartTimer = setTimeout(startPlayer, 0);
+    }
+  }
+
+  function observeFetchResponse(url, response) {
+    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return;
+    response.clone().json().then((payload) => observePlayinfo(url, payload)).catch(() => {});
+  }
+
+  root.fetch = function (...args) {
+    const url = typeof args[0] === "string" || args[0] instanceof URL ? String(args[0]) : String(args[0]?.url || "");
+    const pending = nativeFetch(...args);
+    pending.then((response) => observeFetchResponse(response.url || url, response)).catch(() => {});
+    return pending;
+  };
+
+  const xhrPrototype = root.XMLHttpRequest?.prototype;
+  if (xhrPrototype) {
+    const nativeXhrOpen = xhrPrototype.open;
+    const nativeXhrSend = xhrPrototype.send;
+    const xhrUrls = new WeakMap();
+    xhrPrototype.open = function (method, url, ...args) {
+      xhrUrls.set(this, String(url || ""));
+      return nativeXhrOpen.call(this, method, url, ...args);
+    };
+    xhrPrototype.send = function (...args) {
+      const url = xhrUrls.get(this) || "";
+      if (/\/x\/player\/(?:wbi\/)?playurl/i.test(url)) {
+        this.addEventListener("load", () => {
+          try {
+            const payload = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
+            observePlayinfo(this.responseURL || url, payload);
+          } catch (_error) {}
+        }, { once: true });
+      }
+      return nativeXhrSend.apply(this, args);
+    };
+  }
+
+  async function fetchRoutePlayinfo(identity, signal) {
+    const query = identity.bvid
+      ? `bvid=${encodeURIComponent(identity.bvid)}`
+      : `aid=${encodeURIComponent(identity.aid)}`;
+    const viewResponse = await nativeFetch(`/x/web-interface/view?${query}`, { credentials: "include", signal });
+    if (!viewResponse.ok) throw new Error(`读取视频信息失败（HTTP ${viewResponse.status}）`);
+    const viewPayload = await viewResponse.json();
+    if (Number(viewPayload?.code) !== 0 || !viewPayload?.data) throw new Error(viewPayload?.message || "读取视频信息失败");
+    const pages = Array.isArray(viewPayload.data.pages) ? viewPayload.data.pages : [];
+    const page = pages[identity.part - 1] || pages[0];
+    const cid = Number(page?.cid || viewPayload.data.cid) || 0;
+    if (!cid) throw new Error("新视频缺少 CID");
+    const canonicalBvid = String(viewPayload.data.bvid || identity.bvid || "");
+    const canonicalAid = Number(viewPayload.data.aid || identity.aid) || 0;
+    const playQuery = canonicalBvid
+      ? `bvid=${encodeURIComponent(canonicalBvid)}`
+      : `avid=${encodeURIComponent(canonicalAid)}`;
+    const playResponse = await nativeFetch(`/x/player/playurl?${playQuery}&cid=${cid}&qn=127&fnval=4048&fnver=0&fourk=1`, {
+      credentials: "include",
+      signal
+    });
+    if (!playResponse.ok) throw new Error(`读取播放清单失败（HTTP ${playResponse.status}）`);
+    const playinfo = await playResponse.json();
+    if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
+    cachePlayinfo(identity, playinfo);
+    return playinfo;
   }
 
   function findContainer() {
@@ -190,36 +320,61 @@
     player?.destroy({ resumeNative });
     player = null;
     playerRoute = "";
+    playerContainer = null;
     if (settings.enabled) stats.playerState = "waiting";
     else stats.playerState = "disabled";
     publish();
   }
 
-  function startPlayer() {
+  async function startPlayer() {
     clearTimeout(restartTimer);
     restartTimer = null;
-    if (!settings.enabled || !/\/video\//.test(location.pathname)) {
+    const identity = routeIdentity();
+    if (!settings.enabled || !identity) {
       if (player) stopPlayer(true);
       earlyMask?.release?.();
       return;
     }
-    const route = `${location.pathname}${location.search}`;
+    const route = identity.key;
     if (!player && failedRoute === route) {
       earlyMask?.release?.();
       return;
     }
-    if (player && playerRoute === route) {
+    if (player && playerRoute === route && playerContainer?.isConnected && player.video?.isConnected) {
       earlyMask?.release?.();
       return;
     }
+    if (startingRoute === route) return;
     earlyMask?.arm?.();
-    const playinfo = currentPlayinfo();
     const container = findContainer();
-    if (!playinfo || !container) {
+    if (!container) {
       stats.playerState = "waiting";
       schedulePublish();
       restartTimer = setTimeout(startPlayer, 350);
       return;
+    }
+    const generation = routeGeneration;
+    let playinfo = currentPlayinfo(identity);
+    if (!playinfo) {
+      startingRoute = route;
+      routeRequestController?.abort();
+      const controller = new AbortController();
+      routeRequestController = controller;
+      stats.playerState = "waiting";
+      schedulePublish();
+      try {
+        playinfo = await fetchRoutePlayinfo(identity, controller.signal);
+      } catch (error) {
+        if (error?.name !== "AbortError" && generation === routeGeneration && routeIdentity()?.key === route) {
+          stats.lastError = String(error?.message || error).slice(0, 180);
+          restartTimer = setTimeout(startPlayer, 700);
+        }
+        return;
+      } finally {
+        if (startingRoute === route) startingRoute = "";
+        if (routeRequestController === controller) routeRequestController = null;
+      }
+      if (generation !== routeGeneration || routeIdentity()?.key !== route) return;
     }
     if (player) stopPlayer(false);
     stats.playerState = "loading";
@@ -276,6 +431,7 @@
         playinfo
       });
       playerRoute = route;
+      playerContainer = container;
       earlyMask?.release?.();
     } catch (error) {
       stats.playerState = "error";
@@ -286,13 +442,22 @@
     }
   }
 
-  function restartPlayer() {
+  function restartPlayer(force = false) {
     clearTimeout(restartTimer);
+    const identity = routeIdentity();
+    if (!force && player && identity?.key === playerRoute && playerContainer?.isConnected && player.video?.isConnected) {
+      earlyMask?.release?.();
+      return;
+    }
+    routeGeneration += 1;
+    routeRequestController?.abort();
+    routeRequestController = null;
+    startingRoute = "";
     failedRoute = "";
-    if (settings.enabled && /\/video\//.test(location.pathname)) earlyMask?.arm?.();
+    if (settings.enabled && identity) earlyMask?.arm?.();
     else earlyMask?.release?.();
-    if (player) stopPlayer(true);
-    restartTimer = setTimeout(startPlayer, 100);
+    if (player) stopPlayer(false);
+    restartTimer = setTimeout(startPlayer, 50);
   }
 
   root.addEventListener("message", (event) => {
@@ -302,7 +467,7 @@
       settings = core.normalizeSettings(event.data.payload);
       stats.mode = settings.mode;
       if (!settings.enabled) stopPlayer(true);
-      else if (!previous.enabled || previous.mode !== settings.mode) restartPlayer();
+      else if (!previous.enabled || previous.mode !== settings.mode) restartPlayer(true);
       else {
         player?.applySettings?.(settings);
         startPlayer();
@@ -314,11 +479,12 @@
 
   const nativePushState = history.pushState.bind(history);
   const nativeReplaceState = history.replaceState.bind(history);
-  history.pushState = function (...args) { const result = nativePushState(...args); restartPlayer(); return result; };
-  history.replaceState = function (...args) { const result = nativeReplaceState(...args); restartPlayer(); return result; };
-  root.addEventListener("popstate", restartPlayer);
+  history.pushState = function (...args) { const result = nativePushState(...args); restartPlayer(false); return result; };
+  history.replaceState = function (...args) { const result = nativeReplaceState(...args); restartPlayer(false); return result; };
+  root.addEventListener("popstate", () => restartPlayer(false));
   setInterval(() => {
-    if (settings.enabled && (!player || playerRoute !== `${location.pathname}${location.search}`)) startPlayer();
+    const identity = routeIdentity();
+    if (settings.enabled && (!player || playerRoute !== identity?.key || !playerContainer?.isConnected || !player.video?.isConnected)) startPlayer();
   }, 1000);
 
   Object.defineProperty(root, "__biliThreadRipperDebug", {
@@ -327,8 +493,8 @@
       getPlayer: () => player,
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
-      restart: restartPlayer,
-      version: "0.8.5"
+      restart: () => restartPlayer(true),
+      version: "0.8.7"
     })
   });
   publish();

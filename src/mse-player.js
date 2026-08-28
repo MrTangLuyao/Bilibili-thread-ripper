@@ -152,20 +152,34 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.5";
+    overlay.dataset.version = "0.8.7";
     overlay.dataset.mode = settings.mode;
     overlay.dataset.handoff = "true";
+    overlay.dataset.error = "false";
     overlay.innerHTML = `
       <div class="btr-art-mount"></div>
-      <div class="btr-status">正在连接视频节点…</div>
+      <div class="btr-loader" role="status" aria-label="正在加载">
+        <svg viewBox="0 0 50 50" aria-hidden="true">
+          <circle cx="25" cy="25" r="20"></circle>
+        </svg>
+      </div>
+      <div class="btr-status" role="alert"></div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.5";
+    style.dataset.btrPlayerStyle = "0.8.7";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
-      #${PLAYER_ID} .btr-status{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:8px 12px;background:#17191f;color:#fff;font:13px/1.4 "Microsoft YaHei",sans-serif;border-radius:4px;pointer-events:none;z-index:20}
-      #${PLAYER_ID}[data-ready="true"] .btr-status{display:none}
+      #${PLAYER_ID} .btr-loader{position:absolute;left:50%;top:50%;width:48px;height:48px;transform:translate(-50%,-50%);color:rgba(255,255,255,.9);pointer-events:none;z-index:20}
+      #${PLAYER_ID} .btr-loader svg{display:block;width:100%;height:100%;animation:btr-material-rotate 1.4s linear infinite}
+      #${PLAYER_ID} .btr-loader circle{fill:none;stroke:currentColor;stroke-width:4;stroke-linecap:round;stroke-dasharray:24,126;stroke-dashoffset:0;animation:btr-material-dash 1.4s ease-in-out infinite}
+      #${PLAYER_ID}[data-ready="true"] .btr-loader,#${PLAYER_ID}[data-error="true"] .btr-loader{display:none}
+      #${PLAYER_ID} .btr-status{display:none;position:absolute;left:50%;top:50%;max-width:min(560px,80%);transform:translate(-50%,-50%);padding:9px 13px;background:rgba(23,25,31,.94);color:#fff;font:13px/1.45 "Microsoft YaHei",sans-serif;border-radius:4px;pointer-events:none;z-index:21}
+      #${PLAYER_ID}[data-error="true"] .btr-status{display:block}
+      #${PLAYER_ID} .art-loading{display:none!important}
+      @keyframes btr-material-rotate{to{transform:rotate(360deg)}}
+      @keyframes btr-material-dash{0%{stroke-dasharray:24,126;stroke-dashoffset:0}50%{stroke-dasharray:90,126;stroke-dashoffset:-35px}100%{stroke-dasharray:24,126;stroke-dashoffset:-124px}}
+      @media (prefers-reduced-motion:reduce){#${PLAYER_ID} .btr-loader svg{animation-duration:2.2s}#${PLAYER_ID} .btr-loader circle{animation:none;stroke-dasharray:82,126}}
       #${PLAYER_ID} .art-video-player{--art-theme:#fb7299!important;font-family:"Microsoft YaHei",sans-serif!important}
       #${PLAYER_ID} .art-bottom:before{background:rgba(0,0,0,.72)!important}
       #${PLAYER_ID} .art-settings,#${PLAYER_ID} .art-selector-list{box-shadow:none!important}
@@ -179,7 +193,13 @@
       mount: overlay.querySelector(".btr-art-mount"),
       overlay,
       style,
-      setStatus(text) {
+      clearError() {
+        overlay.dataset.error = "false";
+        const status = overlay.querySelector(".btr-status");
+        if (status) status.textContent = "";
+      },
+      setError(text) {
+        overlay.dataset.error = "true";
         const status = overlay.querySelector(".btr-status");
         if (status) status.textContent = String(text).slice(0, 160);
       },
@@ -624,7 +644,7 @@
       }
       seekReloads += 1;
       ui.overlay.dataset.ready = "false";
-      ui.setStatus("正在加载跳转位置…");
+      ui.clearError();
       await startSession(selectedVideo, {
         time: target,
         resume: !video.paused,
@@ -669,7 +689,7 @@
             );
             video.pause();
             ui.overlay.dataset.ready = "false";
-            ui.setStatus("线路波动，正在补充连续缓存…");
+            ui.clearError();
           }
         }
         ensureBuffer(candidate);
@@ -702,7 +722,7 @@
       candidate.controller.abort(new DOMException("播放器发生错误", "AbortError"));
       ui.overlay.dataset.ready = "false";
       const message = String(error?.message || error).slice(0, 140);
-      ui.setStatus(`多线程播放器失败：${message}`);
+      ui.setError(`多线程播放器失败：${message}`);
       if (art?.notice) art.notice.show = `播放失败：${message}`;
       publishState({ playerState: "error", lastError: message });
       options.onFatal?.(error);
@@ -713,7 +733,7 @@
       if (session) disposeSession(session);
       selectedVideo = representation;
       ui.overlay.dataset.ready = "false";
-      ui.setStatus(core.normalizeSettings(getSettings()).mode === "mainland" ? "正在建立大陆 CDN 连续缓冲…" : "正在建立海外 CDN 连续缓冲…");
+      ui.clearError();
       const mediaSource = new MediaSource();
       const objectUrl = URL.createObjectURL(mediaSource);
       const candidate = {
@@ -906,7 +926,7 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.5",
+        version: "0.8.7",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
         playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",

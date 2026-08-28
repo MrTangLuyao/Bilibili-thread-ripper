@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Bilibili 线程撕裂者",
   "short_name": "线程撕裂者",
-  "version": "0.8.5",
+  "version": "0.8.7",
   "description": "把视频分段拆成多个字节区间并发下载，支持大陆与海外节点切换，改善哔哩哔哩视频的缓冲速度。",
   "minimum_chrome_version": "114",
   "permissions": [
