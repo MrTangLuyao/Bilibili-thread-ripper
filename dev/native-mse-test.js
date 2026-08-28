@@ -2,6 +2,8 @@
   "use strict";
   const resultNode = document.getElementById("native-mse-result");
   const video = document.querySelector("video");
+  const handoffTime = 1.25;
+  video.currentTime = handoffTime;
   const settings = { enabled: true, mode: "mainland", concurrency: 32, bufferAheadSeconds: 24 };
   const probe = { active: 0, maxActive: 0, transfers: 0, attemptErrors: [], errors: [], state: null, segments: 0 };
   const config = await fetch("/config").then((response) => response.json());
@@ -46,6 +48,7 @@
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   const beforeSeek = root.__nativeMseTestPlayer.getDebug();
+  const startupHandoffTime = beforeSeek.sessionStartTime;
   let seekTarget = 0;
   if (!probe.errors.length && Number(video.duration) > 20) {
     seekTarget = Math.min(video.duration - 2, Math.max(10, video.duration * 0.45));
@@ -70,6 +73,8 @@
     playbackActivated: debug.playbackActivated,
     progressiveAppends: debug.progressiveAppends,
     tracks: debug.tracks,
+    handoffTime,
+    startupHandoffTime,
     seekTarget,
     seekReloads: debug.seekReloads,
     maxActive: probe.maxActive,
@@ -77,12 +82,13 @@
     segments: probe.segments,
     errors: probe.errors
   };
-  output.pass = output.version === "0.9.0.1"
+  output.pass = output.version === "0.9.0.2"
     && output.architecture === "bilibili-native-ui-progressive-mse-0.8-core"
     && output.originalUiCount === 1
     && output.videoCount === 1
     && output.engine === "progressive-mse-0.8-core"
     && output.playbackActivated
+    && Math.abs(output.startupHandoffTime - output.handoffTime) < 0.01
     && output.progressiveAppends >= 2
     && output.tracks.length === 2
     && output.seekReloads >= 1

@@ -648,7 +648,10 @@
     }
     sourceObserver.observe(video, { attributes: true, attributeFilter: ["src"] });
     startSession(selectedVideo, {
-      time: original.currentTime >= 2 ? original.currentTime : 0,
+      // The native player may already have rendered its first frames before the
+      // accelerated MediaSource is ready. Preserve that exact position: forcing
+      // every handoff below two seconds back to zero produces a visible replay.
+      time: original.currentTime,
       resume: !original.wasPaused || original.currentTime < 1,
       volume: original.volume,
       muted: original.muted,
@@ -661,7 +664,7 @@
       updatePlayinfo,
       video,
       getDebug: () => ({
-        version: "0.9.0.1",
+        version: "0.9.0.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -669,6 +672,7 @@
         currentTime: Number(video.currentTime) || 0,
         mediaSourceState: session?.mediaSource?.readyState || "closed",
         playbackActivated: Boolean(session?.playbackActivated),
+        sessionStartTime: session?.startTime || 0,
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         progressiveAppends: session?.progressiveAppends || 0,
