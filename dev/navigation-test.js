@@ -19,13 +19,14 @@
     }
   };
   root.__BILI_THREAD_RIPPER_EARLY_MASK__ = { arm() {}, release() {} };
-  root.__BILI_MSE_PLAYER_FACTORY__ = {
-    createPlayer(options) {
+  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = {
+    createNativePlayer(options) {
       const marker = options.playinfo?.data?.marker || "";
       const record = { destroyed: false, marker, identity: options.identity || null, resumeNative: null, route: location.pathname };
       calls.push(record);
       return {
         applySettings() {},
+        async updatePlayinfo(playinfo) { record.marker = playinfo?.data?.marker || record.marker; },
         destroy({ resumeNative }) {
           record.destroyed = true;
           record.resumeNative = resumeNative;
@@ -56,7 +57,16 @@
   root.__navigationTest = { calls, OLD_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
   const result = document.getElementById("navigation-result");
   setInterval(() => {
-    result.textContent = JSON.stringify({ calls, resolvedIdentity, identityError, mixedStateCid, debugVersion: root.__biliThreadRipperDebug?.version || "", href: location.href });
+    result.textContent = JSON.stringify({
+      calls,
+      resolvedIdentity,
+      identityError,
+      mixedStateCid,
+      debugVersion: root.__biliThreadRipperDebug?.version || "",
+      settingsPanelCount: document.querySelectorAll("#__bilibili_thread_ripper_native_settings__").length,
+      settingsStrategy: document.getElementById("__bilibili_thread_ripper_native_settings__")?.dataset.btrStrategy || "",
+      href: location.href
+    });
   }, 50);
   setTimeout(() => {
     root.postMessage({ channel: CHANNEL, type: "settings", payload: { enabled: true, mode: "mainland", concurrency: 32 } }, "*");

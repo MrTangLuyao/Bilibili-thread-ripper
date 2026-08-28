@@ -2,11 +2,14 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const INSTALL_FLAG = "__biliThreadRipper089Installed";
+  const INSTALL_FLAG = "__biliThreadRipper0901Installed";
+  const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
+  const SETTINGS_ID = "__bilibili_thread_ripper_native_settings__";
+  const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
 
   const core = root.__BILI_RANGE_CORE__;
-  const playerFactory = root.__BILI_MSE_PLAYER_FACTORY__;
+  const playerFactory = root.__BILI_NATIVE_MSE_PLAYER_FACTORY__;
   const earlyMask = root.__BILI_THREAD_RIPPER_EARLY_MASK__;
   if (!core || !playerFactory || typeof root.fetch !== "function") return;
   Object.defineProperty(root, INSTALL_FLAG, { value: true });
@@ -22,11 +25,12 @@
   let routeRequestController = null;
   let restartTimer = null;
   let publishTimer = null;
+  let menuSyncTimer = null;
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.9.0",
-    architecture: "artplayer-mse-idm-adaptive-startup-danmaku-subtitle",
+    version: "0.9.0.1",
+    architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
     quality: "",
@@ -239,7 +243,12 @@
     const identity = routeIdentity();
     if (!identity || requestedVideoKey(url) !== identity.videoKey) return;
     cachePlayinfo(identity, payload);
-    if (!player || playerRoute !== identity.key) {
+    if (player && playerRoute === identity.key) {
+      player.updatePlayinfo?.(payload).catch((error) => {
+        stats.lastError = String(error?.message || error).slice(0, 180);
+        publish();
+      });
+    } else {
       clearTimeout(restartTimer);
       restartTimer = setTimeout(startPlayer, 0);
     }
@@ -318,6 +327,104 @@
     return candidates.find((node) => node.querySelector("video") && node.clientWidth > 200) || null;
   }
 
+  function settingGroup(title, name, values, selected) {
+    const group = document.createElement("div");
+    group.className = "btr-native-setting-group";
+    const heading = document.createElement("div");
+    heading.className = "btr-native-setting-title";
+    heading.textContent = title;
+    const content = document.createElement("div");
+    content.className = "btr-native-setting-content bui bui-radio bui-dark";
+    const area = document.createElement("div");
+    area.className = "bui-area";
+    const wrap = document.createElement("div");
+    wrap.className = "bui-radio-wrap bui-radio-button";
+    const radioGroup = document.createElement("div");
+    radioGroup.className = "bui-radio-group";
+    for (const option of values) {
+      const label = document.createElement("label");
+      label.className = "bui-radio-item";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.className = "bui-radio-input";
+      input.name = name;
+      input.value = String(option.value);
+      input.checked = String(option.value) === String(selected);
+      const labelBody = document.createElement("span");
+      labelBody.className = "bui-radio-label";
+      const text = document.createElement("span");
+      text.className = "bui-radio-text";
+      text.textContent = option.label;
+      labelBody.append(text);
+      label.append(input, labelBody);
+      radioGroup.append(label);
+    }
+    wrap.append(radioGroup);
+    area.append(wrap);
+    content.append(area);
+    group.append(heading, content);
+    return group;
+  }
+
+  function installSettingsStyle() {
+    if (document.getElementById(SETTINGS_STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = SETTINGS_STYLE_ID;
+    style.textContent = `
+      #${SETTINGS_ID}{margin:0 0 20px;color:#fff;font-size:12px}
+      #${SETTINGS_ID} .btr-native-setting-group{margin:0 0 16px}
+      #${SETTINGS_ID} .btr-native-setting-title{margin:0 0 8px;color:#fff}
+      #${SETTINGS_ID} .bui-radio-group{display:flex!important;flex-wrap:wrap!important;gap:8px!important;margin:0!important}
+      #${SETTINGS_ID} .bui-radio-item{margin:0!important}
+    `;
+    (document.head || document.documentElement).append(style);
+  }
+
+  function syncSettingsMenu() {
+    const mount = document.querySelector(".bpx-player-ctrl-setting-menu-right");
+    if (!mount || !settings.enabled) {
+      document.getElementById(SETTINGS_ID)?.remove();
+      return;
+    }
+    installSettingsStyle();
+    let panel = document.getElementById(SETTINGS_ID);
+    if (!panel || panel.parentElement !== mount) {
+      panel?.remove();
+      panel = document.createElement("div");
+      panel.id = SETTINGS_ID;
+      panel.dataset.btrStrategy = "native-ui-progressive-mse-0.8-core";
+      panel.append(
+        settingGroup("线程撕裂者 CDN", "btr-native-mode", [
+          { label: "大陆 CDN", value: "mainland" },
+          { label: "海外 CDN", value: "overseas" }
+        ], settings.mode),
+        settingGroup("并发线程", "btr-native-concurrency", THREAD_OPTIONS.map((value) => ({ label: String(value), value })), settings.concurrency)
+      );
+      panel.addEventListener("change", (event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement) || !input.checked) return;
+        if (input.name === "btr-native-mode") {
+          root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { mode: input.value } }, "*");
+        } else if (input.name === "btr-native-concurrency") {
+          const concurrency = Number(input.value);
+          if (THREAD_OPTIONS.includes(concurrency)) root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { concurrency } }, "*");
+        }
+      });
+      const before = mount.querySelector(".bpx-player-ctrl-setting-others");
+      mount.insertBefore(panel, before || mount.firstChild);
+    }
+    for (const input of panel.querySelectorAll('input[name="btr-native-mode"]')) input.checked = input.value === settings.mode;
+    for (const input of panel.querySelectorAll('input[name="btr-native-concurrency"]')) input.checked = Number(input.value) === settings.concurrency;
+  }
+
+  function scheduleSettingsMenuSync() {
+    if (menuSyncTimer) return;
+    menuSyncTimer = setTimeout(() => {
+      menuSyncTimer = null;
+      syncSettingsMenu();
+    }, 120);
+  }
+
   function stopPlayer(resumeNative = true) {
     player?.destroy({ resumeNative });
     player = null;
@@ -384,7 +491,7 @@
     stats.mode = settings.mode;
     publish();
     try {
-      player = playerFactory.createPlayer({
+      player = playerFactory.createNativePlayer({
         container,
         identity,
         getSettings: () => settings,
@@ -469,6 +576,7 @@
       const previous = settings;
       settings = core.normalizeSettings(event.data.payload);
       stats.mode = settings.mode;
+      syncSettingsMenu();
       if (!settings.enabled) stopPlayer(true);
       else if (!previous.enabled || previous.mode !== settings.mode) restartPlayer(true);
       else {
@@ -485,9 +593,20 @@
   history.pushState = function (...args) { const result = nativePushState(...args); restartPlayer(false); return result; };
   history.replaceState = function (...args) { const result = nativeReplaceState(...args); restartPlayer(false); return result; };
   root.addEventListener("popstate", () => restartPlayer(false));
+  const settingsObserver = new MutationObserver(scheduleSettingsMenuSync);
+  const startSettingsObserver = () => {
+    if (!document.documentElement) {
+      document.addEventListener("readystatechange", startSettingsObserver, { once: true });
+      return;
+    }
+    settingsObserver.observe(document.documentElement, { childList: true, subtree: true });
+    syncSettingsMenu();
+  };
+  startSettingsObserver();
   setInterval(() => {
     const identity = routeIdentity();
     if (settings.enabled && (!player || playerRoute !== identity?.key || !playerContainer?.isConnected || !player.video?.isConnected)) startPlayer();
+    syncSettingsMenu();
   }, 1000);
 
   Object.defineProperty(root, "__biliThreadRipperDebug", {
@@ -497,7 +616,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.9.0"
+      version: "0.9.0.1"
     })
   });
   publish();

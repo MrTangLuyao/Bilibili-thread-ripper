@@ -39,13 +39,13 @@
     hiddenOnSecondLoad: !repeatedPanel
   };
   result.pass = result.firstPanelVisible
-    && result.version === "0.9.0"
+    && result.version === "0.9.0.1"
     && result.defaultMode === "mainland"
     && result.defaultThreadIndex === "3"
     && result.savedMode === "overseas"
     && result.savedConcurrency === 64
     && result.savedEnabled === true
-    && result.completedRevision === "native-player-v1"
+    && result.completedRevision === "native-progressive-mse-v1"
     && result.removedAfterSave
     && result.hiddenOnSecondLoad;
   resultNode.textContent = JSON.stringify(result, null, 2);

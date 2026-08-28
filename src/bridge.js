@@ -2,12 +2,12 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.9.0";
+  const VERSION = "0.9.0.1";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
   const ONBOARDING_ID = "__bilibili_thread_ripper_onboarding__";
   const ONBOARDING_STYLE_ID = "__bilibili_thread_ripper_onboarding_style__";
   const ONBOARDING_STORAGE_KEY = "btrOnboardingRevision";
-  const ONBOARDING_REVISION = "native-player-v1";
+  const ONBOARDING_REVISION = "native-progressive-mse-v1";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
   const DEFAULT_DANMAKU = Object.freeze({
     visible: true,

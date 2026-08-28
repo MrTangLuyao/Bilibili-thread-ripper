@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Bilibili 线程撕裂者",
   "short_name": "线程撕裂者",
-  "version": "0.9.0",
+  "version": "0.9.0.1",
   "description": "保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。",
   "minimum_chrome_version": "114",
   "permissions": [
@@ -46,7 +46,8 @@
         "src/cdn-resolver.js",
         "src/sidx.js",
         "src/idm-downloader.js",
-        "src/native-player.js"
+        "src/native-mse-player.js",
+        "src/page-hook.js"
       ],
       "run_at": "document_start",
       "world": "MAIN"

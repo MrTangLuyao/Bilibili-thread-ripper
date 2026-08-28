@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR native UI progressive MSE test</title>
+  <style>
+    html,body{margin:0;background:#202124;color:#fff;font-family:sans-serif}
+    #bilibili-player{width:960px;margin:20px auto}
+    .bpx-player-container{position:relative;width:960px;height:540px;background:#000}
+    video{width:100%;height:100%}
+    .bpx-player-controls{height:42px;background:#111;padding:8px;box-sizing:border-box}
+    #native-mse-result{width:960px;margin:0 auto;white-space:pre-wrap;font:13px/1.5 monospace}
+  </style>
+</head>
+<body>
+  <div id="bilibili-player">
+    <div class="bpx-player-container"><video muted></video><div class="bpx-player-controls">B 站原生控制栏占位</div></div>
+  </div>
+  <pre id="native-mse-result">starting</pre>
+  <script src="/src/range-core.js"></script>
+  <script src="/src/cdn-resolver.js"></script>
+  <script src="/src/sidx.js"></script>
+  <script src="/src/idm-downloader.js"></script>
+  <script src="/src/native-mse-player.js"></script>
+  <script src="/dev/native-mse-test.js"></script>
+</body>
+</html>
