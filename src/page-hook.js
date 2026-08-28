@@ -25,7 +25,7 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.9",
+    version: "0.8.9.2",
     architecture: "artplayer-mse-idm-adaptive-startup-danmaku-subtitle",
     mode: settings.mode,
     playerState: "waiting",
@@ -190,6 +190,7 @@
   }
 
   const routePlayinfo = new Map();
+  const bootRouteKey = routeIdentity()?.key || "";
 
   function cachePlayinfo(identity, playinfo) {
     if (!identity || !isDashPlayinfo(playinfo)) return false;
@@ -204,12 +205,13 @@
     if (isDashPlayinfo(cached)) return cached;
     try {
       const initialIdentity = stateIdentity(root.__INITIAL_STATE__);
-      if (initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
+      if (identity?.key === bootRouteKey && initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
         cachePlayinfo(identity, root.__playinfo__);
         return root.__playinfo__;
       }
     } catch (_error) {}
     const scripts = Array.from(document.scripts || []).reverse();
+    if (identity?.key !== bootRouteKey) return null;
     for (const script of scripts) {
       const text = script.textContent || "";
       if (!text.includes("__playinfo__") || !text.includes("__INITIAL_STATE__")) continue;
@@ -495,7 +497,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.8.9"
+      version: "0.8.9.2"
     })
   });
   publish();

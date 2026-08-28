@@ -33,8 +33,9 @@
   function normalizeExpectedIdentity(input) {
     const bvid = String(input?.bvid || "").trim();
     const aid = Number(input?.aid) || 0;
+    const cid = Number(input?.cid) || 0;
     const part = Math.max(1, Math.trunc(Number(input?.part)) || 1);
-    return bvid || aid ? { aid, bvid, part } : null;
+    return bvid || aid ? { aid, bvid, cid, part } : null;
   }
 
   function identityFromInitialState(expectedInput) {
@@ -60,7 +61,10 @@
 
   async function resolveIdentity(nativeFetch, expectedInput, signal) {
     const expected = normalizeExpectedIdentity(expectedInput);
-    const initial = identityFromInitialState(expected);
+    if (expected?.cid > 0) return { aid: expected.aid, bvid: expected.bvid, cid: expected.cid };
+    // Bilibili 的 SPA 切换会短暂出现“新 BVID + 旧 CID”的混合全局状态。
+    // 只在没有明确路由身份的首次兼容路径中读取 __INITIAL_STATE__。
+    const initial = expected ? null : identityFromInitialState();
     if (initial) return initial;
     const key = expected || currentVideoKey();
     if (!key.bvid && !key.aid) throw new Error("无法识别当前视频");
@@ -74,12 +78,16 @@
     const body = await response.json();
     if (Number(body?.code) !== 0 || !body?.data) throw new Error(body?.message || "无法读取视频信息");
     const data = body.data;
+    const canonicalBvid = String(data.bvid || "");
+    const canonicalAid = Number(data.aid) || 0;
+    if (expected?.bvid && canonicalBvid.toLowerCase() !== expected.bvid.toLowerCase()) throw new Error("视频身份校验失败（BVID 不一致）");
+    if (!expected?.bvid && expected?.aid && canonicalAid !== expected.aid) throw new Error("视频身份校验失败（AID 不一致）");
     const pages = Array.isArray(data.pages) ? data.pages : [];
     const pageIndex = expected ? expected.part - 1 : currentPartIndex();
     const page = pages[pageIndex] || pages[0];
     const cid = Number(page?.cid || data.cid);
     if (!Number.isSafeInteger(cid) || cid <= 0) throw new Error("视频信息缺少 cid");
-    return { aid: Number(data.aid) || 0, bvid: String(data.bvid || key.bvid || ""), cid };
+    return { aid: canonicalAid, bvid: canonicalBvid || key.bvid || "", cid };
   }
 
   function requestDanmakuXml(cid) {
@@ -340,7 +348,7 @@
     const getArt = options.getArt;
     const initialSettings = normalizeDanmakuSettings(options.settings);
     const initialConfig = settingsToConfig(initialSettings);
-    const identityPromise = resolveIdentity(nativeFetch, options.identity);
+    const identityPromise = options.identityPromise || resolveIdentity(nativeFetch, options.identity);
     const pluginFactory = root.artplayerPluginDanmuku({
       danmuku: async () => {
         try {

@@ -7,6 +7,7 @@
   const calls = [];
   let resolvedIdentity = null;
   let identityError = "";
+  let mixedStateCid = 0;
   const nativeVideo = document.querySelector("video");
 
   history.replaceState(null, "", `/video/${OLD_BVID}`);
@@ -52,10 +53,10 @@
     throw new Error(`unexpected request: ${url}`);
   };
 
-  root.__navigationTest = { calls, OLD_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; } };
+  root.__navigationTest = { calls, OLD_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
   const result = document.getElementById("navigation-result");
   setInterval(() => {
-    result.textContent = JSON.stringify({ calls, resolvedIdentity, identityError, debugVersion: root.__biliThreadRipperDebug?.version || "", href: location.href });
+    result.textContent = JSON.stringify({ calls, resolvedIdentity, identityError, mixedStateCid, debugVersion: root.__biliThreadRipperDebug?.version || "", href: location.href });
   }, 50);
   setTimeout(() => {
     root.postMessage({ channel: CHANNEL, type: "settings", payload: { enabled: true, mode: "mainland", concurrency: 32 } }, "*");
@@ -64,6 +65,9 @@
     if (!calls.some((item) => item.marker === OLD_BVID)) return;
     clearInterval(switchTimer);
     history.pushState(null, "", `/video/${NEW_BVID}`);
+    // 模拟 Bilibili 导航竞态：BVID 已变为新视频，但 CID 仍残留旧视频。
+    root.__INITIAL_STATE__.videoData.bvid = NEW_BVID;
+    mixedStateCid = Number(root.__INITIAL_STATE__.videoData.cid);
     root.__BILI_DANMAKU_FACTORY__.resolveIdentity(root.fetch, { bvid: NEW_BVID, part: 1 }).then(
       (identity) => { resolvedIdentity = identity; },
       (error) => { identityError = String(error?.message || error); }

@@ -84,13 +84,27 @@
     return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
   }
 
+  function normalizeCueContent(value) {
+    return String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u2028\u2029]/g, "\n")
+      .replace(/\\[Nn]/g, "\n")
+      .replace(/<br\s*\/?\s*>/gi, "\n")
+      .replace(/(?:&#10;|&#x0*A;|&NewLine;)/gi, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/-->/g, "→")
+      .trim();
+  }
+
   function subtitleJsonToVtt(payload) {
     const entries = Array.isArray(payload?.body) ? payload.body : [];
     const cues = [];
     for (const entry of entries) {
       const from = Number(entry?.from);
       const to = Number(entry?.to);
-      const content = String(entry?.content || "").replace(/\r/g, "").replace(/-->/g, "→").trim();
+      const content = normalizeCueContent(entry?.content);
       if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from || !content) continue;
       cues.push(`${vttTimestamp(from)} --> ${vttTimestamp(to)}\n${content}`);
     }
@@ -132,10 +146,14 @@
     });
   }
 
-  async function resolveSubtitleTracks(nativeFetch, signal, expectedIdentity) {
+  async function resolveSubtitleTracks(nativeFetch, signal, expectedIdentity, identityPromise, onIdentity) {
     const danmakuFactory = root.__BILI_DANMAKU_FACTORY__;
     if (!danmakuFactory?.resolveIdentity) return [];
-    const identity = await danmakuFactory.resolveIdentity(nativeFetch, expectedIdentity, signal);
+    const identity = identityPromise
+      ? await identityPromise
+      : await danmakuFactory.resolveIdentity(nativeFetch, expectedIdentity, signal);
+    if (signal?.aborted) throw signal.reason || new DOMException("字幕任务已取消", "AbortError");
+    onIdentity?.(identity);
     const query = new URLSearchParams({ cid: String(identity.cid) });
     if (identity.bvid) query.set("bvid", identity.bvid);
     if (identity.aid) query.set("aid", String(identity.aid));
@@ -147,6 +165,12 @@
     if (!response.ok) throw new Error(`字幕列表请求失败：HTTP ${response.status}`);
     const payload = await response.json();
     if (Number(payload?.code) !== 0) throw new Error(payload?.message || "字幕列表请求失败");
+    const responseBvid = String(payload?.data?.bvid || "");
+    const responseAid = Number(payload?.data?.aid) || 0;
+    const responseCid = Number(payload?.data?.cid) || 0;
+    if (identity.bvid && responseBvid.toLowerCase() !== identity.bvid.toLowerCase()) throw new Error("字幕身份校验失败（BVID 不一致）");
+    if (identity.aid && responseAid !== Number(identity.aid)) throw new Error("字幕身份校验失败（AID 不一致）");
+    if (responseCid !== Number(identity.cid)) throw new Error("字幕身份校验失败（CID 不一致）");
     return normalizeTracks(payload?.data?.subtitle?.subtitles);
   }
 
@@ -168,7 +192,22 @@
     let lastPreference = normalizeLastSubtitlePreference(options.lastPreference);
     if (preference !== OFF_VALUE) lastPreference = preference;
     let tracks = [];
+    let resolvedIdentity = null;
     const vttCache = new Map();
+    let selectionGeneration = 0;
+    let switchQueue = Promise.resolve();
+
+    function routeStillMatches() {
+      const expected = options.identity;
+      if (!expected?.bvid && !expected?.aid) return true;
+      const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(root.location.pathname);
+      if (!match) return false;
+      const routeId = match[1];
+      if (expected.bvid && routeId.toLowerCase() !== String(expected.bvid).toLowerCase()) return false;
+      if (!expected.bvid && expected.aid && Number(routeId.slice(2)) !== Number(expected.aid)) return false;
+      const part = Math.max(1, Number(new URLSearchParams(root.location.search).get("p")) || 1);
+      return part === Math.max(1, Number(expected.part) || 1);
+    }
 
     function updateSelectorCurrent(value) {
       const control = art?.template?.$controlsRight?.querySelector?.(".art-control-btr-subtitle");
@@ -185,49 +224,57 @@
       activeUrl = "";
     }
 
-    async function switchVtt(vtt, name) {
-      if (disposed) return;
-      const nextUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt;charset=utf-8" }));
-      const previous = activeUrl;
-      activeUrl = nextUrl;
-      try {
-        await art.subtitle.switch(nextUrl, {
-          type: "vtt",
-          name,
-          escape: true,
-          encoding: "utf-8",
-          style: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.95)" }
-        });
-      } catch (error) {
-        if (activeUrl === nextUrl) activeUrl = "";
-        URL.revokeObjectURL(nextUrl);
-        throw error;
-      } finally {
-        if (previous) URL.revokeObjectURL(previous);
-      }
+    function switchVtt(vtt, name, generation) {
+      const task = switchQueue.catch(() => {}).then(async () => {
+        if (disposed || generation !== selectionGeneration || !routeStillMatches()) return;
+        const nextUrl = URL.createObjectURL(new Blob([vtt], { type: "text/vtt;charset=utf-8" }));
+        const previous = activeUrl;
+        activeUrl = nextUrl;
+        try {
+          await art.subtitle.switch(nextUrl, {
+            type: "vtt",
+            name,
+            escape: true,
+            encoding: "utf-8",
+            style: { color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,.95)" }
+          });
+        } catch (error) {
+          if (activeUrl === nextUrl) activeUrl = "";
+          URL.revokeObjectURL(nextUrl);
+          throw error;
+        } finally {
+          if (previous) URL.revokeObjectURL(previous);
+        }
+      });
+      switchQueue = task;
+      return task;
     }
 
     async function select(value, persist = true) {
+      if (disposed || !routeStillMatches()) return;
+      const generation = ++selectionGeneration;
       const requested = normalizeSubtitlePreference(value);
       preference = requested;
       if (requested !== OFF_VALUE) lastPreference = requested;
       updateSelectorCurrent(requested);
       if (persist) options.onPreferenceChange?.(requested, lastPreference);
       if (requested === OFF_VALUE) {
-        await switchVtt(OFF_VTT, "关闭");
+        await switchVtt(OFF_VTT, "关闭", generation);
         return;
       }
       const track = tracks.find((item) => item.lan === requested);
       if (!track) {
-        await switchVtt(OFF_VTT, "关闭");
+        await switchVtt(OFF_VTT, "关闭", generation);
         return;
       }
       let vtt = vttCache.get(track.url);
       if (!vtt) {
         vtt = await fetchSubtitleVtt(track, controller.signal);
+        if (disposed || generation !== selectionGeneration || !routeStillMatches()) return;
         vttCache.set(track.url, vtt);
       }
-      await switchVtt(vtt, track.label);
+      if (generation !== selectionGeneration) return;
+      await switchVtt(vtt, track.label, generation);
     }
 
     async function toggle() {
@@ -242,8 +289,10 @@
 
     const ready = (async () => {
       try {
-        tracks = await resolveSubtitleTracks(nativeFetch, controller.signal, options.identity);
-        if (disposed || !tracks.length) return [];
+        tracks = await resolveSubtitleTracks(nativeFetch, controller.signal, options.identity, options.identityPromise, (identity) => {
+          resolvedIdentity = { aid: Number(identity.aid) || 0, bvid: String(identity.bvid || ""), cid: Number(identity.cid) || 0 };
+        });
+        if (disposed || !routeStillMatches() || !tracks.length) return [];
         const selected = tracks.find((item) => item.lan === preference) || null;
         art.controls.add({
           name: "btr-subtitle",
@@ -283,10 +332,11 @@
     return Object.freeze({
       destroy() {
         disposed = true;
+        selectionGeneration += 1;
         controller.abort(new DOMException("字幕任务已取消", "AbortError"));
         revokeActiveUrl();
       },
-      getDebug: () => ({ count: tracks.length, preference, lastPreference, enabled: preference !== OFF_VALUE, labels: tracks.map((track) => track.label) }),
+      getDebug: () => ({ count: tracks.length, preference, lastPreference, enabled: preference !== OFF_VALUE, identity: resolvedIdentity, labels: tracks.map((track) => track.label) }),
       ready,
       select,
       setLastPreference(value) {
@@ -302,6 +352,7 @@
     attach,
     isAiTrack,
     normalizeLastSubtitlePreference,
+    normalizeCueContent,
     normalizeSubtitlePreference,
     normalizeTracks,
     resolveSubtitleTracks,

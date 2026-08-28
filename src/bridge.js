@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.8.9";
+  const VERSION = "0.8.9.2";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
   const DEFAULT_DANMAKU = Object.freeze({
     visible: true,

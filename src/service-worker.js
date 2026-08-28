@@ -24,7 +24,7 @@ async function fetchSubtitleText(value) {
       const response = await fetch(url, {
         method: "GET",
         credentials: "omit",
-        cache: attempt === 0 ? "default" : "no-cache",
+        cache: "no-store",
         signal: controller.signal
       });
       if (!response.ok) {

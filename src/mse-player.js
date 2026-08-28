@@ -153,7 +153,7 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.9";
+    overlay.dataset.version = "0.8.9.2";
     overlay.dataset.mode = settings.mode;
     overlay.dataset.handoff = "true";
     overlay.dataset.error = "false";
@@ -167,7 +167,7 @@
       <div class="btr-status" role="alert"></div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.9";
+    style.dataset.btrPlayerStyle = "0.8.9.2";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
@@ -189,8 +189,8 @@
       #${PLAYER_ID} .art-control-btr-subtitle .art-selector-value{display:flex!important;align-items:center!important;justify-content:center!important;height:100%!important;line-height:1!important}
       #${PLAYER_ID} .btr-cc-icon{position:relative!important;display:inline-flex!important;box-sizing:border-box!important;width:24px!important;height:18px!important;align-items:center!important;justify-content:center!important;overflow:visible!important;border:1.7px solid currentColor!important;border-radius:3px!important;color:#fff!important;background:transparent!important;font:700 10px/1 Arial,sans-serif!important;letter-spacing:-.35px!important;text-shadow:none!important}
       #${PLAYER_ID} .btr-subtitle-off .btr-cc-icon:after{content:""!important;position:absolute!important;left:-2px!important;top:50%!important;width:28px!important;height:2px!important;border-radius:2px!important;background:#fff!important;box-shadow:0 0 0 1px rgba(0,0,0,.88)!important;transform:translateY(-50%) rotate(-45deg)!important;transform-origin:center!important;pointer-events:none!important}
-      #${PLAYER_ID} .art-subtitle{bottom:74px!important;padding:0 7%!important;font-size:clamp(18px,2.2vw,34px)!important;line-height:1.38!important;pointer-events:none!important}
-      #${PLAYER_ID} .art-subtitle-line{display:inline-block!important;max-width:100%!important;margin:2px auto!important;padding:2px 7px!important;border-radius:2px!important;background:rgba(0,0,0,.56)!important;box-decoration-break:clone!important;-webkit-box-decoration-break:clone!important}
+      #${PLAYER_ID} .art-subtitle{box-sizing:border-box!important;bottom:74px!important;padding:0 7%!important;font-size:clamp(18px,2.2vw,34px)!important;line-height:1.38!important;white-space:normal!important;overflow-wrap:anywhere!important;pointer-events:none!important}
+      #${PLAYER_ID} .art-subtitle-line{display:inline-block!important;box-sizing:border-box!important;min-width:0!important;max-width:100%!important;margin:2px auto!important;padding:2px 7px!important;border-radius:2px!important;background:rgba(0,0,0,.56)!important;white-space:normal!important;overflow-wrap:anywhere!important;word-break:break-word!important;box-decoration-break:clone!important;-webkit-box-decoration-break:clone!important}
       @container (max-width:620px){
         #${PLAYER_ID} .art-controls{padding:0 6px!important}
         #${PLAYER_ID} .art-control{padding-left:5px!important;padding-right:5px!important}
@@ -245,6 +245,9 @@
     const getSettings = options.getSettings;
     const initialSettings = core.normalizeSettings(getSettings());
     const selection = selectRepresentations(options.playinfo);
+    const identityPromise = danmakuFactory?.resolveIdentity
+      ? danmakuFactory.resolveIdentity(options.nativeFetch, options.identity)
+      : null;
     const downloader = downloaderFactory.createDownloader({
       getSettings,
       nativeFetch: options.nativeFetch,
@@ -903,6 +906,7 @@
       plugins.push(danmakuFactory.createPlugin({
         nativeFetch: options.nativeFetch,
         identity: options.identity,
+        identityPromise,
         getArt: () => art,
         settings: initialSettings.danmaku,
         onSettingsChange(danmaku) {
@@ -975,6 +979,7 @@
         art,
         nativeFetch: options.nativeFetch,
         identity: options.identity,
+        identityPromise,
         preference: initialSettings.subtitleLanguage,
         lastPreference: initialSettings.subtitleLastLanguage,
         onPreferenceChange(subtitleLanguage, subtitleLastLanguage) {
@@ -1042,7 +1047,7 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.9",
+        version: "0.8.9.2",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
         playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",

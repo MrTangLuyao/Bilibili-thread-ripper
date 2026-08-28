@@ -29,6 +29,15 @@
     if (!response.ok) throw new Error(await response.text());
     return response.json();
   });
+  const subtitleBody = search.get("subtitleCase") === "wrap"
+    ? [
+        { from: 0.2, to: 30, content: "第一行\\NThisIsAnExtremelyLongUnbrokenEnglishSubtitleThatMustWrapInsideThePlayerWithoutOverflowing" },
+        { from: 0.2, to: 30, content: "第三行<br>第四行" }
+      ]
+    : [
+        { from: 0.2, to: 2.4, content: "字幕功能测试" },
+        { from: 2.5, to: 4.8, content: "第二行字幕" }
+      ];
   window.__INITIAL_STATE__ = { videoData: { aid: 0, bvid: config.bvid, cid: config.cid } };
   window.addEventListener("message", async (event) => {
     if (event.source !== window || event.data?.channel !== "__BILI_RANGE_ACCELERATOR_V1__") return;
@@ -46,10 +55,7 @@
         channel: "__BILI_RANGE_ACCELERATOR_V1__",
         type: "subtitle-response",
         requestId: event.data.requestId,
-        payload: { ok: true, text: JSON.stringify({ body: [
-          { from: 0.2, to: 2.4, content: "字幕功能测试" },
-          { from: 2.5, to: 4.8, content: "第二行字幕" }
-        ] }) }
+        payload: { ok: true, text: JSON.stringify({ body: subtitleBody }) }
       }, "*");
     }
   });
@@ -67,6 +73,9 @@
         return Promise.resolve(new Response(JSON.stringify({
           code: 0,
           data: {
+            aid: 0,
+            bvid: config.bvid,
+            cid: Number(config.cid),
             subtitle: {
               subtitles: [
                 { id: 1, lan: "zh-Hans", lan_doc: "中文（简体）", ai_type: 0, subtitle_url: "https://aisubtitle.hdslb.com/mock-manual.json" },
@@ -78,10 +87,7 @@
         }), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       if (/^https:\/\/aisubtitle\.hdslb\.com\/mock-/i.test(value)) {
-        return Promise.resolve(new Response(JSON.stringify({ body: [
-          { from: 0.2, to: 2.4, content: "字幕功能测试" },
-          { from: 2.5, to: 4.8, content: "第二行字幕" }
-        ] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+        return Promise.resolve(new Response(JSON.stringify({ body: subtitleBody }), { status: 200, headers: { "Content-Type": "application/json" } }));
       }
       return /(?:bilivideo\.(?:com|cn|net)|akamaized\.net)/i.test(value)
         ? window.fetch(`/media?url=${encodeURIComponent(value)}`, init)
