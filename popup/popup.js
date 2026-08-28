@@ -33,11 +33,11 @@ function shortHost(host) {
 function stateText(value) {
   return ({
     waiting: "等待视频",
-    loading: "正在建立播放器",
-    ready: "ArtPlayer 运行中",
+    loading: "正在建立加速连接",
+    ready: "B站原生播放器加速中",
     ended: "播放结束",
-    error: "播放器发生错误",
-    "native-fallback": "已回到原生播放器",
+    error: "加速连接发生错误",
+    "native-fallback": "已使用 B站原始连接",
     disabled: "已关闭"
   })[value] || "等待视频";
 }

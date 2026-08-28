@@ -153,7 +153,7 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.9.2";
+    overlay.dataset.version = "0.9.0";
     overlay.dataset.mode = settings.mode;
     overlay.dataset.handoff = "true";
     overlay.dataset.error = "false";
@@ -167,7 +167,7 @@
       <div class="btr-status" role="alert"></div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.9.2";
+    style.dataset.btrPlayerStyle = "0.9.0";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
@@ -1047,7 +1047,7 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.9.2",
+        version: "0.9.0",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
         playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",

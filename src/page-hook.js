@@ -25,7 +25,7 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.9.2",
+    version: "0.9.0",
     architecture: "artplayer-mse-idm-adaptive-startup-danmaku-subtitle",
     mode: settings.mode,
     playerState: "waiting",
@@ -497,7 +497,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.8.9.2"
+      version: "0.9.0"
     })
   });
   publish();

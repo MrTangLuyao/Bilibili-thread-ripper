@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR native player interceptor test</title>
+</head>
+<body>
+  <div id="bilibili-player">
+    <div class="bpx-player-container"><video></video></div>
+    <div class="bpx-player-ctrl-quality-result">4K 超高清</div>
+    <div class="bpx-player-ctrl-setting-menu-right">
+      <div class="bpx-player-ctrl-setting-others">其他设置</div>
+    </div>
+  </div>
+  <pre id="native-player-result">starting</pre>
+  <script>
+    window.__nativePlayerTestFetch = window.fetch.bind(window);
+    window.fetch = async function fakeCdnFetch(input, init) {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (!/\.m4s$/i.test(url.pathname)) return window.__nativePlayerTestFetch(input, init);
+      const headers = new Headers(input instanceof Request ? input.headers : undefined);
+      if (init?.headers) new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+      const match = /^bytes=(\d+)-(\d+)$/i.exec(headers.get("range") || "");
+      if (!match) return new Response("range required", { status: 416 });
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      const total = 24 * 1024 * 1024;
+      const bytes = new Uint8Array(end - start + 1);
+      for (let index = 0; index < bytes.length; index += 1) bytes[index] = (start + index) % 251;
+      // 完整 8 MiB 原始 Range 人为变慢，子块保持快速，用来验证竞速确实
+      // 能让多线程获胜；1 MiB 请求则验证原生直通不被再次切碎。
+      const isFastRoute = /fast-video-/i.test(url.pathname);
+      await new Promise((resolve) => setTimeout(resolve, isFastRoute ? 8 : bytes.byteLength >= 8 * 1024 * 1024 ? 360 : 8 + start % 11));
+      return new Response(bytes, {
+        status: 206,
+        headers: {
+          "content-length": String(bytes.byteLength),
+          "content-range": `bytes ${start}-${end}/${total}`,
+          "content-type": "video/mp4"
+        }
+      });
+    };
+    window.__playinfo__ = {
+      data: {
+        dash: {
+          video: [
+            { id: 120, baseUrl: "https://upos-sz-mirrorali.bilivideo.com/test/video-100029.m4s", backupUrl: [], segment_base: { index_range: "0-999" } },
+            { id: 120, baseUrl: "https://upos-sz-mirrorali.bilivideo.com/test/fast-video-100030.m4s", backupUrl: [], segment_base: { index_range: "0-999" } }
+          ],
+          audio: []
+        }
+      }
+    };
+  </script>
+  <script src="/src/range-core.js"></script>
+  <script src="/src/cdn-resolver.js"></script>
+  <script src="/src/sidx.js"></script>
+  <script src="/src/idm-downloader.js"></script>
+  <script src="/src/native-player.js"></script>
+  <script src="/dev/native-player-test.js"></script>
+</body>
+</html>

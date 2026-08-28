@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR 0.9.0 首次引导测试</title>
+</head>
+<body>
+  <main><h1>模拟 B 站页面</h1><pre id="result">testing</pre></main>
+  <script>
+    (() => {
+      const syncState = {};
+      const localState = {};
+      const changeListeners = [];
+      function area(state, areaName) {
+        return {
+          get(defaults, callback) { callback({ ...(defaults || {}), ...state }); },
+          set(update, callback) {
+            const changes = {};
+            for (const [key, value] of Object.entries(update || {})) {
+              changes[key] = { oldValue: state[key], newValue: value };
+              state[key] = value;
+            }
+            if (areaName === "sync") for (const listener of changeListeners) listener(changes, areaName);
+            callback?.();
+          }
+        };
+      }
+      globalThis.__btrTestStorage = { syncState, localState };
+      globalThis.chrome = {
+        runtime: {
+          lastError: null,
+          sendMessage() { return Promise.resolve({ ok: true }); },
+          onMessage: { addListener() {} }
+        },
+        storage: {
+          sync: area(syncState, "sync"),
+          local: area(localState, "local"),
+          onChanged: { addListener(listener) { changeListeners.push(listener); } }
+        }
+      };
+    })();
+  </script>
+  <script src="/src/bridge.js"></script>
+  <script src="/dev/onboarding-test.js"></script>
+</body>
+</html>

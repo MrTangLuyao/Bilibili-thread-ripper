@@ -364,8 +364,14 @@
       const preferredUrls = parallel && typeof resolver.rangeCandidates === "function"
         ? resolver.rangeCandidates()
         : resolver.urls();
-      const effectiveConcurrency = parallel ? settings.concurrency : 1;
-      semaphore.setLimit(effectiveConcurrency);
+      const globalConcurrency = parallel ? settings.concurrency : 1;
+      const requestedConcurrency = Number.isFinite(Number(options.maxConcurrency))
+        ? Math.max(1, Math.trunc(Number(options.maxConcurrency)))
+        : globalConcurrency;
+      const effectiveConcurrency = parallel ? Math.min(globalConcurrency, requestedConcurrency) : 1;
+      // 后台预取可以限制自己的子块数，但不能降低全局信号量上限；
+      // 否则一个低优先级预取会把后续播放器的紧急请求也锁在低并发上。
+      semaphore.setLimit(globalConcurrency);
       const basePriority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 50;
       const rescueReserve = parallel && effectiveConcurrency >= 8
         ? Math.min(8, Math.max(1, Math.ceil(effectiveConcurrency / 8)))
