@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const INSTALL_FLAG = "__biliThreadRipper087Installed";
+  const INSTALL_FLAG = "__biliThreadRipper088Installed";
   if (root[INSTALL_FLAG]) return;
 
   const core = root.__BILI_RANGE_CORE__;
@@ -25,7 +25,7 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.7",
+    version: "0.8.8",
     architecture: "artplayer-mse-idm-adaptive-startup-danmaku",
     mode: settings.mode,
     playerState: "waiting",
@@ -494,7 +494,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.8.7"
+      version: "0.8.8"
     })
   });
   publish();

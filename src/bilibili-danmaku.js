@@ -109,13 +109,11 @@
       if ([7, 8, 9].includes(biliMode)) continue;
       const text = String(node.textContent || "").trim();
       if (!text) continue;
-      const fontSize = Math.max(12, Math.min(64, Number(fields[2]) || 25));
       output.push({
         text: text.slice(0, 1000),
         time: Math.max(0, Number(fields[0]) || 0),
         mode: biliMode === 5 ? 1 : biliMode === 4 ? 2 : 0,
-        color: decimalColor(fields[3]),
-        style: { fontSize: `${fontSize}px` }
+        color: decimalColor(fields[3])
       });
     }
     return output;
@@ -257,8 +255,9 @@
   function createPlugin(options) {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getArt = options.getArt;
+    const initialFontSize = Math.max(12, Math.min(64, Math.round(Number(options.fontSize) || 25)));
     const identityPromise = resolveIdentity(nativeFetch);
-    return root.artplayerPluginDanmuku({
+    const pluginFactory = root.artplayerPluginDanmuku({
       danmuku: async () => {
         try {
           const identity = await identityPromise;
@@ -276,7 +275,8 @@
       opacity: 0.9,
       mode: 0,
       modes: [0, 1, 2],
-      fontSize: 25,
+      fontSize: initialFontSize,
+      FONT_SIZE: { min: 12, max: 64 },
       antiOverlap: true,
       synchronousPlayback: true,
       visible: true,
@@ -295,6 +295,18 @@
         }
       }
     });
+    return (art) => {
+      let initialized = false;
+      let lastFontSize = initialFontSize;
+      art.on("artplayerPluginDanmuku:config", (config) => {
+        const fontSize = Math.max(12, Math.min(64, Math.round(Number(config?.fontSize) || 25)));
+        if (initialized && fontSize !== lastFontSize) options.onFontSizeChange?.(fontSize);
+        lastFontSize = fontSize;
+      });
+      const plugin = pluginFactory(art);
+      initialized = true;
+      return plugin;
+    };
   }
 
   root.__BILI_DANMAKU_FACTORY__ = Object.freeze({

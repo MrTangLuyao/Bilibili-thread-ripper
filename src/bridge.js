@@ -2,9 +2,9 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.8.7";
+  const VERSION = "0.8.8";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
-  const DEFAULTS = { enabled: true, concurrency: 32, mode: "mainland" };
+  const DEFAULTS = { enabled: true, concurrency: 32, danmakuFontSize: 25, mode: "mainland" };
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
@@ -16,6 +16,7 @@
     return {
       enabled: input?.enabled !== false,
       concurrency: allowedThreads.includes(requested) ? requested : 32,
+      danmakuFontSize: Math.max(12, Math.min(64, Math.round(Number(input?.danmakuFontSize) || 25))),
       mode: input?.mode === "overseas" ? "overseas" : "mainland"
     };
   }
@@ -72,8 +73,12 @@
 
   chrome.storage.sync.get(DEFAULTS, (stored) => {
     latestSettings = normalizeStoredSettings({ ...DEFAULTS, ...stored });
-    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency) {
-      chrome.storage.sync.set({ mode: latestSettings.mode, concurrency: latestSettings.concurrency });
+    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || stored.danmakuFontSize !== latestSettings.danmakuFontSize) {
+      chrome.storage.sync.set({
+        mode: latestSettings.mode,
+        concurrency: latestSettings.concurrency,
+        danmakuFontSize: latestSettings.danmakuFontSize
+      });
     }
     loaded = true;
     syncWatermark();
@@ -117,6 +122,8 @@
       if (input.mode === "mainland" || input.mode === "overseas") update.mode = input.mode;
       const concurrency = Math.trunc(Number(input.concurrency));
       if ([4, 8, 16, 32, 64, 128].includes(concurrency)) update.concurrency = concurrency;
+      const danmakuFontSize = Math.round(Number(input.danmakuFontSize));
+      if (danmakuFontSize >= 12 && danmakuFontSize <= 64) update.danmakuFontSize = danmakuFontSize;
       if (Object.keys(update).length) chrome.storage.sync.set(update);
       return;
     }

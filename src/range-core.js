@@ -75,11 +75,13 @@
     const source = input && typeof input === "object" ? input : {};
     const allowed = [4, 8, 16, 32, 64, 128];
     const requested = Math.trunc(Number(source.concurrency));
+    const danmakuFontSize = Math.max(12, Math.min(64, Math.round(Number(source.danmakuFontSize) || 25)));
     const mode = source.mode === "overseas" ? "overseas" : "mainland";
     return {
       enabled: source.enabled !== false,
       mode,
       concurrency: allowed.includes(requested) ? requested : 32,
+      danmakuFontSize,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,
