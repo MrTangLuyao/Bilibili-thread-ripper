@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.8.8.1";
+  const VERSION = "0.8.9";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
   const DEFAULT_DANMAKU = Object.freeze({
     visible: true,
@@ -16,7 +16,7 @@
     mode: 0,
     color: "#FFFFFF"
   });
-  const DEFAULTS = { enabled: true, concurrency: 32, danmaku: DEFAULT_DANMAKU, mode: "mainland" };
+  const DEFAULTS = { enabled: true, concurrency: 32, volume: 0.7, danmaku: DEFAULT_DANMAKU, mode: "mainland", subtitleLanguage: "off", subtitleLastLanguage: "" };
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
@@ -48,11 +48,20 @@
   function normalizeStoredSettings(input) {
     const allowedThreads = [4, 8, 16, 32, 64, 128];
     const requested = Math.trunc(Number(input?.concurrency));
+    const requestedVolume = Number(input?.volume);
     return {
       enabled: input?.enabled !== false,
       concurrency: allowedThreads.includes(requested) ? requested : 32,
+      volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
       danmaku: normalizeDanmaku(input?.danmaku, input?.danmakuFontSize),
-      mode: input?.mode === "overseas" ? "overseas" : "mainland"
+      mode: input?.mode === "overseas" ? "overseas" : "mainland",
+      subtitleLanguage: /^[\w-]+$/i.test(String(input?.subtitleLanguage || "off"))
+        ? String(input.subtitleLanguage).slice(0, 48)
+        : "off",
+      subtitleLastLanguage: /^[\w-]+$/i.test(String(input?.subtitleLastLanguage || ""))
+        && String(input.subtitleLastLanguage).toLowerCase() !== "off"
+        ? String(input.subtitleLastLanguage).slice(0, 48)
+        : ""
     };
   }
 
@@ -112,10 +121,13 @@
       migrated.danmaku = { ...DEFAULT_DANMAKU, fontSize: stored.danmakuFontSize };
     }
     latestSettings = normalizeStoredSettings(migrated);
-    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || JSON.stringify(stored.danmaku) !== JSON.stringify(latestSettings.danmaku)) {
+    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || stored.volume !== latestSettings.volume || stored.subtitleLanguage !== latestSettings.subtitleLanguage || stored.subtitleLastLanguage !== latestSettings.subtitleLastLanguage || JSON.stringify(stored.danmaku) !== JSON.stringify(latestSettings.danmaku)) {
       chrome.storage.sync.set({
         mode: latestSettings.mode,
         concurrency: latestSettings.concurrency,
+        volume: latestSettings.volume,
+        subtitleLanguage: latestSettings.subtitleLanguage,
+        subtitleLastLanguage: latestSettings.subtitleLastLanguage,
         danmaku: latestSettings.danmaku
       });
     }
@@ -154,6 +166,21 @@
       );
       return;
     }
+    if (event.data.type === "subtitle-request") {
+      const requestId = String(event.data.requestId || "").slice(0, 100);
+      const url = String(event.data.url || "").slice(0, 4096);
+      if (!requestId || !url) return;
+      chrome.runtime.sendMessage({ type: "fetchSubtitleText", url }).then(
+        (payload) => window.postMessage({ channel: CHANNEL, type: "subtitle-response", requestId, payload }, "*"),
+        (error) => window.postMessage({
+          channel: CHANNEL,
+          type: "subtitle-response",
+          requestId,
+          payload: { ok: false, error: String(error?.message || error).slice(0, 180) }
+        }, "*")
+      );
+      return;
+    }
     if (event.data.type === "settings-update") {
       const input = event.data.payload;
       if (!input || typeof input !== "object") return;
@@ -161,7 +188,12 @@
       if (input.mode === "mainland" || input.mode === "overseas") update.mode = input.mode;
       const concurrency = Math.trunc(Number(input.concurrency));
       if ([4, 8, 16, 32, 64, 128].includes(concurrency)) update.concurrency = concurrency;
+      const volume = Number(input.volume);
+      if (Number.isFinite(volume)) update.volume = Math.max(0, Math.min(1, volume));
       if (input.danmaku && typeof input.danmaku === "object") update.danmaku = normalizeDanmaku(input.danmaku);
+      if (/^[\w-]+$/i.test(String(input.subtitleLanguage || ""))) update.subtitleLanguage = String(input.subtitleLanguage).slice(0, 48);
+      if (input.subtitleLastLanguage === "") update.subtitleLastLanguage = "";
+      else if (/^[\w-]+$/i.test(String(input.subtitleLastLanguage || "")) && String(input.subtitleLastLanguage).toLowerCase() !== "off") update.subtitleLastLanguage = String(input.subtitleLastLanguage).slice(0, 48);
       if (Object.keys(update).length) chrome.storage.sync.set(update);
       return;
     }

@@ -96,10 +96,19 @@
       color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
     };
     const mode = source.mode === "overseas" ? "overseas" : "mainland";
+    const requestedVolume = Number(source.volume);
     return {
       enabled: source.enabled !== false,
       mode,
       concurrency: allowed.includes(requested) ? requested : 32,
+      volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
+      subtitleLanguage: /^[\w-]+$/i.test(String(source.subtitleLanguage || "off"))
+        ? String(source.subtitleLanguage).slice(0, 48)
+        : "off",
+      subtitleLastLanguage: /^[\w-]+$/i.test(String(source.subtitleLastLanguage || ""))
+        && String(source.subtitleLastLanguage).toLowerCase() !== "off"
+        ? String(source.subtitleLastLanguage).slice(0, 48)
+        : "",
       danmaku,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,

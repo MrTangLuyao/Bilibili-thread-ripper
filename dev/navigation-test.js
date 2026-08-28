@@ -5,6 +5,8 @@
   const OLD_BVID = "BV1oldRoute01";
   const NEW_BVID = "BV1newRoute02";
   const calls = [];
+  let resolvedIdentity = null;
+  let identityError = "";
   const nativeVideo = document.querySelector("video");
 
   history.replaceState(null, "", `/video/${OLD_BVID}`);
@@ -19,7 +21,7 @@
   root.__BILI_MSE_PLAYER_FACTORY__ = {
     createPlayer(options) {
       const marker = options.playinfo?.data?.marker || "";
-      const record = { destroyed: false, marker, resumeNative: null, route: location.pathname };
+      const record = { destroyed: false, marker, identity: options.identity || null, resumeNative: null, route: location.pathname };
       calls.push(record);
       return {
         applySettings() {},
@@ -50,10 +52,10 @@
     throw new Error(`unexpected request: ${url}`);
   };
 
-  root.__navigationTest = { calls, OLD_BVID, NEW_BVID };
+  root.__navigationTest = { calls, OLD_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; } };
   const result = document.getElementById("navigation-result");
   setInterval(() => {
-    result.textContent = JSON.stringify({ calls, debugVersion: root.__biliThreadRipperDebug?.version || "", href: location.href });
+    result.textContent = JSON.stringify({ calls, resolvedIdentity, identityError, debugVersion: root.__biliThreadRipperDebug?.version || "", href: location.href });
   }, 50);
   setTimeout(() => {
     root.postMessage({ channel: CHANNEL, type: "settings", payload: { enabled: true, mode: "mainland", concurrency: 32 } }, "*");
@@ -62,5 +64,9 @@
     if (!calls.some((item) => item.marker === OLD_BVID)) return;
     clearInterval(switchTimer);
     history.pushState(null, "", `/video/${NEW_BVID}`);
+    root.__BILI_DANMAKU_FACTORY__.resolveIdentity(root.fetch, { bvid: NEW_BVID, part: 1 }).then(
+      (identity) => { resolvedIdentity = identity; },
+      (error) => { identityError = String(error?.message || error); }
+    );
   }, 25);
 })(globalThis);

@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const INSTALL_FLAG = "__biliThreadRipper0881Installed";
+  const INSTALL_FLAG = "__biliThreadRipper089Installed";
   if (root[INSTALL_FLAG]) return;
 
   const core = root.__BILI_RANGE_CORE__;
@@ -25,8 +25,8 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.8.8.1",
-    architecture: "artplayer-mse-idm-adaptive-startup-danmaku",
+    version: "0.8.9",
+    architecture: "artplayer-mse-idm-adaptive-startup-danmaku-subtitle",
     mode: settings.mode,
     playerState: "waiting",
     quality: "",
@@ -384,6 +384,7 @@
     try {
       player = playerFactory.createPlayer({
         container,
+        identity,
         getSettings: () => settings,
         nativeFetch,
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
@@ -494,7 +495,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.8.8.1"
+      version: "0.8.9"
     })
   });
   publish();

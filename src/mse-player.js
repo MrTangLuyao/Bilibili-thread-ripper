@@ -6,6 +6,7 @@
   const resolverFactory = root.__BILI_CDN_RESOLVER_FACTORY__;
   const downloaderFactory = root.__BILI_IDM_DOWNLOADER_FACTORY__;
   const danmakuFactory = root.__BILI_DANMAKU_FACTORY__;
+  const subtitleFactory = root.__BILI_SUBTITLE_FACTORY__;
   if (!core || !sidxTools || !resolverFactory || !downloaderFactory || !root.MediaSource || !root.Artplayer) return;
 
   const PLAYER_ID = "__bilibili_thread_ripper_player__";
@@ -152,7 +153,7 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.8.1";
+    overlay.dataset.version = "0.8.9";
     overlay.dataset.mode = settings.mode;
     overlay.dataset.handoff = "true";
     overlay.dataset.error = "false";
@@ -166,7 +167,7 @@
       <div class="btr-status" role="alert"></div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.8.1";
+    style.dataset.btrPlayerStyle = "0.8.9";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
@@ -180,10 +181,43 @@
       @keyframes btr-material-rotate{to{transform:rotate(360deg)}}
       @keyframes btr-material-dash{0%{stroke-dasharray:24,126;stroke-dashoffset:0}50%{stroke-dasharray:90,126;stroke-dashoffset:-35px}100%{stroke-dasharray:24,126;stroke-dashoffset:-124px}}
       @media (prefers-reduced-motion:reduce){#${PLAYER_ID} .btr-loader svg{animation-duration:2.2s}#${PLAYER_ID} .btr-loader circle{animation:none;stroke-dasharray:82,126}}
-      #${PLAYER_ID} .art-video-player{--art-theme:#fb7299!important;font-family:"Microsoft YaHei",sans-serif!important}
+      #${PLAYER_ID} .art-video-player{--art-theme:#fb7299!important;font-family:"Microsoft YaHei",sans-serif!important;container-type:inline-size!important}
       #${PLAYER_ID} .art-bottom:before{background:rgba(0,0,0,.72)!important}
       #${PLAYER_ID} .art-settings,#${PLAYER_ID} .art-selector-list{box-shadow:none!important}
       #${PLAYER_ID} .art-control-btr-quality{min-width:58px!important;text-align:center!important}
+      #${PLAYER_ID} .art-control-btr-subtitle{width:40px!important;min-width:40px!important;color:#fff!important}
+      #${PLAYER_ID} .art-control-btr-subtitle .art-selector-value{display:flex!important;align-items:center!important;justify-content:center!important;height:100%!important;line-height:1!important}
+      #${PLAYER_ID} .btr-cc-icon{position:relative!important;display:inline-flex!important;box-sizing:border-box!important;width:24px!important;height:18px!important;align-items:center!important;justify-content:center!important;overflow:visible!important;border:1.7px solid currentColor!important;border-radius:3px!important;color:#fff!important;background:transparent!important;font:700 10px/1 Arial,sans-serif!important;letter-spacing:-.35px!important;text-shadow:none!important}
+      #${PLAYER_ID} .btr-subtitle-off .btr-cc-icon:after{content:""!important;position:absolute!important;left:-2px!important;top:50%!important;width:28px!important;height:2px!important;border-radius:2px!important;background:#fff!important;box-shadow:0 0 0 1px rgba(0,0,0,.88)!important;transform:translateY(-50%) rotate(-45deg)!important;transform-origin:center!important;pointer-events:none!important}
+      #${PLAYER_ID} .art-subtitle{bottom:74px!important;padding:0 7%!important;font-size:clamp(18px,2.2vw,34px)!important;line-height:1.38!important;pointer-events:none!important}
+      #${PLAYER_ID} .art-subtitle-line{display:inline-block!important;max-width:100%!important;margin:2px auto!important;padding:2px 7px!important;border-radius:2px!important;background:rgba(0,0,0,.56)!important;box-decoration-break:clone!important;-webkit-box-decoration-break:clone!important}
+      @container (max-width:620px){
+        #${PLAYER_ID} .art-controls{padding:0 6px!important}
+        #${PLAYER_ID} .art-control{padding-left:5px!important;padding-right:5px!important}
+        #${PLAYER_ID} .art-controls-center{flex:0 0 auto!important;min-width:0!important}
+        #${PLAYER_ID} .art-controls-center .artplayer-plugin-danmuku{width:auto!important;min-width:0!important;gap:6px!important}
+        #${PLAYER_ID} .art-controls-center .apd-emitter{display:none!important}
+        #${PLAYER_ID} .art-control-pip{display:none!important}
+        #${PLAYER_ID} .art-control-btr-quality{min-width:46px!important;font-size:12px!important}
+        #${PLAYER_ID} .art-subtitle{bottom:56px!important;padding:0 4%!important;font-size:clamp(15px,4.2vw,22px)!important}
+      }
+      @container (max-width:470px){
+        #${PLAYER_ID} .art-controls{padding:0 3px!important}
+        #${PLAYER_ID} .art-control{padding-left:3px!important;padding-right:3px!important}
+        #${PLAYER_ID} .art-control-playAndPause,#${PLAYER_ID} .art-control-volume,#${PLAYER_ID} .art-control-setting,#${PLAYER_ID} .art-control-fullscreen{width:36px!important;min-width:36px!important}
+        #${PLAYER_ID} .art-control-volume .art-volume-panel{display:none!important}
+        #${PLAYER_ID} .art-control-time{width:46px!important;min-width:46px!important;max-width:46px!important;overflow:hidden!important;white-space:nowrap!important}
+        #${PLAYER_ID} .art-control-btr-quality{min-width:40px!important;max-width:50px!important;overflow:hidden!important;white-space:nowrap!important}
+        #${PLAYER_ID} .art-control-btr-subtitle{width:32px!important;min-width:32px!important}
+        #${PLAYER_ID} .btr-cc-icon{width:22px!important;height:17px!important;font-size:9px!important}
+        #${PLAYER_ID} .btr-subtitle-off .btr-cc-icon:after{left:-2px!important;width:26px!important}
+        #${PLAYER_ID} .art-controls-center .artplayer-plugin-danmuku{gap:0!important;padding-left:0!important;padding-right:0!important}
+        #${PLAYER_ID} .art-controls-center .apd-icon{width:22px!important;height:22px!important}
+      }
+      @container (max-width:370px){
+        #${PLAYER_ID} .art-control-btr-quality{display:none!important}
+        #${PLAYER_ID} .art-control-time{font-size:12px!important}
+      }
     `;
     document.documentElement.append(style);
     const oldPosition = container.style.position;
@@ -227,7 +261,7 @@
       wasPaused: nativeVideo.paused
     }));
     const firstNative = nativeVideos[0];
-    const initialVolume = firstNative && firstNative.volume > 0 ? firstNative.volume : 0.7;
+    const initialVolume = initialSettings.volume;
     const capturedNativeTime = Number(firstNative?.currentTime) || 0;
     const initialTime = capturedNativeTime >= 2 ? capturedNativeTime : 0;
     const initialPlaybackRate = firstNative?.playbackRate || 1;
@@ -244,6 +278,8 @@
     let nativeTakenOver = true;
     let seekReloads = 0;
     let seekTimer = null;
+    let volumeSaveTimer = null;
+    let subtitleController = null;
     for (const entry of nativeVideos) {
       if (!entry.video.paused) entry.video.pause();
       entry.video.muted = true;
@@ -287,6 +323,30 @@
           const concurrency = valueAt(item);
           options.onSettingsChange?.({ concurrency });
           return `${concurrency} 线程`;
+        }
+      };
+    }
+
+    function volumeSetting(current) {
+      const percent = Math.round(Math.max(0, Math.min(1, Number(current.volume) || 0)) * 100);
+      const percentAt = (item) => Math.max(0, Math.min(100, Math.round(Number(item.range[0]) || 0)));
+      return {
+        name: "btr-volume",
+        html: "音量",
+        tooltip: `${percent}%`,
+        range: [percent, 0, 100, 1],
+        onChange(item) {
+          return `${percentAt(item)}%`;
+        },
+        onRange(item) {
+          const volume = percentAt(item) / 100;
+          if (video) {
+            video.volume = volume;
+            video.muted = volume <= 0;
+          }
+          if (session) session.resumeMuted = volume <= 0;
+          options.onSettingsChange?.({ volume });
+          return `${Math.round(volume * 100)}%`;
         }
       };
     }
@@ -569,14 +629,14 @@
       const requiredAhead = Math.max(0.5, Math.min(profile.target, remaining));
       if (!ready || Math.min(...ends) - target < requiredAhead) return;
 
-      const handoffVolume = nativeVideo && nativeVideo.volume > 0 ? nativeVideo.volume : initialVolume;
+      const handoffVolume = core.normalizeSettings(getSettings()).volume;
       const handoffRate = Number(nativeVideo?.playbackRate) || initialPlaybackRate;
       candidate.playAttempted = false;
       candidate.playbackActivated = true;
       candidate.playbackActivatedAt = performance.now();
       setCurrentTimeInternal(candidate, target);
       video.volume = handoffVolume;
-      video.muted = false;
+      video.muted = candidate.resumeMuted || handoffVolume <= 0;
       video.playbackRate = handoffRate;
       pauseNativeVideos();
       for (const entry of nativeVideos) {
@@ -669,6 +729,16 @@
       if (videoEventsBound || !video) return;
       videoEventsBound = true;
       video.addEventListener("seeking", scheduleSeek);
+      video.addEventListener("volumechange", () => {
+        if (session) session.resumeMuted = Boolean(video.muted);
+        clearTimeout(volumeSaveTimer);
+        if (video.muted) return;
+        volumeSaveTimer = setTimeout(() => {
+          volumeSaveTimer = null;
+          const volume = Math.round(Math.max(0, Math.min(1, Number(video.volume) || 0)) * 100) / 100;
+          if (Math.abs(core.normalizeSettings(getSettings()).volume - volume) > 0.001) options.onSettingsChange?.({ volume });
+        }, 160);
+      });
       video.addEventListener("timeupdate", () => ensureBuffer());
       video.addEventListener("playing", () => {
         const candidate = session;
@@ -763,6 +833,7 @@
         mediaBytesPerSecond: 0,
         startupWaitingEvents: 0,
         resumeWanted: playbackState.resume,
+        resumeMuted: Boolean(playbackState.muted),
         startTime: Math.max(0, Number(playbackState.time) || 0),
         suppressSeek: false,
         videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode),
@@ -831,6 +902,7 @@
     if (danmakuFactory && typeof root.artplayerPluginDanmuku === "function") {
       plugins.push(danmakuFactory.createPlugin({
         nativeFetch: options.nativeFetch,
+        identity: options.identity,
         getArt: () => art,
         settings: initialSettings.danmaku,
         onSettingsChange(danmaku) {
@@ -861,17 +933,16 @@
       pip: true,
       hotkey: true,
       fullscreen: true,
-      fullscreenWeb: true,
+      fullscreenWeb: false,
       miniProgressBar: true,
       mutex: true,
       plugins,
-      settings: [modeSetting(initialSettings), concurrencySetting(initialSettings)],
+      settings: [modeSetting(initialSettings), concurrencySetting(initialSettings), volumeSetting(initialSettings)],
       controls: [{
         name: "btr-quality",
         position: "right",
         index: 15,
         html: currentQuality(),
-        tooltip: "切换清晰度",
         selector: qualityItems,
         onSelect(item) {
           switchRepresentation(item.representation).catch((error) => {
@@ -892,20 +963,38 @@
             time: initialTime,
             resume: shouldAutoplay,
             volume: initialVolume,
-            muted: true,
+            muted: initialVolume <= 0,
             playbackRate: initialPlaybackRate
           });
         }
       }
     });
 
+    if (subtitleFactory?.attach) {
+      subtitleController = subtitleFactory.attach({
+        art,
+        nativeFetch: options.nativeFetch,
+        identity: options.identity,
+        preference: initialSettings.subtitleLanguage,
+        lastPreference: initialSettings.subtitleLastLanguage,
+        onPreferenceChange(subtitleLanguage, subtitleLastLanguage) {
+          const current = core.normalizeSettings(getSettings());
+          if (current.subtitleLanguage !== subtitleLanguage || current.subtitleLastLanguage !== subtitleLastLanguage) {
+            options.onSettingsChange?.({ subtitleLanguage, subtitleLastLanguage });
+          }
+        }
+      });
+    }
+
     function destroy({ resumeNative = true } = {}) {
       if (destroyed) return;
       destroyed = true;
       clearTimeout(seekTimer);
+      clearTimeout(volumeSaveTimer);
       const customTime = Number(video?.currentTime) || 0;
       const customWasPlaying = video ? !video.paused : false;
       if (session) disposeSession(session);
+      subtitleController?.destroy?.();
       try { art?.destroy(true); } catch (_error) {}
       ui.overlay.remove();
       ui.style.remove();
@@ -929,6 +1018,17 @@
       if (!art?.setting) return;
       art.setting.update(modeSetting(current));
       art.setting.update(concurrencySetting(current));
+      art.setting.update(volumeSetting(current));
+      if (video && Math.abs(video.volume - current.volume) > 0.001) {
+        video.volume = current.volume;
+        if (current.volume <= 0) video.muted = true;
+      }
+      if (subtitleController) {
+        subtitleController.setLastPreference?.(current.subtitleLastLanguage);
+        if (subtitleController.getDebug().preference !== current.subtitleLanguage) {
+          subtitleController.ready.then(() => subtitleController?.select(current.subtitleLanguage, false)).catch(() => {});
+        }
+      }
       const danmaku = art.plugins?.artplayerPluginDanmuku;
       if (danmaku) {
         const desired = danmakuFactory.settingsToConfig(current.danmaku);
@@ -942,7 +1042,7 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.8.1",
+        version: "0.8.9",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
         playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
@@ -966,6 +1066,7 @@
         streamEnded: Boolean(session?.streamEnded),
         danmaku: Boolean(art?.plugins?.artplayerPluginDanmuku),
         danmakuSettings: danmakuFactory?.configToSettings?.(art?.plugins?.artplayerPluginDanmuku?.option) || null,
+        subtitle: subtitleController?.getDebug?.() || null,
         tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, complete: track.complete, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       }),
       switchRepresentation,

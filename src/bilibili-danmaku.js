@@ -30,37 +30,53 @@
     return Number.isInteger(part) && part > 0 ? part - 1 : 0;
   }
 
-  function identityFromInitialState() {
+  function normalizeExpectedIdentity(input) {
+    const bvid = String(input?.bvid || "").trim();
+    const aid = Number(input?.aid) || 0;
+    const part = Math.max(1, Math.trunc(Number(input?.part)) || 1);
+    return bvid || aid ? { aid, bvid, part } : null;
+  }
+
+  function identityFromInitialState(expectedInput) {
     try {
+      const expected = normalizeExpectedIdentity(expectedInput);
       const state = root.__INITIAL_STATE__;
       const videoData = state?.videoData || state?.videoInfo || state?.ugcSeason?.sections?.[0]?.episodes?.[0];
       if (!videoData) return null;
+      const stateBvid = String(videoData.bvid || "");
+      const stateAid = Number(videoData.aid || videoData.id) || 0;
+      if (expected?.bvid && stateBvid.toLowerCase() !== expected.bvid.toLowerCase()) return null;
+      if (!expected?.bvid && expected?.aid && stateAid !== expected.aid) return null;
       const pages = Array.isArray(videoData.pages) ? videoData.pages : [];
-      const page = pages[currentPartIndex()] || pages[0];
+      const pageIndex = expected ? expected.part - 1 : currentPartIndex();
+      const page = pages[pageIndex] || pages[0];
       const cid = Number(page?.cid || videoData.cid);
-      const aid = Number(videoData.aid || videoData.id);
-      const bvid = String(videoData.bvid || currentVideoKey().bvid || "");
-      return Number.isSafeInteger(cid) && cid > 0 ? { aid, bvid, cid } : null;
+      const bvid = stateBvid || expected?.bvid || currentVideoKey().bvid || "";
+      return Number.isSafeInteger(cid) && cid > 0 ? { aid: stateAid || expected?.aid || 0, bvid, cid } : null;
     } catch (_error) {
       return null;
     }
   }
 
-  async function resolveIdentity(nativeFetch) {
-    const initial = identityFromInitialState();
+  async function resolveIdentity(nativeFetch, expectedInput, signal) {
+    const expected = normalizeExpectedIdentity(expectedInput);
+    const initial = identityFromInitialState(expected);
     if (initial) return initial;
-    const key = currentVideoKey();
+    const key = expected || currentVideoKey();
+    if (!key.bvid && !key.aid) throw new Error("无法识别当前视频");
     const query = key.bvid ? `bvid=${encodeURIComponent(key.bvid)}` : `aid=${encodeURIComponent(key.aid || "")}`;
     const response = await nativeFetch(`https://api.bilibili.com/x/web-interface/view?${query}`, {
       credentials: "include",
-      cache: "no-store"
+      cache: "no-store",
+      signal
     });
     if (!response.ok) throw new Error(`视频信息请求失败：HTTP ${response.status}`);
     const body = await response.json();
     if (Number(body?.code) !== 0 || !body?.data) throw new Error(body?.message || "无法读取视频信息");
     const data = body.data;
     const pages = Array.isArray(data.pages) ? data.pages : [];
-    const page = pages[currentPartIndex()] || pages[0];
+    const pageIndex = expected ? expected.part - 1 : currentPartIndex();
+    const page = pages[pageIndex] || pages[0];
     const cid = Number(page?.cid || data.cid);
     if (!Number.isSafeInteger(cid) || cid <= 0) throw new Error("视频信息缺少 cid");
     return { aid: Number(data.aid) || 0, bvid: String(data.bvid || key.bvid || ""), cid };
@@ -324,7 +340,7 @@
     const getArt = options.getArt;
     const initialSettings = normalizeDanmakuSettings(options.settings);
     const initialConfig = settingsToConfig(initialSettings);
-    const identityPromise = resolveIdentity(nativeFetch);
+    const identityPromise = resolveIdentity(nativeFetch, options.identity);
     const pluginFactory = root.artplayerPluginDanmuku({
       danmuku: async () => {
         try {
@@ -341,6 +357,8 @@
       ...initialConfig,
       FONT_SIZE: { min: 12, max: 64 },
       emitter: true,
+      // 始终挂在播放器控制栏中；窄屏时由响应式样式隐藏输入框，只保留弹幕开关与设置。
+      width: 0,
       maxLength: 100,
       lockTime: 3,
       beforeEmit: async (danmu) => {
