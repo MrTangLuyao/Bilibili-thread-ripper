@@ -152,7 +152,7 @@
   function createOverlay(container, settings) {
     const overlay = document.createElement("div");
     overlay.id = PLAYER_ID;
-    overlay.dataset.version = "0.8.8";
+    overlay.dataset.version = "0.8.8.1";
     overlay.dataset.mode = settings.mode;
     overlay.dataset.handoff = "true";
     overlay.dataset.error = "false";
@@ -166,7 +166,7 @@
       <div class="btr-status" role="alert"></div>
     `;
     const style = document.createElement("style");
-    style.dataset.btrPlayerStyle = "0.8.8";
+    style.dataset.btrPlayerStyle = "0.8.8.1";
     style.textContent = `
       #${PLAYER_ID}{position:absolute!important;inset:0!important;z-index:2147483000!important;background:#000!important;display:block!important;overflow:hidden!important}
       #${PLAYER_ID} .btr-art-mount{width:100%!important;height:100%!important;background:#000!important}
@@ -832,9 +832,12 @@
       plugins.push(danmakuFactory.createPlugin({
         nativeFetch: options.nativeFetch,
         getArt: () => art,
-        fontSize: initialSettings.danmakuFontSize,
-        onFontSizeChange(fontSize) {
-          options.onSettingsChange?.({ ...core.normalizeSettings(getSettings()), danmakuFontSize: fontSize });
+        settings: initialSettings.danmaku,
+        onSettingsChange(danmaku) {
+          const current = core.normalizeSettings(getSettings());
+          if (JSON.stringify(current.danmaku) !== JSON.stringify(danmaku)) {
+            options.onSettingsChange?.({ ...current, danmaku });
+          }
         }
       }));
     }
@@ -927,8 +930,10 @@
       art.setting.update(modeSetting(current));
       art.setting.update(concurrencySetting(current));
       const danmaku = art.plugins?.artplayerPluginDanmuku;
-      if (danmaku && Number(danmaku.option?.fontSize) !== current.danmakuFontSize) {
-        danmaku.config({ fontSize: current.danmakuFontSize });
+      if (danmaku) {
+        const desired = danmakuFactory.settingsToConfig(current.danmaku);
+        const actual = danmakuFactory.configToSettings(danmaku.option);
+        if (JSON.stringify(actual) !== JSON.stringify(current.danmaku)) danmaku.config(desired);
       }
     }
 
@@ -937,7 +942,7 @@
       applySettings,
       destroy,
       getDebug: () => ({
-        version: "0.8.8",
+        version: "0.8.8.1",
         artPlayerVersion: root.Artplayer.version,
         mode: core.normalizeSettings(getSettings()).mode,
         playerState: session?.fatal ? "error" : video?.ended ? "ended" : ui.overlay.dataset.ready === "true" ? "ready" : "loading",
@@ -960,7 +965,7 @@
         mediaSourceState: session?.mediaSource?.readyState || "closed",
         streamEnded: Boolean(session?.streamEnded),
         danmaku: Boolean(art?.plugins?.artplayerPluginDanmuku),
-        danmakuFontSize: Number(art?.plugins?.artplayerPluginDanmuku?.option?.fontSize) || 0,
+        danmakuSettings: danmakuFactory?.configToSettings?.(art?.plugins?.artplayerPluginDanmuku?.option) || null,
         tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, complete: track.complete, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       }),
       switchRepresentation,

@@ -2,13 +2,48 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.8.8";
+  const VERSION = "0.8.8.1";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
-  const DEFAULTS = { enabled: true, concurrency: 32, danmakuFontSize: 25, mode: "mainland" };
+  const DEFAULT_DANMAKU = Object.freeze({
+    visible: true,
+    opacity: 0.9,
+    area: "threeQuarter",
+    fontSize: 25,
+    speed: 5,
+    modes: [0, 1, 2],
+    antiOverlap: true,
+    synchronousPlayback: true,
+    mode: 0,
+    color: "#FFFFFF"
+  });
+  const DEFAULTS = { enabled: true, concurrency: 32, danmaku: DEFAULT_DANMAKU, mode: "mainland" };
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
   let lastBadge = null;
+
+  function normalizeDanmaku(input, legacyFontSize) {
+    const source = input && typeof input === "object" ? input : {};
+    const allowedAreas = ["quarter", "half", "threeQuarter", "full"];
+    const allowedSpeeds = [1, 2.5, 5, 7.5, 10];
+    const requestedSpeed = Number(source.speed);
+    const requestedModes = Array.isArray(source.modes)
+      ? [...new Set(source.modes.map(Number).filter((value) => [0, 1, 2].includes(value)))]
+      : [0, 1, 2];
+    const requestedColor = String(source.color || "").toUpperCase();
+    return {
+      visible: source.visible !== false,
+      opacity: Math.max(0, Math.min(1, Number.isFinite(Number(source.opacity)) ? Number(source.opacity) : 0.9)),
+      area: allowedAreas.includes(source.area) ? source.area : "threeQuarter",
+      fontSize: Math.max(12, Math.min(64, Math.round(Number(source.fontSize ?? legacyFontSize) || 25))),
+      speed: allowedSpeeds.includes(requestedSpeed) ? requestedSpeed : 5,
+      modes: requestedModes,
+      antiOverlap: source.antiOverlap !== false,
+      synchronousPlayback: source.synchronousPlayback !== false,
+      mode: [0, 1, 2].includes(Number(source.mode)) ? Number(source.mode) : 0,
+      color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
+    };
+  }
 
   function normalizeStoredSettings(input) {
     const allowedThreads = [4, 8, 16, 32, 64, 128];
@@ -16,7 +51,7 @@
     return {
       enabled: input?.enabled !== false,
       concurrency: allowedThreads.includes(requested) ? requested : 32,
-      danmakuFontSize: Math.max(12, Math.min(64, Math.round(Number(input?.danmakuFontSize) || 25))),
+      danmaku: normalizeDanmaku(input?.danmaku, input?.danmakuFontSize),
       mode: input?.mode === "overseas" ? "overseas" : "mainland"
     };
   }
@@ -71,13 +106,17 @@
     mount.append(watermark);
   }
 
-  chrome.storage.sync.get(DEFAULTS, (stored) => {
-    latestSettings = normalizeStoredSettings({ ...DEFAULTS, ...stored });
-    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || stored.danmakuFontSize !== latestSettings.danmakuFontSize) {
+  chrome.storage.sync.get(null, (stored) => {
+    const migrated = { ...DEFAULTS, ...stored };
+    if (!stored.danmaku && stored.danmakuFontSize !== undefined) {
+      migrated.danmaku = { ...DEFAULT_DANMAKU, fontSize: stored.danmakuFontSize };
+    }
+    latestSettings = normalizeStoredSettings(migrated);
+    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || JSON.stringify(stored.danmaku) !== JSON.stringify(latestSettings.danmaku)) {
       chrome.storage.sync.set({
         mode: latestSettings.mode,
         concurrency: latestSettings.concurrency,
-        danmakuFontSize: latestSettings.danmakuFontSize
+        danmaku: latestSettings.danmaku
       });
     }
     loaded = true;
@@ -122,8 +161,7 @@
       if (input.mode === "mainland" || input.mode === "overseas") update.mode = input.mode;
       const concurrency = Math.trunc(Number(input.concurrency));
       if ([4, 8, 16, 32, 64, 128].includes(concurrency)) update.concurrency = concurrency;
-      const danmakuFontSize = Math.round(Number(input.danmakuFontSize));
-      if (danmakuFontSize >= 12 && danmakuFontSize <= 64) update.danmakuFontSize = danmakuFontSize;
+      if (input.danmaku && typeof input.danmaku === "object") update.danmaku = normalizeDanmaku(input.danmaku);
       if (Object.keys(update).length) chrome.storage.sync.set(update);
       return;
     }

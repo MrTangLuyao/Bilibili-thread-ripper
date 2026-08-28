@@ -75,13 +75,32 @@
     const source = input && typeof input === "object" ? input : {};
     const allowed = [4, 8, 16, 32, 64, 128];
     const requested = Math.trunc(Number(source.concurrency));
-    const danmakuFontSize = Math.max(12, Math.min(64, Math.round(Number(source.danmakuFontSize) || 25)));
+    const danmakuSource = source.danmaku && typeof source.danmaku === "object" ? source.danmaku : {};
+    const allowedAreas = ["quarter", "half", "threeQuarter", "full"];
+    const allowedSpeeds = [1, 2.5, 5, 7.5, 10];
+    const requestedSpeed = Number(danmakuSource.speed);
+    const requestedModes = Array.isArray(danmakuSource.modes)
+      ? [...new Set(danmakuSource.modes.map(Number).filter((value) => [0, 1, 2].includes(value)))]
+      : [0, 1, 2];
+    const requestedColor = String(danmakuSource.color || "").toUpperCase();
+    const danmaku = {
+      visible: danmakuSource.visible !== false,
+      opacity: Math.max(0, Math.min(1, Number.isFinite(Number(danmakuSource.opacity)) ? Number(danmakuSource.opacity) : 0.9)),
+      area: allowedAreas.includes(danmakuSource.area) ? danmakuSource.area : "threeQuarter",
+      fontSize: Math.max(12, Math.min(64, Math.round(Number(danmakuSource.fontSize ?? source.danmakuFontSize) || 25))),
+      speed: allowedSpeeds.includes(requestedSpeed) ? requestedSpeed : 5,
+      modes: requestedModes,
+      antiOverlap: danmakuSource.antiOverlap !== false,
+      synchronousPlayback: danmakuSource.synchronousPlayback !== false,
+      mode: [0, 1, 2].includes(Number(danmakuSource.mode)) ? Number(danmakuSource.mode) : 0,
+      color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
+    };
     const mode = source.mode === "overseas" ? "overseas" : "mainland";
     return {
       enabled: source.enabled !== false,
       mode,
       concurrency: allowed.includes(requested) ? requested : 32,
-      danmakuFontSize,
+      danmaku,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
       stallTimeoutMs: 4000,

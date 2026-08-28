@@ -252,10 +252,78 @@
     return result;
   }
 
+  const DANMAKU_AREAS = Object.freeze({
+    quarter: Object.freeze([10, "75%"]),
+    half: Object.freeze([10, "50%"]),
+    threeQuarter: Object.freeze([10, "25%"]),
+    full: Object.freeze([10, 10])
+  });
+
+  function normalizeDanmakuSettings(input) {
+    const source = input && typeof input === "object" ? input : {};
+    const requestedSpeed = Number(source.speed);
+    const modes = Array.isArray(source.modes)
+      ? [...new Set(source.modes.map(Number).filter((value) => [0, 1, 2].includes(value)))]
+      : [0, 1, 2];
+    const color = String(source.color || "").toUpperCase();
+    return {
+      visible: source.visible !== false,
+      opacity: Math.max(0, Math.min(1, Number.isFinite(Number(source.opacity)) ? Number(source.opacity) : 0.9)),
+      area: Object.hasOwn(DANMAKU_AREAS, source.area) ? source.area : "threeQuarter",
+      fontSize: Math.max(12, Math.min(64, Math.round(Number(source.fontSize) || 25))),
+      speed: [1, 2.5, 5, 7.5, 10].includes(requestedSpeed) ? requestedSpeed : 5,
+      modes,
+      antiOverlap: source.antiOverlap !== false,
+      synchronousPlayback: source.synchronousPlayback !== false,
+      mode: [0, 1, 2].includes(Number(source.mode)) ? Number(source.mode) : 0,
+      color: /^#[0-9A-F]{6}$/.test(color) ? color : "#FFFFFF"
+    };
+  }
+
+  function settingsToConfig(input) {
+    const settings = normalizeDanmakuSettings(input);
+    return {
+      visible: settings.visible,
+      opacity: settings.opacity,
+      margin: [...DANMAKU_AREAS[settings.area]],
+      fontSize: settings.fontSize,
+      speed: settings.speed,
+      modes: [...settings.modes],
+      antiOverlap: settings.antiOverlap,
+      synchronousPlayback: settings.synchronousPlayback,
+      mode: settings.mode,
+      color: settings.color
+    };
+  }
+
+  function areaFromMargin(margin) {
+    if (!Array.isArray(margin)) return "threeQuarter";
+    for (const [name, value] of Object.entries(DANMAKU_AREAS)) {
+      if (margin.length === 2 && margin[0] === value[0] && margin[1] === value[1]) return name;
+    }
+    return "threeQuarter";
+  }
+
+  function configToSettings(config) {
+    return normalizeDanmakuSettings({
+      visible: config?.visible,
+      opacity: config?.opacity,
+      area: areaFromMargin(config?.margin),
+      fontSize: config?.fontSize,
+      speed: config?.speed,
+      modes: config?.modes,
+      antiOverlap: config?.antiOverlap,
+      synchronousPlayback: config?.synchronousPlayback,
+      mode: config?.mode,
+      color: config?.color
+    });
+  }
+
   function createPlugin(options) {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getArt = options.getArt;
-    const initialFontSize = Math.max(12, Math.min(64, Math.round(Number(options.fontSize) || 25)));
+    const initialSettings = normalizeDanmakuSettings(options.settings);
+    const initialConfig = settingsToConfig(initialSettings);
     const identityPromise = resolveIdentity(nativeFetch);
     const pluginFactory = root.artplayerPluginDanmuku({
       danmuku: async () => {
@@ -270,16 +338,8 @@
           return [];
         }
       },
-      speed: 5,
-      margin: ["8%", "18%"],
-      opacity: 0.9,
-      mode: 0,
-      modes: [0, 1, 2],
-      fontSize: initialFontSize,
+      ...initialConfig,
       FONT_SIZE: { min: 12, max: 64 },
-      antiOverlap: true,
-      synchronousPlayback: true,
-      visible: true,
       emitter: true,
       maxLength: 100,
       lockTime: 3,
@@ -297,11 +357,13 @@
     });
     return (art) => {
       let initialized = false;
-      let lastFontSize = initialFontSize;
+      let lastSettings = initialSettings;
       art.on("artplayerPluginDanmuku:config", (config) => {
-        const fontSize = Math.max(12, Math.min(64, Math.round(Number(config?.fontSize) || 25)));
-        if (initialized && fontSize !== lastFontSize) options.onFontSizeChange?.(fontSize);
-        lastFontSize = fontSize;
+        const nextSettings = configToSettings(config);
+        if (initialized && JSON.stringify(nextSettings) !== JSON.stringify(lastSettings)) {
+          options.onSettingsChange?.(nextSettings);
+        }
+        lastSettings = nextSettings;
       });
       const plugin = pluginFactory(art);
       initialized = true;
@@ -310,9 +372,12 @@
   }
 
   root.__BILI_DANMAKU_FACTORY__ = Object.freeze({
+    configToSettings,
     createPlugin,
     md5,
+    normalizeDanmakuSettings,
     parseDanmakuXml,
-    resolveIdentity
+    resolveIdentity,
+    settingsToConfig
   });
 })(globalThis);
