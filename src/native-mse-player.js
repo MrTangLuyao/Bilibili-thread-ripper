@@ -132,15 +132,23 @@
   }
 
   function isBufferedAt(sourceBuffer, time) {
-    for (let index = 0; index < sourceBuffer.buffered.length; index += 1) {
-      if (sourceBuffer.buffered.start(index) <= time + 0.25 && sourceBuffer.buffered.end(index) >= time - 0.25) return true;
+    let ranges;
+    try { ranges = sourceBuffer?.buffered; }
+    catch (_error) { return false; }
+    if (!ranges) return false;
+    for (let index = 0; index < ranges.length; index += 1) {
+      if (ranges.start(index) <= time + 0.25 && ranges.end(index) >= time - 0.25) return true;
     }
     return false;
   }
 
   function bufferedEndAt(sourceBuffer, time) {
-    for (let index = 0; index < sourceBuffer.buffered.length; index += 1) {
-      if (sourceBuffer.buffered.start(index) <= time + 0.25 && sourceBuffer.buffered.end(index) >= time - 0.25) return sourceBuffer.buffered.end(index);
+    let ranges;
+    try { ranges = sourceBuffer?.buffered; }
+    catch (_error) { return time; }
+    if (!ranges) return time;
+    for (let index = 0; index < ranges.length; index += 1) {
+      if (ranges.start(index) <= time + 0.25 && ranges.end(index) >= time - 0.25) return ranges.end(index);
     }
     return time;
   }
@@ -166,10 +174,13 @@
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
       if (destroyed || !candidate || candidate.disposed || video.src === candidate.objectUrl) return;
-      const target = Number(video.currentTime) || candidate.startTime;
-      video.src = candidate.objectUrl;
-      video.load();
-      if (target > 0) setCurrentTimeInternal(candidate, target);
+      if (candidate.externalSourceDetected) return;
+      candidate.externalSourceDetected = true;
+      candidate.controller.abort(new DOMException("B站原生播放器正在切换媒体源", "AbortError"));
+      clearInterval(candidate.timer);
+      clearTimeout(candidate.endRetryTimer);
+      sourceObserver.disconnect();
+      options.onNativeSourceChange?.({ src: video.currentSrc || video.src || "" });
     });
     const original = {
       src: video.currentSrc || video.src || "",
@@ -187,7 +198,7 @@
     });
 
     function sessionIsCurrent(candidate) {
-      return !destroyed && session === candidate && !candidate.disposed;
+      return !destroyed && session === candidate && !candidate.disposed && !candidate.externalSourceDetected;
     }
 
     function publishState(extra = {}) {
@@ -419,7 +430,13 @@
     function activateWhenReady(candidate) {
       if (candidate.playbackActivated || !sessionIsCurrent(candidate) || !candidate.tracks.length) return;
       if (!candidate.tracks.every((track) => track.startupComplete && track.followupScheduled)) return;
-      const target = candidate.startTime;
+      // Bilibili may call video.play() as soon as the first appended ranges are
+      // decodable, before our larger startup buffer is complete. Treat that
+      // visible progress as the new handoff point: activation may seek forward
+      // to the captured start time, but must never rewind frames already shown.
+      const liveTime = Math.max(0, Number(video.currentTime) || 0);
+      const target = Math.max(candidate.startTime, liveTime);
+      candidate.startTime = target;
       if (!candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, target))) return;
       const ends = candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, target));
       const required = updateStartupProfile(candidate);
@@ -427,7 +444,7 @@
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
       candidate.playbackActivatedAt = performance.now();
-      setCurrentTimeInternal(candidate, target);
+      if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
       video.volume = candidate.volume;
       video.muted = candidate.muted;
       video.playbackRate = candidate.playbackRate;
@@ -490,7 +507,7 @@
       const mediaSource = new MediaSource();
       const objectUrl = URL.createObjectURL(mediaSource);
       const candidate = {
-        disposed: false, fatal: false, generation: ++generationSequence,
+        disposed: false, fatal: false, externalSourceDetected: false, generation: ++generationSequence,
         controller: new AbortController(), mediaSource, objectUrl,
         timer: null, endRetryTimer: null, tracks: [], ending: false, streamEnded: false,
         playAttempted: false, playbackActivated: false, playbackActivatedAt: 0,
@@ -500,7 +517,9 @@
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
-        startTime: Math.max(0, Number(playbackState.time) || 0), internalSeekTarget: null,
+        startTime: Math.max(0, Number(playbackState.time) || 0),
+        forceStartTime: Boolean(playbackState.forceTime),
+        internalSeekTarget: null,
         videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode),
         audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode)
       };
@@ -532,7 +551,7 @@
           audioTrack.sidx.segments.at(-1)?.endTime || 0
         );
         if (duration > 0) mediaSource.duration = duration;
-        if (candidate.startTime > 0 && Number.isFinite(mediaSource.duration)) {
+        if ((candidate.forceStartTime || candidate.startTime > 0) && Number.isFinite(mediaSource.duration)) {
           setCurrentTimeInternal(candidate, Math.min(candidate.startTime, Math.max(0, mediaSource.duration - 0.1)));
         }
         candidate.startupStartedAt = performance.now();
@@ -647,12 +666,20 @@
       (document.head || document.documentElement).append(style);
     }
     sourceObserver.observe(video, { attributes: true, attributeFilter: ["src"] });
+    const hasInitialTime = options.initialTime !== undefined && Number.isFinite(Number(options.initialTime));
+    const initialTime = hasInitialTime
+      ? Math.max(0, Number(options.initialTime))
+      : original.currentTime;
+    const initialResume = options.initialResume !== undefined
+      ? Boolean(options.initialResume)
+      : !original.wasPaused || original.currentTime < 1;
     startSession(selectedVideo, {
       // The native player may already have rendered its first frames before the
       // accelerated MediaSource is ready. Preserve that exact position: forcing
       // every handoff below two seconds back to zero produces a visible replay.
-      time: original.currentTime,
-      resume: !original.wasPaused || original.currentTime < 1,
+      time: initialTime,
+      forceTime: hasInitialTime,
+      resume: initialResume,
       volume: original.volume,
       muted: original.muted,
       playbackRate: original.playbackRate || 1
@@ -664,7 +691,7 @@
       updatePlayinfo,
       video,
       getDebug: () => ({
-        version: "0.9.0.2",
+        version: "0.9.0.3",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -672,6 +699,7 @@
         currentTime: Number(video.currentTime) || 0,
         mediaSourceState: session?.mediaSource?.readyState || "closed",
         playbackActivated: Boolean(session?.playbackActivated),
+        resumeWanted: Boolean(session?.resumeWanted),
         sessionStartTime: session?.startTime || 0,
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,

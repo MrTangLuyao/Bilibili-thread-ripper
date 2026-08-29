@@ -2,7 +2,7 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.9.0.2";
+  const VERSION = "0.9.0.3";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
   const ONBOARDING_ID = "__bilibili_thread_ripper_onboarding__";
   const ONBOARDING_STYLE_ID = "__bilibili_thread_ripper_onboarding_style__";

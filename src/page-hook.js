@@ -26,10 +26,11 @@
   let restartTimer = null;
   let publishTimer = null;
   let menuSyncTimer = null;
+  let pendingPodSwitch = null;
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.9.0.2",
+    version: "0.9.0.3",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -170,13 +171,25 @@
     return null;
   }
 
+  function activePodBvid() {
+    const item = Array.from(document.querySelectorAll(".video-pod__item[data-key]")).find((candidate) =>
+      candidate.matches(".active") || Boolean(candidate.querySelector(".simple-base-item.active"))
+    );
+    const value = String(item?.getAttribute("data-key") || "").trim();
+    return /^BV[0-9A-Za-z]+$/i.test(value) ? value : "";
+  }
+
   function routeIdentity() {
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
     if (!match) return null;
-    const rawId = match[1];
+    const pathId = match[1];
+    const podBvid = activePodBvid();
+    const rawId = podBvid || pathId;
     const bvid = /^BV/i.test(rawId) ? rawId : "";
     const aid = /^av/i.test(rawId) ? Number(rawId.slice(2)) || 0 : 0;
-    const part = Math.max(1, Number(new URLSearchParams(location.search).get("p")) || 1);
+    const part = podBvid && podBvid.toLowerCase() !== pathId.toLowerCase()
+      ? 1
+      : Math.max(1, Number(new URLSearchParams(location.search).get("p")) || 1);
     const videoKey = bvid ? bvid.toLowerCase() : `av${aid}`;
     return { aid, bvid, part, key: `${videoKey}:p${part}`, videoKey };
   }
@@ -435,14 +448,67 @@
     publish();
   }
 
+  function preparePodSwitch(event) {
+    if (!settings.enabled || !player || !(event.target instanceof Element)) return;
+    const item = event.target.closest(".video-pod__item[data-key]");
+    const bvid = String(item?.getAttribute("data-key") || "").trim();
+    if (!/^BV[0-9A-Za-z]+$/i.test(bvid)) return;
+    const videoKey = bvid.toLowerCase();
+    const currentVideoKey = String(playerRoute).replace(/:p\d+$/i, "");
+    if (!currentVideoKey || currentVideoKey === videoKey) return;
+    pendingPodSwitch = {
+      bvid,
+      videoKey,
+      resume: !player.video.paused,
+      readyAt: Date.now() + 650,
+      expiresAt: Date.now() + 8000
+    };
+    routeGeneration += 1;
+    routeRequestController?.abort();
+    routeRequestController = null;
+    startingRoute = "";
+    failedRoute = "";
+    clearTimeout(restartTimer);
+    // Capture phase runs before Bilibili's own click handler. Restore the
+    // native source first so its player can dispose the old SourceBuffers.
+    stopPlayer(true);
+    restartTimer = setTimeout(startPlayer, 650);
+  }
+
+  function handleNativeSourceChange(route) {
+    setTimeout(() => {
+      if (!player || playerRoute !== route) return;
+      routeGeneration += 1;
+      routeRequestController?.abort();
+      routeRequestController = null;
+      startingRoute = "";
+      failedRoute = "";
+      clearTimeout(restartTimer);
+      // The native player already installed its next source. Do not restore or
+      // overwrite it; wait briefly for the transition to settle, then retake it.
+      stopPlayer(false);
+      restartTimer = setTimeout(startPlayer, 650);
+    }, 0);
+  }
+
   async function startPlayer() {
     clearTimeout(restartTimer);
     restartTimer = null;
     const identity = routeIdentity();
     if (!settings.enabled || !identity) {
+      pendingPodSwitch = null;
       if (player) stopPlayer(true);
       earlyMask?.release?.();
       return;
+    }
+    if (pendingPodSwitch) {
+      if (Date.now() >= pendingPodSwitch.expiresAt) pendingPodSwitch = null;
+      else if (identity.videoKey !== pendingPodSwitch.videoKey || Date.now() < pendingPodSwitch.readyAt) {
+        stats.playerState = "waiting";
+        schedulePublish();
+        restartTimer = setTimeout(startPlayer, 100);
+        return;
+      }
     }
     const route = identity.key;
     if (!player && failedRoute === route) {
@@ -490,16 +556,26 @@
     stats.lastError = "";
     stats.mode = settings.mode;
     publish();
+    const isPodSwitch = pendingPodSwitch?.videoKey === identity.videoKey;
     try {
       player = playerFactory.createNativePlayer({
         container,
         identity,
+        // A collection item is a different video. Its native <video> element
+        // can still expose the previous item's currentTime until new metadata
+        // arrives, so carrying that value across would clamp short videos to
+        // their final frame and make the switch look frozen.
+        initialTime: isPodSwitch ? 0 : undefined,
+        initialResume: isPodSwitch ? pendingPodSwitch.resume : undefined,
         getSettings: () => settings,
         nativeFetch,
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
         onSettingsChange(next) {
           root.postMessage({ channel: CHANNEL, type: "settings-update", payload: next }, "*");
+        },
+        onNativeSourceChange() {
+          handleNativeSourceChange(route);
         },
         onSegment(event) {
           stats.acceleratedRequests += 1;
@@ -542,6 +618,7 @@
       });
       playerRoute = route;
       playerContainer = container;
+      if (pendingPodSwitch?.videoKey === identity.videoKey) pendingPodSwitch = null;
       earlyMask?.release?.();
     } catch (error) {
       stats.playerState = "error";
@@ -593,6 +670,7 @@
   history.pushState = function (...args) { const result = nativePushState(...args); restartPlayer(false); return result; };
   history.replaceState = function (...args) { const result = nativeReplaceState(...args); restartPlayer(false); return result; };
   root.addEventListener("popstate", () => restartPlayer(false));
+  document.addEventListener("click", preparePodSwitch, true);
   const settingsObserver = new MutationObserver(scheduleSettingsMenuSync);
   const startSettingsObserver = () => {
     if (!document.documentElement) {
@@ -616,7 +694,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.9.0.2"
+      version: "0.9.0.3"
     })
   });
   publish();

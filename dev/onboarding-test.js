@@ -39,7 +39,7 @@
     hiddenOnSecondLoad: !repeatedPanel
   };
   result.pass = result.firstPanelVisible
-    && result.version === "0.9.0.2"
+    && result.version === "0.9.0.3"
     && result.defaultMode === "mainland"
     && result.defaultThreadIndex === "3"
     && result.savedMode === "overseas"
