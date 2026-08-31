@@ -19,6 +19,7 @@
   let player = null;
   let playerRoute = "";
   let playerContainer = null;
+  let playerLifecycle = 0;
   let failedRoute = "";
   let startingRoute = "";
   let routeGeneration = 0;
@@ -30,7 +31,7 @@
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.9.0.3",
+    version: "0.9.0.4",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -172,9 +173,17 @@
   }
 
   function activePodBvid() {
-    const item = Array.from(document.querySelectorAll(".video-pod__item[data-key]")).find((candidate) =>
+    const activeItems = Array.from(document.querySelectorAll(".video-pod__item[data-key]")).filter((candidate) =>
       candidate.matches(".active") || Boolean(candidate.querySelector(".simple-base-item.active"))
     );
+    const visibleItems = activeItems.filter((candidate) =>
+      !(candidate instanceof HTMLElement) || candidate.offsetParent !== null || candidate.getClientRects().length > 0
+    );
+    const candidates = visibleItems.length ? visibleItems : activeItems;
+    const preferred = pendingPodSwitch?.targetVideoKey
+      ? candidates.find((candidate) => String(candidate.getAttribute("data-key") || "").toLowerCase() === pendingPodSwitch.targetVideoKey)
+      : null;
+    const item = preferred || candidates.at(-1);
     const value = String(item?.getAttribute("data-key") || "").trim();
     return /^BV[0-9A-Za-z]+$/i.test(value) ? value : "";
   }
@@ -207,13 +216,19 @@
   }
 
   const routePlayinfo = new Map();
+  const routeCids = new Map();
   const bootRouteKey = routeIdentity()?.key || "";
 
-  function cachePlayinfo(identity, playinfo) {
+  function cachePlayinfo(identity, playinfo, cid = 0) {
     if (!identity || !isDashPlayinfo(playinfo)) return false;
     routePlayinfo.delete(identity.key);
     routePlayinfo.set(identity.key, playinfo);
-    while (routePlayinfo.size > 8) routePlayinfo.delete(routePlayinfo.keys().next().value);
+    if (Number(cid) > 0) routeCids.set(identity.key, Number(cid));
+    while (routePlayinfo.size > 8) {
+      const oldest = routePlayinfo.keys().next().value;
+      routePlayinfo.delete(oldest);
+      routeCids.delete(oldest);
+    }
     return true;
   }
 
@@ -223,7 +238,9 @@
     try {
       const initialIdentity = stateIdentity(root.__INITIAL_STATE__);
       if (identity?.key === bootRouteKey && initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
-        cachePlayinfo(identity, root.__playinfo__);
+        const initialCid = Number(root.__INITIAL_STATE__?.videoData?.pages?.[identity.part - 1]?.cid
+          || root.__INITIAL_STATE__?.videoData?.cid) || 0;
+        cachePlayinfo(identity, root.__playinfo__, initialCid);
         return root.__playinfo__;
       }
     } catch (_error) {}
@@ -251,11 +268,21 @@
     }
   }
 
+  function requestedCid(url) {
+    try { return Number(new URL(String(url), location.href).searchParams.get("cid")) || 0; }
+    catch (_error) { return 0; }
+  }
+
   function observePlayinfo(url, payload) {
     if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
     const identity = routeIdentity();
     if (!identity || requestedVideoKey(url) !== identity.videoKey) return;
-    cachePlayinfo(identity, payload);
+    const cid = requestedCid(url);
+    const expectedCid = routeCids.get(identity.key) || 0;
+    // The same BVID can contain many parts. A late response from the previous
+    // part must never be cached under, or hot-swapped into, the current part.
+    if (!cid || !expectedCid || cid !== expectedCid) return;
+    cachePlayinfo(identity, payload, cid);
     if (player && playerRoute === identity.key) {
       player.updatePlayinfo?.(payload).catch((error) => {
         stats.lastError = String(error?.message || error).slice(0, 180);
@@ -314,6 +341,8 @@
     const page = pages[identity.part - 1] || pages[0];
     const cid = Number(page?.cid || viewPayload.data.cid) || 0;
     if (!cid) throw new Error("新视频缺少 CID");
+    if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
+    routeCids.set(identity.key, cid);
     const canonicalBvid = String(viewPayload.data.bvid || identity.bvid || "");
     const canonicalAid = Number(viewPayload.data.aid || identity.aid) || 0;
     const playQuery = canonicalBvid
@@ -326,7 +355,8 @@
     if (!playResponse.ok) throw new Error(`读取播放清单失败（HTTP ${playResponse.status}）`);
     const playinfo = await playResponse.json();
     if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
-    cachePlayinfo(identity, playinfo);
+    if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
+    cachePlayinfo(identity, playinfo, cid);
     return playinfo;
   }
 
@@ -439,29 +469,35 @@
   }
 
   function stopPlayer(resumeNative = true) {
-    player?.destroy({ resumeNative });
+    const current = player;
+    playerLifecycle += 1;
     player = null;
     playerRoute = "";
     playerContainer = null;
+    current?.destroy({ resumeNative });
     if (settings.enabled) stats.playerState = "waiting";
     else stats.playerState = "disabled";
     publish();
   }
 
   function preparePodSwitch(event) {
-    if (!settings.enabled || !player || !(event.target instanceof Element)) return;
+    if (!settings.enabled || !(event.target instanceof Element)) return;
     const item = event.target.closest(".video-pod__item[data-key]");
-    const bvid = String(item?.getAttribute("data-key") || "").trim();
-    if (!/^BV[0-9A-Za-z]+$/i.test(bvid)) return;
-    const videoKey = bvid.toLowerCase();
-    const currentVideoKey = String(playerRoute).replace(/:p\d+$/i, "");
-    if (!currentVideoKey || currentVideoKey === videoKey) return;
+    if (!item || item.matches(".active") || item.querySelector(".active")) return;
+    const itemKey = String(item.getAttribute("data-key") || "").trim();
+    const targetVideoKey = /^BV[0-9A-Za-z]+$/i.test(itemKey) ? itemKey.toLowerCase() : "";
+    const identity = routeIdentity();
+    const nativeVideo = player?.video || findContainer()?.querySelector("video");
+    const resume = player
+      ? !player.video.paused
+      : pendingPodSwitch?.resume ?? (nativeVideo ? !nativeVideo.paused : true);
     pendingPodSwitch = {
-      bvid,
-      videoKey,
-      resume: !player.video.paused,
+      fromRoute: identity?.key || playerRoute || pendingPodSwitch?.fromRoute || "",
+      itemKey,
+      targetVideoKey,
+      resume,
       readyAt: Date.now() + 650,
-      expiresAt: Date.now() + 8000
+      expiresAt: Date.now() + 4000
     };
     routeGeneration += 1;
     routeRequestController?.abort();
@@ -469,15 +505,15 @@
     startingRoute = "";
     failedRoute = "";
     clearTimeout(restartTimer);
-    // Capture phase runs before Bilibili's own click handler. Restore the
-    // native source first so its player can dispose the old SourceBuffers.
-    stopPlayer(true);
+    // Capture phase runs before Bilibili's click handler. Tear down only our
+    // MediaSource; the click handler owns installing the next native source.
+    if (player) stopPlayer(false);
     restartTimer = setTimeout(startPlayer, 650);
   }
 
-  function handleNativeSourceChange(route) {
+  function handleNativeSourceChange(route, lifecycle) {
     setTimeout(() => {
-      if (!player || playerRoute !== route) return;
+      if (lifecycle !== playerLifecycle || !player || playerRoute !== route) return;
       routeGeneration += 1;
       routeRequestController?.abort();
       routeRequestController = null;
@@ -503,7 +539,7 @@
     }
     if (pendingPodSwitch) {
       if (Date.now() >= pendingPodSwitch.expiresAt) pendingPodSwitch = null;
-      else if (identity.videoKey !== pendingPodSwitch.videoKey || Date.now() < pendingPodSwitch.readyAt) {
+      else if ((pendingPodSwitch.fromRoute && identity.key === pendingPodSwitch.fromRoute) || Date.now() < pendingPodSwitch.readyAt) {
         stats.playerState = "waiting";
         schedulePublish();
         restartTimer = setTimeout(startPlayer, 100);
@@ -556,9 +592,10 @@
     stats.lastError = "";
     stats.mode = settings.mode;
     publish();
-    const isPodSwitch = pendingPodSwitch?.videoKey === identity.videoKey;
+    const isPodSwitch = Boolean(pendingPodSwitch && identity.key !== pendingPodSwitch.fromRoute);
+    const lifecycle = ++playerLifecycle;
     try {
-      player = playerFactory.createNativePlayer({
+      const nextPlayer = playerFactory.createNativePlayer({
         container,
         identity,
         // A collection item is a different video. Its native <video> element
@@ -572,18 +609,22 @@
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
         onSettingsChange(next) {
+          if (lifecycle !== playerLifecycle) return;
           root.postMessage({ channel: CHANNEL, type: "settings-update", payload: next }, "*");
         },
         onNativeSourceChange() {
-          handleNativeSourceChange(route);
+          if (lifecycle !== playerLifecycle) return;
+          handleNativeSourceChange(route, lifecycle);
         },
         onSegment(event) {
+          if (lifecycle !== playerLifecycle) return;
           stats.acceleratedRequests += 1;
           stats.acceleratedBytes += Number(event.bytes) || 0;
           stats.parallelSubrequests += Number(event.pieces) || 0;
           publish();
         },
         onState(next) {
+          if (lifecycle !== playerLifecycle) return;
           stats.mode = next.mode || settings.mode;
           stats.playerState = next.playerState || stats.playerState;
           stats.quality = next.quality || stats.quality;
@@ -601,12 +642,13 @@
           schedulePublish();
         },
         onFatal(error) {
+          if (lifecycle !== playerLifecycle) return;
           failedRoute = route;
           stats.playerState = "error";
           stats.lastError = String(error?.message || error).slice(0, 180);
           publish();
           setTimeout(() => {
-            if (player && stats.playerState === "error") {
+            if (lifecycle === playerLifecycle && player && playerRoute === route && stats.playerState === "error") {
               stopPlayer(true);
               earlyMask?.release?.();
               stats.playerState = "native-fallback";
@@ -616,11 +658,17 @@
         },
         playinfo
       });
+      if (lifecycle !== playerLifecycle) {
+        nextPlayer?.destroy?.({ resumeNative: false });
+        return;
+      }
+      player = nextPlayer;
       playerRoute = route;
       playerContainer = container;
-      if (pendingPodSwitch?.videoKey === identity.videoKey) pendingPodSwitch = null;
+      if (isPodSwitch) pendingPodSwitch = null;
       earlyMask?.release?.();
     } catch (error) {
+      if (lifecycle !== playerLifecycle) return;
       stats.playerState = "error";
       stats.lastError = String(error?.message || error).slice(0, 180);
       publish();
@@ -694,7 +742,7 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.9.0.3"
+      version: "0.9.0.4"
     })
   });
   publish();

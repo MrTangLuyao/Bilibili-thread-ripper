@@ -118,16 +118,26 @@
     return { init, index };
   }
 
-  function waitEvent(target, successName, errorName = "error") {
+  function waitEvent(target, successName, errorName = "error", signal = null) {
     return new Promise((resolve, reject) => {
+      const abortReason = () => signal?.reason instanceof Error
+        ? signal.reason
+        : new DOMException("播放任务已取消", "AbortError");
       const success = () => { cleanup(); resolve(); };
       const failure = () => { cleanup(); reject(new Error(`${successName} 失败`)); };
+      const aborted = () => { cleanup(); reject(abortReason()); };
       const cleanup = () => {
         target.removeEventListener(successName, success);
         target.removeEventListener(errorName, failure);
+        signal?.removeEventListener("abort", aborted);
       };
+      if (signal?.aborted) {
+        reject(abortReason());
+        return;
+      }
       target.addEventListener(successName, success, { once: true });
       target.addEventListener(errorName, failure, { once: true });
+      signal?.addEventListener("abort", aborted, { once: true });
     });
   }
 
@@ -225,7 +235,7 @@
     async function queuedSourceOperation(candidate, track, operation) {
       const next = track.operation.catch(() => {}).then(async () => {
         if (!sessionIsCurrent(candidate)) return;
-        if (track.sourceBuffer.updating) await waitEvent(track.sourceBuffer, "updateend");
+        if (track.sourceBuffer.updating) await waitEvent(track.sourceBuffer, "updateend", "error", candidate.controller.signal);
         if (!sessionIsCurrent(candidate)) return;
         return operation();
       });
@@ -237,7 +247,7 @@
       return queuedSourceOperation(candidate, track, async () => {
         if (!sessionIsCurrent(candidate) || generation !== candidate.generation) return;
         track.sourceBuffer.appendBuffer(bytes);
-        await waitEvent(track.sourceBuffer, "updateend");
+        await waitEvent(track.sourceBuffer, "updateend", "error", candidate.controller.signal);
       });
     }
 
@@ -246,7 +256,7 @@
       return queuedSourceOperation(candidate, track, async () => {
         if (!sessionIsCurrent(candidate) || candidate.mediaSource.readyState !== "open") return;
         track.sourceBuffer.remove(start, end);
-        await waitEvent(track.sourceBuffer, "updateend");
+        await waitEvent(track.sourceBuffer, "updateend", "error", candidate.controller.signal);
       });
     }
 
@@ -535,7 +545,7 @@
       options.container.dataset.btrMseActive = "true";
       publishState({ playerState: "loading", quality: qualityLabel(selectedVideo), lastError: "" });
       try {
-        if (mediaSource.readyState !== "open") await waitEvent(mediaSource, "sourceopen");
+        if (mediaSource.readyState !== "open") await waitEvent(mediaSource, "sourceopen", "error", candidate.controller.signal);
         if (!sessionIsCurrent(candidate)) return;
         const videoBuffer = mediaSource.addSourceBuffer(mimeFor(representation, "video"));
         const audioBuffer = mediaSource.addSourceBuffer(mimeFor(selection.audio, "audio"));
@@ -691,7 +701,7 @@
       updatePlayinfo,
       video,
       getDebug: () => ({
-        version: "0.9.0.3",
+        version: "0.9.0.4",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,

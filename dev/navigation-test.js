@@ -3,6 +3,7 @@
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const OLD_BVID = "BV1oldRoute01";
+  const MIDDLE_BVID = "BV1midRoute03";
   const NEW_BVID = "BV1newRoute02";
   const calls = [];
   let resolvedIdentity = null;
@@ -11,14 +12,18 @@
   const nativeVideo = document.querySelector("video");
   const pod = document.createElement("div");
   const oldItem = document.createElement("div");
+  const middleItem = document.createElement("div");
   const newItem = document.createElement("div");
   oldItem.className = "video-pod__item";
   oldItem.dataset.key = OLD_BVID;
   oldItem.innerHTML = '<div class="simple-base-item active"><span>旧视频</span></div>';
+  middleItem.className = "video-pod__item";
+  middleItem.dataset.key = MIDDLE_BVID;
+  middleItem.innerHTML = '<div class="simple-base-item"><span>中间视频</span></div>';
   newItem.className = "video-pod__item";
   newItem.dataset.key = NEW_BVID;
   newItem.innerHTML = '<div class="simple-base-item"><span>新视频</span></div>';
-  pod.append(oldItem, newItem);
+  pod.append(oldItem, middleItem, newItem);
   document.body.append(pod);
 
   history.replaceState(null, "", `/video/${OLD_BVID}`);
@@ -43,6 +48,10 @@
         route: location.pathname
       };
       calls.push(record);
+      if (marker === OLD_BVID) {
+        setTimeout(() => options.onNativeSourceChange?.({ src: "blob:stale-old-source" }), 900);
+        setTimeout(() => options.onFatal?.(new Error("stale old-player failure")), 925);
+      }
       return {
         applySettings() {},
         async updatePlayinfo(playinfo) { record.marker = playinfo?.data?.marker || record.marker; },
@@ -59,7 +68,8 @@
     const url = new URL(String(input), location.href);
     const bvid = url.searchParams.get("bvid") || "";
     if (url.pathname === "/x/web-interface/view") {
-      return new Response(JSON.stringify({ code: 0, data: { aid: 202, bvid, cid: 202, pages: [{ cid: 202 }] } }), {
+      const cid = bvid === MIDDLE_BVID ? 202 : bvid === NEW_BVID ? 303 : 101;
+      return new Response(JSON.stringify({ code: 0, data: { aid: cid, bvid, cid, pages: [{ cid }] } }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
@@ -73,11 +83,16 @@
     throw new Error(`unexpected request: ${url}`);
   };
 
-  newItem.addEventListener("click", () => {
-    oldItem.querySelector(".simple-base-item")?.classList.remove("active");
-    newItem.querySelector(".simple-base-item")?.classList.add("active");
+  function activate(item, bvid) {
+    for (const candidate of [oldItem, middleItem, newItem]) candidate.querySelector(".simple-base-item")?.classList.remove("active");
+    item.querySelector(".simple-base-item")?.classList.add("active");
     // 合集切换不会立刻修改地址栏，但活动项和播放清单已经换成新 BVID。
-    root.__INITIAL_STATE__.videoData.bvid = NEW_BVID;
+    root.__INITIAL_STATE__.videoData.bvid = bvid;
+  }
+
+  middleItem.addEventListener("click", () => activate(middleItem, MIDDLE_BVID));
+  newItem.addEventListener("click", () => {
+    activate(newItem, NEW_BVID);
     mixedStateCid = Number(root.__INITIAL_STATE__.videoData.cid);
     root.__BILI_DANMAKU_FACTORY__.resolveIdentity(root.fetch, { bvid: NEW_BVID, part: 1 }).then(
       (identity) => { resolvedIdentity = identity; },
@@ -85,7 +100,7 @@
     );
   });
 
-  root.__navigationTest = { calls, OLD_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
+  root.__navigationTest = { calls, OLD_BVID, MIDDLE_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
   const result = document.getElementById("navigation-result");
   setInterval(() => {
     const oldCall = calls.find((item) => item.marker === OLD_BVID);
@@ -95,8 +110,10 @@
       resolvedIdentity,
       identityError,
       mixedStateCid,
-      playlistReleasedBeforeSwitch: Boolean(oldCall?.destroyed && oldCall.resumeNative === true),
+      playlistReleasedBeforeSwitch: Boolean(oldCall?.destroyed && oldCall.resumeNative === false),
+      intermediateNotAttached: !calls.some((item) => item.marker === MIDDLE_BVID),
       playlistReattached: Boolean(newCall && newCall.identity?.bvid === NEW_BVID),
+      newPlayerSurvivedStaleCallbacks: Boolean(newCall && !newCall.destroyed),
       playlistRestartedAtZero: newCall?.initialTime === 0,
       playlistKeptPlaying: newCall?.initialResume === true,
       activePodKey: document.querySelector(".video-pod__item .simple-base-item.active")?.closest(".video-pod__item")?.dataset.key || "",
@@ -107,11 +124,13 @@
     };
     output.pass = output.playlistReleasedBeforeSwitch
       && output.playlistReattached
+      && output.intermediateNotAttached
+      && output.newPlayerSurvivedStaleCallbacks
       && output.playlistRestartedAtZero
       && output.playlistKeptPlaying
       && output.activePodKey === NEW_BVID
       && output.resolvedIdentity?.bvid === NEW_BVID
-      && output.resolvedIdentity?.cid === 202
+      && output.resolvedIdentity?.cid === 303
       && !output.identityError;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
@@ -122,6 +141,9 @@
   const switchTimer = setInterval(() => {
     if (!calls.some((item) => item.marker === OLD_BVID)) return;
     clearInterval(switchTimer);
-    newItem.querySelector("span")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    middleItem.querySelector("span")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    setTimeout(() => {
+      newItem.querySelector("span")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    }, 25);
   }, 25);
 })(globalThis);
