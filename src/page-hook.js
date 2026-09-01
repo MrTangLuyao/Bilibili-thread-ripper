@@ -3,6 +3,10 @@
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const INSTALL_FLAG = "__biliThreadRipper0901Installed";
+  const BILIBILI_API_ORIGIN = "https://api.bilibili.com";
+  const COMPATIBILITY_RELOAD_KEY = "__btrCompatibilityReloadV1";
+  const COMPATIBILITY_DOCUMENT_ID = root.crypto?.randomUUID?.()
+    || `${Number(root.performance?.timeOrigin || Date.now()).toString(36)}-${Number(root.performance?.now?.() || 0).toString(36)}-${Math.random().toString(36).slice(2)}`;
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
   const SETTINGS_ID = "__bilibili_thread_ripper_native_settings__";
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
@@ -16,6 +20,7 @@
 
   const nativeFetch = root.fetch.bind(root);
   let settings = core.normalizeSettings({});
+  let settingsLoaded = false;
   let player = null;
   let playerRoute = "";
   let playerContainer = null;
@@ -28,10 +33,19 @@
   let publishTimer = null;
   let menuSyncTimer = null;
   let pendingPodSwitch = null;
+  let trustedPodVideoKey = "";
+  let takeoverFailureRoute = "";
+  let takeoverFailureCount = 0;
+  let takeoverFailureStartedAt = 0;
+  let takeoverErrorSequence = 1;
+  let compatibilityReloadTimer = null;
+  let compatibilityReloadRoute = "";
+  let compatibilityReloadTicket = 0;
+  let compatibilityObservedRoute = null;
   let transferSequence = 1;
   const transfers = new Map();
   const stats = {
-    version: "0.9.0.4",
+    version: "0.9.1.0",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -48,8 +62,220 @@
     blockedCdns: 0,
     cdnHosts: [],
     lastHost: "",
-    lastError: ""
+    lastError: "",
+    takeoverError: null
   };
+
+  function clearTakeoverFailure() {
+    takeoverFailureRoute = "";
+    takeoverFailureCount = 0;
+    takeoverFailureStartedAt = 0;
+    stats.takeoverError = null;
+  }
+
+  function recordTakeoverFailure(route, stage, error, fatal = false) {
+    const message = String(error?.message || error || "未知接管错误").slice(0, 180);
+    const now = Date.now();
+    if (takeoverFailureRoute !== route) {
+      takeoverFailureRoute = route;
+      takeoverFailureCount = 0;
+      takeoverFailureStartedAt = now;
+      stats.takeoverError = null;
+    }
+    takeoverFailureCount += 1;
+    stats.lastError = message;
+    const statusMatch = /HTTP\s+(\d{3})/i.exec(message);
+    const status = Number(statusMatch?.[1]) || 0;
+    const permanentClientError = status >= 400 && status < 500 && ![408, 425, 429].includes(status);
+    const shouldExpose = fatal || permanentClientError || takeoverFailureCount >= 2 || now - takeoverFailureStartedAt >= 8000;
+    if (shouldExpose || stats.takeoverError?.route === route) {
+      const previous = stats.takeoverError;
+      stats.playerState = "error";
+      stats.takeoverError = {
+        id: previous?.route === route && previous?.stage === stage && previous?.message === message
+          ? previous.id
+          : takeoverErrorSequence++,
+        at: now,
+        route,
+        stage: String(stage || "unknown").slice(0, 32),
+        message,
+        retryCount: takeoverFailureCount
+      };
+    }
+    publish();
+    scheduleCompatibilityFailureReload(route);
+  }
+
+  function readCompatibilityReloadState() {
+    try {
+      const parsed = JSON.parse(root.sessionStorage.getItem(COMPATIBILITY_RELOAD_KEY) || "null");
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function writeCompatibilityReloadState(value) {
+    try { root.sessionStorage.setItem(COMPATIBILITY_RELOAD_KEY, JSON.stringify(value)); }
+    catch (_error) {}
+  }
+
+  function clearCompatibilityReloadState() {
+    try { root.sessionStorage.removeItem(COMPATIBILITY_RELOAD_KEY); }
+    catch (_error) {}
+  }
+
+  function cancelCompatibilityReload(clearState = false) {
+    compatibilityReloadTicket += 1;
+    clearTimeout(compatibilityReloadTimer);
+    compatibilityReloadTimer = null;
+    compatibilityReloadRoute = "";
+    if (clearState) clearCompatibilityReloadState();
+  }
+
+  function observeCompatibilityRoute(identity) {
+    const route = identity?.key || "";
+    if (compatibilityObservedRoute === null) {
+      compatibilityObservedRoute = route;
+      return;
+    }
+    if (compatibilityObservedRoute === route) return;
+    compatibilityObservedRoute = route;
+    cancelCompatibilityReload(true);
+  }
+
+  function compatibilityTargetUrl(identity) {
+    const target = new URL(location.href);
+    const pathMatch = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(target.pathname);
+    const pathId = String(pathMatch?.[1] || "");
+    const targetId = identity.bvid || (identity.aid ? `av${identity.aid}` : "");
+    if (targetId && pathId.toLowerCase() !== targetId.toLowerCase()) {
+      target.pathname = `/video/${targetId}`;
+      target.searchParams.delete("p");
+    }
+    if (identity.part > 1) target.searchParams.set("p", String(identity.part));
+    return target.href;
+  }
+
+  function performCompatibilityReload(identity, route) {
+    if (routeIdentity()?.key !== route) return;
+    const target = compatibilityTargetUrl(identity);
+    if (target !== location.href) root.location.replace(target);
+    else root.location.reload();
+  }
+
+  function scheduleCompatibilityReload(identity, reason) {
+    const compatibilityMode = settings.compatibilityMode || "off";
+    if (!identity || compatibilityMode === "off") return false;
+    const route = identity.key;
+    if (compatibilityReloadTimer && compatibilityReloadRoute === route) return true;
+    cancelCompatibilityReload(false);
+    const previous = readCompatibilityReloadState();
+    const sameAttempt = previous?.mode === compatibilityMode && previous?.route === route;
+    const failures = reason === "failure" ? (sameAttempt ? Number(previous.failures) || 0 : 0) + 1 : 0;
+    writeCompatibilityReloadState({
+      mode: compatibilityMode,
+      route,
+      preflightDone: reason === "failure" ? Boolean(previous?.preflightDone) : false,
+      failures,
+      reason,
+      phase: `${reason}-scheduled`,
+      documentId: COMPATIBILITY_DOCUMENT_ID,
+      updatedAt: Date.now()
+    });
+    compatibilityReloadRoute = route;
+    const ticket = ++compatibilityReloadTicket;
+    const navigationGeneration = routeGeneration;
+    const delay = reason === "preflight" ? 50 : Math.min(5000, 350 * (2 ** Math.min(4, Math.max(0, failures - 1))));
+    compatibilityReloadTimer = setTimeout(() => {
+      if (ticket !== compatibilityReloadTicket) return;
+      if (navigationGeneration !== routeGeneration || routeIdentity()?.key !== route) {
+        compatibilityReloadTimer = null;
+        compatibilityReloadRoute = "";
+        const stale = readCompatibilityReloadState();
+        if (stale?.documentId === COMPATIBILITY_DOCUMENT_ID && stale?.phase === `${reason}-scheduled`) clearCompatibilityReloadState();
+        return;
+      }
+      const scheduled = readCompatibilityReloadState();
+      if (scheduled?.mode !== compatibilityMode || scheduled?.route !== route || scheduled?.documentId !== COMPATIBILITY_DOCUMENT_ID || scheduled?.phase !== `${reason}-scheduled`) {
+        compatibilityReloadTimer = null;
+        compatibilityReloadRoute = "";
+        return;
+      }
+      compatibilityReloadTimer = null;
+      compatibilityReloadRoute = "";
+      writeCompatibilityReloadState({
+        ...scheduled,
+        preflightDone: compatibilityMode === "b" ? true : Boolean(scheduled.preflightDone),
+        phase: `${reason}-issued`,
+        updatedAt: Date.now()
+      });
+      performCompatibilityReload(identity, route);
+    }, delay);
+    return true;
+  }
+
+  function ensureCompatibilityPreflight(identity) {
+    const state = readCompatibilityReloadState();
+    if (["a", "b"].includes(settings.compatibilityMode)
+      && state?.mode === settings.compatibilityMode
+      && state?.route === identity.key
+      && state?.documentId === COMPATIBILITY_DOCUMENT_ID
+      && state?.phase === "failure-issued") {
+      if (Date.now() - (Number(state.updatedAt) || 0) < 1500) return true;
+      return scheduleCompatibilityReload(identity, "failure");
+    }
+    if (settings.compatibilityMode !== "b") return false;
+    if (state?.mode === "b" && state?.route === identity.key) {
+      if (state.documentId === COMPATIBILITY_DOCUMENT_ID && state.phase === "preflight-scheduled") return true;
+      if (state.documentId === COMPATIBILITY_DOCUMENT_ID && state.phase === "preflight-issued") {
+        if (Date.now() - (Number(state.updatedAt) || 0) < 1500) return true;
+        return scheduleCompatibilityReload(identity, "preflight");
+      }
+      if (state.documentId !== COMPATIBILITY_DOCUMENT_ID && state.phase === "preflight-issued") {
+        writeCompatibilityReloadState({
+          ...state,
+          preflightDone: true,
+          phase: "preflight-consumed",
+          documentId: COMPATIBILITY_DOCUMENT_ID,
+          updatedAt: Date.now()
+        });
+        return false;
+      }
+      if (state.documentId !== COMPATIBILITY_DOCUMENT_ID && state.phase === "failure-issued" && state.preflightDone === true) {
+        writeCompatibilityReloadState({
+          ...state,
+          phase: "failure-consumed",
+          documentId: COMPATIBILITY_DOCUMENT_ID,
+          updatedAt: Date.now()
+        });
+        return false;
+      }
+      if (state.documentId === COMPATIBILITY_DOCUMENT_ID && state.preflightDone === true) return false;
+    }
+    return scheduleCompatibilityReload(identity, "preflight");
+  }
+
+  function scheduleCompatibilityFailureReload(route) {
+    if (!settings || !["a", "b"].includes(settings.compatibilityMode)) return;
+    const identity = routeIdentity();
+    if (!identity || identity.key !== route) return;
+    scheduleCompatibilityReload(identity, "failure");
+  }
+
+  function markCompatibilitySuccess(route) {
+    if (compatibilityReloadRoute === route) cancelCompatibilityReload(false);
+    const state = readCompatibilityReloadState();
+    if (!state || state.route !== route || state.mode !== settings.compatibilityMode) return;
+    writeCompatibilityReloadState({
+      ...state,
+      failures: 0,
+      reason: "ready",
+      phase: "ready",
+      documentId: COMPATIBILITY_DOCUMENT_ID,
+      updatedAt: Date.now()
+    });
+  }
 
   function transferSpeed(item, now) {
     if (item.state !== "active" || !item.lastByteAt || now - item.lastByteAt > 1800) return 0;
@@ -180,8 +406,9 @@
       !(candidate instanceof HTMLElement) || candidate.offsetParent !== null || candidate.getClientRects().length > 0
     );
     const candidates = visibleItems.length ? visibleItems : activeItems;
-    const preferred = pendingPodSwitch?.targetVideoKey
-      ? candidates.find((candidate) => String(candidate.getAttribute("data-key") || "").toLowerCase() === pendingPodSwitch.targetVideoKey)
+    const preferredVideoKey = pendingPodSwitch?.targetVideoKey || trustedPodVideoKey;
+    const preferred = preferredVideoKey
+      ? candidates.find((candidate) => String(candidate.getAttribute("data-key") || "").toLowerCase() === preferredVideoKey)
       : null;
     const item = preferred || candidates.at(-1);
     const value = String(item?.getAttribute("data-key") || "").trim();
@@ -193,10 +420,20 @@
     if (!match) return null;
     const pathId = match[1];
     const podBvid = activePodBvid();
-    const rawId = podBvid || pathId;
+    const pathVideoKey = /^BV/i.test(pathId) ? pathId.toLowerCase() : `av${Number(pathId.slice(2)) || 0}`;
+    const podVideoKey = podBvid ? podBvid.toLowerCase() : "";
+    // During an ordinary SPA navigation the previous collection DOM may stay
+    // mounted for a moment. Only let a collection item override the URL when
+    // it is the item captured from the current click transaction.
+    const usePodBvid = Boolean(podBvid && (
+      podVideoKey === pathVideoKey
+      || (pendingPodSwitch?.targetVideoKey && podVideoKey === pendingPodSwitch.targetVideoKey)
+      || (trustedPodVideoKey && podVideoKey === trustedPodVideoKey)
+    ));
+    const rawId = usePodBvid ? podBvid : pathId;
     const bvid = /^BV/i.test(rawId) ? rawId : "";
     const aid = /^av/i.test(rawId) ? Number(rawId.slice(2)) || 0 : 0;
-    const part = podBvid && podBvid.toLowerCase() !== pathId.toLowerCase()
+    const part = usePodBvid && podVideoKey !== pathVideoKey
       ? 1
       : Math.max(1, Number(new URLSearchParams(location.search).get("p")) || 1);
     const videoKey = bvid ? bvid.toLowerCase() : `av${aid}`;
@@ -273,20 +510,35 @@
     catch (_error) { return 0; }
   }
 
-  function observePlayinfo(url, payload) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+  function capturePlayinfoRequest(url) {
+    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return null;
     const identity = routeIdentity();
-    if (!identity || requestedVideoKey(url) !== identity.videoKey) return;
+    const videoKey = requestedVideoKey(url);
     const cid = requestedCid(url);
+    if (!identity || !videoKey || videoKey !== identity.videoKey || !cid) return null;
+    return { routeKey: identity.key, videoKey, cid };
+  }
+
+  function observePlayinfo(url, payload, requestContext = null) {
+    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+    const context = requestContext || capturePlayinfoRequest(url);
+    const identity = routeIdentity();
+    if (!context || !identity || context.routeKey !== identity.key || context.videoKey !== identity.videoKey) return;
+    const cid = Number(context.cid) || 0;
     const expectedCid = routeCids.get(identity.key) || 0;
     // The same BVID can contain many parts. A late response from the previous
     // part must never be cached under, or hot-swapped into, the current part.
-    if (!cid || !expectedCid || cid !== expectedCid) return;
+    // The first response for a new route is allowed to establish its CID only
+    // because its route identity was captured when the request was started.
+    if (!cid || (expectedCid && cid !== expectedCid)) return;
+    if (!expectedCid) routeCids.set(identity.key, cid);
     cachePlayinfo(identity, payload, cid);
     if (player && playerRoute === identity.key) {
+      const observedLifecycle = playerLifecycle;
       player.updatePlayinfo?.(payload).catch((error) => {
-        stats.lastError = String(error?.message || error).slice(0, 180);
-        publish();
+        if (observedLifecycle === playerLifecycle && playerRoute === identity.key && routeIdentity()?.key === identity.key) {
+          recordTakeoverFailure(identity.key, "playinfo-update", error, true);
+        }
       });
     } else {
       clearTimeout(restartTimer);
@@ -294,15 +546,16 @@
     }
   }
 
-  function observeFetchResponse(url, response) {
+  function observeFetchResponse(url, response, requestContext) {
     if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return;
-    response.clone().json().then((payload) => observePlayinfo(url, payload)).catch(() => {});
+    response.clone().json().then((payload) => observePlayinfo(url, payload, requestContext)).catch(() => {});
   }
 
   root.fetch = function (...args) {
     const url = typeof args[0] === "string" || args[0] instanceof URL ? String(args[0]) : String(args[0]?.url || "");
+    const requestContext = capturePlayinfoRequest(url);
     const pending = nativeFetch(...args);
-    pending.then((response) => observeFetchResponse(response.url || url, response)).catch(() => {});
+    pending.then((response) => observeFetchResponse(response.url || url, response, requestContext)).catch(() => {});
     return pending;
   };
 
@@ -311,8 +564,11 @@
     const nativeXhrOpen = xhrPrototype.open;
     const nativeXhrSend = xhrPrototype.send;
     const xhrUrls = new WeakMap();
+    const xhrContexts = new WeakMap();
     xhrPrototype.open = function (method, url, ...args) {
-      xhrUrls.set(this, String(url || ""));
+      const value = String(url || "");
+      xhrUrls.set(this, value);
+      xhrContexts.set(this, capturePlayinfoRequest(value));
       return nativeXhrOpen.call(this, method, url, ...args);
     };
     xhrPrototype.send = function (...args) {
@@ -321,7 +577,7 @@
         this.addEventListener("load", () => {
           try {
             const payload = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
-            observePlayinfo(this.responseURL || url, payload);
+            observePlayinfo(this.responseURL || url, payload, xhrContexts.get(this));
           } catch (_error) {}
         }, { once: true });
       }
@@ -333,7 +589,7 @@
     const query = identity.bvid
       ? `bvid=${encodeURIComponent(identity.bvid)}`
       : `aid=${encodeURIComponent(identity.aid)}`;
-    const viewResponse = await nativeFetch(`/x/web-interface/view?${query}`, { credentials: "include", signal });
+    const viewResponse = await nativeFetch(`${BILIBILI_API_ORIGIN}/x/web-interface/view?${query}`, { credentials: "include", signal });
     if (!viewResponse.ok) throw new Error(`读取视频信息失败（HTTP ${viewResponse.status}）`);
     const viewPayload = await viewResponse.json();
     if (Number(viewPayload?.code) !== 0 || !viewPayload?.data) throw new Error(viewPayload?.message || "读取视频信息失败");
@@ -348,7 +604,7 @@
     const playQuery = canonicalBvid
       ? `bvid=${encodeURIComponent(canonicalBvid)}`
       : `avid=${encodeURIComponent(canonicalAid)}`;
-    const playResponse = await nativeFetch(`/x/player/playurl?${playQuery}&cid=${cid}&qn=127&fnval=4048&fnver=0&fourk=1`, {
+    const playResponse = await nativeFetch(`${BILIBILI_API_ORIGIN}/x/player/playurl?${playQuery}&cid=${cid}&qn=127&fnval=4048&fnver=0&fourk=1`, {
       credentials: "include",
       signal
     });
@@ -441,7 +697,12 @@
           { label: "大陆 CDN", value: "mainland" },
           { label: "海外 CDN", value: "overseas" }
         ], settings.mode),
-        settingGroup("并发线程", "btr-native-concurrency", THREAD_OPTIONS.map((value) => ({ label: String(value), value })), settings.concurrency)
+        settingGroup("并发线程", "btr-native-concurrency", THREAD_OPTIONS.map((value) => ({ label: String(value), value })), settings.concurrency),
+        settingGroup("兼容模式", "btr-native-compatibility", [
+          { label: "标准模式", value: "off" },
+          { label: "兼容模式 A", value: "a" },
+          { label: "兼容模式 B", value: "b" }
+        ], settings.compatibilityMode)
       );
       panel.addEventListener("change", (event) => {
         const input = event.target;
@@ -451,6 +712,8 @@
         } else if (input.name === "btr-native-concurrency") {
           const concurrency = Number(input.value);
           if (THREAD_OPTIONS.includes(concurrency)) root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { concurrency } }, "*");
+        } else if (input.name === "btr-native-compatibility" && ["off", "a", "b"].includes(input.value)) {
+          root.postMessage({ channel: CHANNEL, type: "settings-update", payload: { compatibilityMode: input.value } }, "*");
         }
       });
       const before = mount.querySelector(".bpx-player-ctrl-setting-others");
@@ -458,6 +721,7 @@
     }
     for (const input of panel.querySelectorAll('input[name="btr-native-mode"]')) input.checked = input.value === settings.mode;
     for (const input of panel.querySelectorAll('input[name="btr-native-concurrency"]')) input.checked = Number(input.value) === settings.concurrency;
+    for (const input of panel.querySelectorAll('input[name="btr-native-compatibility"]')) input.checked = input.value === settings.compatibilityMode;
   }
 
   function scheduleSettingsMenuSync() {
@@ -499,6 +763,8 @@
       readyAt: Date.now() + 650,
       expiresAt: Date.now() + 4000
     };
+    clearTakeoverFailure();
+    stats.lastError = "";
     routeGeneration += 1;
     routeRequestController?.abort();
     routeRequestController = null;
@@ -530,9 +796,16 @@
   async function startPlayer() {
     clearTimeout(restartTimer);
     restartTimer = null;
+    if (!settingsLoaded) {
+      restartTimer = setTimeout(startPlayer, 100);
+      return;
+    }
     const identity = routeIdentity();
+    observeCompatibilityRoute(identity);
     if (!settings.enabled || !identity) {
       pendingPodSwitch = null;
+      clearTakeoverFailure();
+      stats.lastError = "";
       if (player) stopPlayer(true);
       earlyMask?.release?.();
       return;
@@ -547,6 +820,16 @@
       }
     }
     const route = identity.key;
+    if (takeoverFailureRoute && takeoverFailureRoute !== route) {
+      clearTakeoverFailure();
+      stats.lastError = "";
+    }
+    if (ensureCompatibilityPreflight(identity)) {
+      stats.playerState = "waiting";
+      schedulePublish();
+      earlyMask?.release?.();
+      return;
+    }
     if (!player && failedRoute === route) {
       earlyMask?.release?.();
       return;
@@ -559,7 +842,7 @@
     earlyMask?.arm?.();
     const container = findContainer();
     if (!container) {
-      stats.playerState = "waiting";
+      stats.playerState = stats.takeoverError?.route === route ? "error" : "waiting";
       schedulePublish();
       restartTimer = setTimeout(startPlayer, 350);
       return;
@@ -577,8 +860,8 @@
         playinfo = await fetchRoutePlayinfo(identity, controller.signal);
       } catch (error) {
         if (error?.name !== "AbortError" && generation === routeGeneration && routeIdentity()?.key === route) {
-          stats.lastError = String(error?.message || error).slice(0, 180);
-          restartTimer = setTimeout(startPlayer, 700);
+          recordTakeoverFailure(route, "playinfo", error);
+          restartTimer = setTimeout(startPlayer, stats.takeoverError?.route === route ? 2500 : 700);
         }
         return;
       } finally {
@@ -618,6 +901,11 @@
         },
         onSegment(event) {
           if (lifecycle !== playerLifecycle) return;
+          if (takeoverFailureRoute === route || stats.takeoverError?.route === route) {
+            clearTakeoverFailure();
+            stats.lastError = "";
+          }
+          markCompatibilitySuccess(route);
           stats.acceleratedRequests += 1;
           stats.acceleratedBytes += Number(event.bytes) || 0;
           stats.parallelSubrequests += Number(event.pieces) || 0;
@@ -627,6 +915,11 @@
           if (lifecycle !== playerLifecycle) return;
           stats.mode = next.mode || settings.mode;
           stats.playerState = next.playerState || stats.playerState;
+          if (next.playerState === "ready" && (takeoverFailureRoute === route || stats.takeoverError?.route === route)) {
+            clearTakeoverFailure();
+            stats.lastError = "";
+          }
+          if (next.playerState === "ready") markCompatibilitySuccess(route);
           stats.quality = next.quality || stats.quality;
           stats.bufferedAhead = Number(next.bufferedAhead) || 0;
           stats.lastError = next.lastError ? String(next.lastError).slice(0, 180) : stats.lastError;
@@ -644,9 +937,7 @@
         onFatal(error) {
           if (lifecycle !== playerLifecycle) return;
           failedRoute = route;
-          stats.playerState = "error";
-          stats.lastError = String(error?.message || error).slice(0, 180);
-          publish();
+          recordTakeoverFailure(route, "mse", error, true);
           setTimeout(() => {
             if (lifecycle === playerLifecycle && player && playerRoute === route && stats.playerState === "error") {
               stopPlayer(true);
@@ -665,13 +956,14 @@
       player = nextPlayer;
       playerRoute = route;
       playerContainer = container;
-      if (isPodSwitch) pendingPodSwitch = null;
+      if (isPodSwitch) {
+        trustedPodVideoKey = identity.videoKey;
+        pendingPodSwitch = null;
+      }
       earlyMask?.release?.();
     } catch (error) {
       if (lifecycle !== playerLifecycle) return;
-      stats.playerState = "error";
-      stats.lastError = String(error?.message || error).slice(0, 180);
-      publish();
+      recordTakeoverFailure(route, "create", error, true);
       earlyMask?.release?.();
       restartTimer = setTimeout(startPlayer, 2000);
     }
@@ -679,6 +971,7 @@
 
   function restartPlayer(force = false) {
     clearTimeout(restartTimer);
+    if (force && compatibilityReloadTimer) cancelCompatibilityReload(true);
     const identity = routeIdentity();
     if (!force && player && identity?.key === playerRoute && playerContainer?.isConnected && player.video?.isConnected) {
       earlyMask?.release?.();
@@ -699,25 +992,63 @@
     if (event.source !== root || event.data?.channel !== CHANNEL) return;
     if (event.data.type === "settings") {
       const previous = settings;
+      const hadLoadedSettings = settingsLoaded;
       settings = core.normalizeSettings(event.data.payload);
+      settingsLoaded = true;
       stats.mode = settings.mode;
       syncSettingsMenu();
-      if (!settings.enabled) stopPlayer(true);
-      else if (!previous.enabled || previous.mode !== settings.mode) restartPlayer(true);
+      if (settings.compatibilityMode === "off") {
+        cancelCompatibilityReload(true);
+      }
+      if (!settings.enabled) {
+        cancelCompatibilityReload(true);
+        clearTakeoverFailure();
+        stats.lastError = "";
+        stopPlayer(true);
+      }
+      else if (!previous.enabled || previous.mode !== settings.mode || previous.compatibilityMode !== settings.compatibilityMode) {
+        if (hadLoadedSettings && previous.compatibilityMode !== settings.compatibilityMode) cancelCompatibilityReload(true);
+        restartPlayer(true);
+      }
       else {
         player?.applySettings?.(settings);
         startPlayer();
       }
     } else if (event.data.type === "get-stats") {
       publish();
+    } else if (event.data.type === "retry-takeover") {
+      cancelCompatibilityReload(false);
+      clearTakeoverFailure();
+      stats.lastError = "";
+      failedRoute = "";
+      restartPlayer(true);
     }
   });
 
   const nativePushState = history.pushState.bind(history);
   const nativeReplaceState = history.replaceState.bind(history);
-  history.pushState = function (...args) { const result = nativePushState(...args); restartPlayer(false); return result; };
-  history.replaceState = function (...args) { const result = nativeReplaceState(...args); restartPlayer(false); return result; };
-  root.addEventListener("popstate", () => restartPlayer(false));
+  const pathVideoKey = () => {
+    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
+    return String(match?.[1] || "").toLowerCase();
+  };
+  history.pushState = function (...args) {
+    const previousPathVideoKey = pathVideoKey();
+    const result = nativePushState(...args);
+    if (!pendingPodSwitch && pathVideoKey() !== previousPathVideoKey) trustedPodVideoKey = "";
+    restartPlayer(false);
+    return result;
+  };
+  history.replaceState = function (...args) {
+    const previousPathVideoKey = pathVideoKey();
+    const result = nativeReplaceState(...args);
+    if (!pendingPodSwitch && pathVideoKey() !== previousPathVideoKey) trustedPodVideoKey = "";
+    restartPlayer(false);
+    return result;
+  };
+  root.addEventListener("popstate", () => {
+    trustedPodVideoKey = "";
+    restartPlayer(false);
+  });
   document.addEventListener("click", preparePodSwitch, true);
   const settingsObserver = new MutationObserver(scheduleSettingsMenuSync);
   const startSettingsObserver = () => {
@@ -731,7 +1062,7 @@
   startSettingsObserver();
   setInterval(() => {
     const identity = routeIdentity();
-    if (settings.enabled && (!player || playerRoute !== identity?.key || !playerContainer?.isConnected || !player.video?.isConnected)) startPlayer();
+    if (settingsLoaded && settings.enabled && (!player || playerRoute !== identity?.key || !playerContainer?.isConnected || !player.video?.isConnected)) startPlayer();
     syncSettingsMenu();
   }, 1000);
 
@@ -740,9 +1071,9 @@
     value: Object.freeze({
       getPlayer: () => player,
       getSettings: () => ({ ...settings }),
-      getStats: () => ({ ...stats, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
+      getStats: () => ({ ...stats, takeoverError: stats.takeoverError ? { ...stats.takeoverError } : null, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
-      version: "0.9.0.4"
+      version: "0.9.1.0"
     })
   });
   publish();

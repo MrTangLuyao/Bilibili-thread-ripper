@@ -2,8 +2,10 @@
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.9.0.4";
+  const VERSION = "0.9.1.0";
   const WATERMARK_ID = "__bilibili_thread_ripper_watermark__";
+  const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
+  const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const ONBOARDING_ID = "__bilibili_thread_ripper_onboarding__";
   const ONBOARDING_STYLE_ID = "__bilibili_thread_ripper_onboarding_style__";
   const ONBOARDING_STORAGE_KEY = "btrOnboardingRevision";
@@ -21,7 +23,7 @@
     mode: 0,
     color: "#FFFFFF"
   });
-  const DEFAULTS = { enabled: true, concurrency: 32, volume: 0.7, danmaku: DEFAULT_DANMAKU, mode: "mainland", subtitleLanguage: "off", subtitleLastLanguage: "" };
+  const DEFAULTS = { enabled: true, concurrency: 32, volume: 0.7, danmaku: DEFAULT_DANMAKU, mode: "mainland", compatibilityMode: "off", subtitleLanguage: "off", subtitleLastLanguage: "" };
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
@@ -61,6 +63,12 @@
       #${ONBOARDING_ID} .btr-onboarding-mode input:focus-visible+.btr-onboarding-mode-body{outline:2px solid #00aeec!important;outline-offset:2px!important}
       #${ONBOARDING_ID} .btr-onboarding-mode-name{display:block!important;margin:0 0 5px!important;font-size:14px!important;line-height:20px!important;font-weight:600!important}
       #${ONBOARDING_ID} .btr-onboarding-mode-note{display:block!important;color:#9499a0!important;font-size:12px!important;line-height:18px!important;font-weight:400!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat-list{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:8px!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat{position:relative!important;display:block!important;cursor:pointer!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat input{position:absolute!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat-label{display:flex!important;align-items:center!important;justify-content:center!important;min-height:38px!important;padding:8px!important;border:1px solid #dcdfe3!important;border-radius:6px!important;background:#fff!important;color:#61666d!important;font-size:13px!important;line-height:20px!important;font-weight:500!important;text-align:center!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat input:checked+.btr-onboarding-compat-label{border-color:#fb7299!important;background:#fff1f5!important;color:#18191c!important}
+      #${ONBOARDING_ID} .btr-onboarding-compat input:focus-visible+.btr-onboarding-compat-label{outline:2px solid #00aeec!important;outline-offset:2px!important}
       #${ONBOARDING_ID} .btr-onboarding-thread-head{display:flex!important;align-items:center!important;justify-content:space-between!important;margin:0 0 6px!important}
       #${ONBOARDING_ID} .btr-onboarding-thread-value{color:#fb7299!important;font-size:22px!important;line-height:28px!important;font-weight:700!important;font-variant-numeric:tabular-nums!important}
       #${ONBOARDING_ID} input[type="range"]{display:block!important;width:100%!important;height:24px!important;margin:0!important;accent-color:#fb7299!important;cursor:pointer!important}
@@ -128,6 +136,31 @@
     }
     modeFieldset.append(modeLegend, modeList);
 
+    const compatibilityFieldset = document.createElement("fieldset");
+    const compatibilityLegend = document.createElement("legend");
+    compatibilityLegend.textContent = "兼容模式";
+    const compatibilityList = document.createElement("div");
+    compatibilityList.className = "btr-onboarding-compat-list";
+    for (const option of [
+      { value: "off", name: "标准模式" },
+      { value: "a", name: "兼容模式 A" },
+      { value: "b", name: "兼容模式 B" }
+    ]) {
+      const label = document.createElement("label");
+      label.className = "btr-onboarding-compat";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "btr-onboarding-compatibility";
+      input.value = option.value;
+      input.checked = option.value === latestSettings.compatibilityMode;
+      const text = document.createElement("span");
+      text.className = "btr-onboarding-compat-label";
+      text.textContent = option.name;
+      label.append(input, text);
+      compatibilityList.append(label);
+    }
+    compatibilityFieldset.append(compatibilityLegend, compatibilityList);
+
     const threadFieldset = document.createElement("fieldset");
     const threadHead = document.createElement("div");
     threadHead.className = "btr-onboarding-thread-head";
@@ -172,11 +205,13 @@
     status.setAttribute("aria-live", "polite");
     save.addEventListener("click", () => {
       const mode = panel.querySelector('input[name="btr-onboarding-mode"]:checked')?.value === "overseas" ? "overseas" : "mainland";
+      const compatibilityValue = panel.querySelector('input[name="btr-onboarding-compatibility"]:checked')?.value;
+      const compatibilityMode = ["a", "b"].includes(compatibilityValue) ? compatibilityValue : "off";
       const concurrency = THREAD_OPTIONS[Number(threadRange.value)] || 32;
       save.disabled = true;
       save.textContent = "正在保存…";
-      latestSettings = normalizeStoredSettings({ ...latestSettings, enabled: true, mode, concurrency });
-      chrome.storage.sync.set({ enabled: true, mode, concurrency }, () => {
+      latestSettings = normalizeStoredSettings({ ...latestSettings, enabled: true, mode, compatibilityMode, concurrency });
+      chrome.storage.sync.set({ enabled: true, mode, compatibilityMode, concurrency }, () => {
         if (chrome.runtime.lastError) {
           status.textContent = `保存失败：${chrome.runtime.lastError.message}`;
           save.disabled = false;
@@ -199,7 +234,7 @@
       });
     });
 
-    panel.append(heading, lead, modeFieldset, threadFieldset, tip, save, status);
+    panel.append(heading, lead, modeFieldset, compatibilityFieldset, threadFieldset, tip, save, status);
     overlay.append(panel);
     mount.append(overlay);
     save.focus({ preventScroll: true });
@@ -247,6 +282,7 @@
       volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
       danmaku: normalizeDanmaku(input?.danmaku, input?.danmakuFontSize),
       mode: input?.mode === "overseas" ? "overseas" : "mainland",
+      compatibilityMode: ["a", "b"].includes(input?.compatibilityMode) ? input.compatibilityMode : "off",
       subtitleLanguage: /^[\w-]+$/i.test(String(input?.subtitleLanguage || "off"))
         ? String(input.subtitleLanguage).slice(0, 48)
         : "off",
@@ -307,15 +343,144 @@
     mount.append(watermark);
   }
 
+  function normalizeTakeoverError(input) {
+    if (!input || typeof input !== "object") return null;
+    const at = Math.max(0, Number(input.at) || 0);
+    const retryCount = Math.max(0, Math.min(999, Math.trunc(Number(input.retryCount) || 0)));
+    const message = String(input.message || "接管失败").slice(0, 500);
+    return {
+      id: String(input.id || `${at}:${message}`).slice(0, 160),
+      at,
+      route: String(input.route || "").slice(0, 180),
+      stage: String(input.stage || "unknown").slice(0, 80),
+      message,
+      retryCount
+    };
+  }
+
+  function removeTakeoverErrorNotice() {
+    document.getElementById(ERROR_NOTICE_ID)?.remove();
+    document.getElementById(ERROR_NOTICE_STYLE_ID)?.remove();
+  }
+
+  function formatErrorTime(timestamp) {
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return "未知";
+    try {
+      return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
+    } catch (_error) {
+      return new Date(timestamp).toISOString();
+    }
+  }
+
+  function syncTakeoverErrorNotice() {
+    const error = latestStats?.takeoverError;
+    if (!loaded || latestSettings.enabled === false || !error || ["ready", "disabled"].includes(latestStats?.playerState)) {
+      removeTakeoverErrorNotice();
+      return;
+    }
+    if (window.top !== window) return;
+    const mount = document.body || document.documentElement;
+    if (!mount) {
+      document.addEventListener("DOMContentLoaded", syncTakeoverErrorNotice, { once: true });
+      return;
+    }
+
+    if (!document.getElementById(ERROR_NOTICE_STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = ERROR_NOTICE_STYLE_ID;
+      style.textContent = `
+        #${ERROR_NOTICE_ID}{position:fixed!important;left:20px!important;bottom:20px!important;z-index:2147483646!important;width:min(360px,calc(100vw - 40px))!important;box-sizing:border-box!important;border:1px solid #35373c!important;border-left:4px solid #fb7299!important;border-radius:6px!important;background:#18191c!important;color:#f1f2f3!important;font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif!important;box-shadow:none!important}
+        #${ERROR_NOTICE_ID} *{box-sizing:border-box!important}
+        #${ERROR_NOTICE_ID} .btr-error-summary{padding:13px 15px 12px!important}
+        #${ERROR_NOTICE_ID} .btr-error-title{margin:0!important;color:#f1f2f3!important;font-size:14px!important;font-weight:600!important;line-height:20px!important}
+        #${ERROR_NOTICE_ID} .btr-error-toggle{display:inline-block!important;margin:3px 0 0!important;padding:0!important;border:0!important;background:transparent!important;color:#fb7299!important;font:400 12px/18px "Microsoft YaHei","PingFang SC",Arial,sans-serif!important;text-align:left!important;cursor:pointer!important}
+        #${ERROR_NOTICE_ID} .btr-error-toggle:hover{text-decoration:underline!important}
+        #${ERROR_NOTICE_ID} .btr-error-toggle:focus-visible,#${ERROR_NOTICE_ID} .btr-error-retry:focus-visible{outline:2px solid #00aeec!important;outline-offset:2px!important}
+        #${ERROR_NOTICE_ID} .btr-error-details{display:none!important;padding:0 15px 14px!important;border-top:1px solid #2f3136!important}
+        #${ERROR_NOTICE_ID}[data-expanded="true"] .btr-error-details{display:block!important}
+        #${ERROR_NOTICE_ID} .btr-error-log{margin:11px 0 12px!important;padding:10px!important;border:0!important;border-radius:4px!important;background:#222328!important;color:#c9ccd0!important;font:12px/1.6 Consolas,"Microsoft YaHei",monospace!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;user-select:text!important}
+        #${ERROR_NOTICE_ID} .btr-error-retry{height:30px!important;margin:0!important;padding:0 13px!important;border:0!important;border-radius:4px!important;background:#fb7299!important;color:#fff!important;font:600 12px/30px "Microsoft YaHei","PingFang SC",Arial,sans-serif!important;cursor:pointer!important}
+        #${ERROR_NOTICE_ID} .btr-error-retry:hover{background:#fc8bab!important}
+        #${ERROR_NOTICE_ID} .btr-error-retry:disabled{background:#6b4b55!important;color:#d8c5cb!important;cursor:default!important}
+        @media(max-width:520px){#${ERROR_NOTICE_ID}{left:12px!important;bottom:12px!important;width:calc(100vw - 24px)!important}}
+      `;
+      (document.head || document.documentElement).append(style);
+    }
+
+    let notice = document.getElementById(ERROR_NOTICE_ID);
+    if (!notice) {
+      notice = document.createElement("section");
+      notice.id = ERROR_NOTICE_ID;
+      notice.dataset.expanded = "false";
+      notice.setAttribute("role", "alert");
+      notice.setAttribute("aria-live", "assertive");
+      notice.setAttribute("aria-atomic", "true");
+
+      const summary = document.createElement("div");
+      summary.className = "btr-error-summary";
+      const title = document.createElement("p");
+      title.className = "btr-error-title";
+      title.textContent = "Bilibili 线程撕裂者错误";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "btr-error-toggle";
+      toggle.textContent = "检查错误日志";
+      toggle.setAttribute("aria-expanded", "false");
+      summary.append(title, toggle);
+
+      const details = document.createElement("div");
+      details.className = "btr-error-details";
+      const log = document.createElement("pre");
+      log.className = "btr-error-log";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btr-error-retry";
+      retry.textContent = "重新接管";
+      details.append(log, retry);
+      notice.append(summary, details);
+
+      toggle.addEventListener("click", () => {
+        const expanded = notice.dataset.expanded !== "true";
+        notice.dataset.expanded = String(expanded);
+        toggle.setAttribute("aria-expanded", String(expanded));
+      });
+      retry.addEventListener("click", () => {
+        retry.disabled = true;
+        retry.textContent = "正在重新接管…";
+        window.postMessage({ channel: CHANNEL, type: "retry-takeover" }, "*");
+        setTimeout(() => {
+          if (!retry.isConnected) return;
+          retry.disabled = false;
+          retry.textContent = "重新接管";
+        }, 1800);
+      });
+      mount.append(notice);
+    }
+
+    notice.dataset.errorId = error.id;
+    const log = notice.querySelector(".btr-error-log");
+    if (log) {
+      log.textContent = [
+        `当前 URL：${String(location.href).slice(0, 2048)}`,
+        `时间：${formatErrorTime(error.at)}`,
+        `阶段：${error.stage || "unknown"}`,
+        `路由：${error.route || "未知"}`,
+        `错误：${error.message}`,
+        `重试次数：${error.retryCount}`
+      ].join("\n");
+    }
+  }
+
   chrome.storage.sync.get(null, (stored) => {
     const migrated = { ...DEFAULTS, ...stored };
     if (!stored.danmaku && stored.danmakuFontSize !== undefined) {
       migrated.danmaku = { ...DEFAULT_DANMAKU, fontSize: stored.danmakuFontSize };
     }
     latestSettings = normalizeStoredSettings(migrated);
-    if (stored.mode !== latestSettings.mode || stored.concurrency !== latestSettings.concurrency || stored.volume !== latestSettings.volume || stored.subtitleLanguage !== latestSettings.subtitleLanguage || stored.subtitleLastLanguage !== latestSettings.subtitleLastLanguage || JSON.stringify(stored.danmaku) !== JSON.stringify(latestSettings.danmaku)) {
+    if (stored.mode !== latestSettings.mode || stored.compatibilityMode !== latestSettings.compatibilityMode || stored.concurrency !== latestSettings.concurrency || stored.volume !== latestSettings.volume || stored.subtitleLanguage !== latestSettings.subtitleLanguage || stored.subtitleLastLanguage !== latestSettings.subtitleLastLanguage || JSON.stringify(stored.danmaku) !== JSON.stringify(latestSettings.danmaku)) {
       chrome.storage.sync.set({
         mode: latestSettings.mode,
+        compatibilityMode: latestSettings.compatibilityMode,
         concurrency: latestSettings.concurrency,
         volume: latestSettings.volume,
         subtitleLanguage: latestSettings.subtitleLanguage,
@@ -325,6 +490,7 @@
     }
     loaded = true;
     syncWatermark();
+    syncTakeoverErrorNotice();
     updateBadge();
     postSettings();
     showOnboardingIfNeeded();
@@ -338,6 +504,7 @@
     latestSettings = normalizeStoredSettings(latestSettings);
     loaded = true;
     syncWatermark();
+    syncTakeoverErrorNotice();
     updateBadge();
     postSettings();
   });
@@ -379,6 +546,7 @@
       if (!input || typeof input !== "object") return;
       const update = {};
       if (input.mode === "mainland" || input.mode === "overseas") update.mode = input.mode;
+      if (["off", "a", "b"].includes(input.compatibilityMode)) update.compatibilityMode = input.compatibilityMode;
       const concurrency = Math.trunc(Number(input.concurrency));
       if ([4, 8, 16, 32, 64, 128].includes(concurrency)) update.concurrency = concurrency;
       const volume = Number(input.volume);
@@ -410,6 +578,7 @@
       blockedCdns: Math.max(0, Number(input.blockedCdns) || 0),
       lastHost: String(input.lastHost || "").slice(0, 120),
       lastError: String(input.lastError || "").slice(0, 180),
+      takeoverError: normalizeTakeoverError(input.takeoverError),
       cdnHosts: Array.isArray(input.cdnHosts) ? input.cdnHosts.slice(0, 32).map((item) => ({
         host: String(item?.host || "").slice(0, 120),
         state: ["healthy", "blocked", "untested"].includes(item?.state) ? item.state : "untested"
@@ -426,6 +595,7 @@
       })) : []
     };
     updateBadge();
+    syncTakeoverErrorNotice();
   });
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

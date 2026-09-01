@@ -106,15 +106,24 @@ function setSlider(threads) {
 }
 
 async function init() {
-  const stored = await chrome.storage.sync.get({ enabled: true, concurrency: 32, mode: "mainland" });
+  const stored = await chrome.storage.sync.get({
+    enabled: true,
+    concurrency: 32,
+    mode: "mainland",
+    compatibilityMode: "off"
+  });
   enabled.checked = stored.enabled !== false;
   setSlider(stored.concurrency);
   const chosen = document.querySelector(`input[name="mode"][value="${stored.mode === "overseas" ? "overseas" : "mainland"}"]`);
+  const compatibilityValue = ["off", "a", "b"].includes(stored.compatibilityMode) ? stored.compatibilityMode : "off";
+  const compatibilityChosen = document.querySelector(`input[name="compatibility-mode"][value="${compatibilityValue}"]`);
   chosen.checked = true;
+  compatibilityChosen.checked = true;
   await chrome.storage.sync.set({
     enabled: enabled.checked,
     concurrency: THREAD_OPTIONS[Number(concurrency.value)],
-    mode: chosen.value
+    mode: chosen.value,
+    compatibilityMode: compatibilityChosen.value
   });
   enabled.addEventListener("change", () => chrome.storage.sync.set({ enabled: enabled.checked }));
   concurrency.addEventListener("input", () => {
@@ -127,6 +136,21 @@ async function init() {
       if (radio.checked) chrome.storage.sync.set({ mode: radio.value });
     });
   }
+  for (const radio of document.querySelectorAll('input[name="compatibility-mode"]')) {
+    radio.addEventListener("change", () => {
+      if (radio.checked) chrome.storage.sync.set({ compatibilityMode: radio.value });
+    });
+  }
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "sync") return;
+    if (changes.compatibilityMode) {
+      const next = ["off", "a", "b"].includes(changes.compatibilityMode.newValue)
+        ? changes.compatibilityMode.newValue
+        : "off";
+      const radio = document.querySelector(`input[name="compatibility-mode"][value="${next}"]`);
+      if (radio) radio.checked = true;
+    }
+  });
   await refresh();
   timer = setInterval(refresh, 400);
 }

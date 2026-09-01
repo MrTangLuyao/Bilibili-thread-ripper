@@ -67,7 +67,11 @@ http.createServer(async (request, response) => {
       } else response.end(Buffer.from(await upstream.arrayBuffer()));
       return;
     }
-    const relative = url.pathname === "/" ? "dev/harness.html" : decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    const relative = /^\/video\/BV1compat[0-9]+$/i.test(url.pathname) && ["a", "b"].includes(url.searchParams.get("mode"))
+      ? "dev/compatibility-mode-test.html"
+      : url.pathname === "/"
+        ? "dev/harness.html"
+        : decodeURIComponent(url.pathname).replace(/^\/+/, "");
     const target = path.resolve(root, relative);
     if (!target.startsWith(`${root}${path.sep}`) || !fs.statSync(target).isFile()) throw new Error("not found");
     response.writeHead(200, { "Content-Type": types[path.extname(target)] || "application/octet-stream", "Cache-Control": "no-store" });

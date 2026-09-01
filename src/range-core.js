@@ -96,10 +96,14 @@
       color: /^#[0-9A-F]{6}$/.test(requestedColor) ? requestedColor : "#FFFFFF"
     };
     const mode = source.mode === "overseas" ? "overseas" : "mainland";
+    const compatibilityMode = ["a", "b"].includes(String(source.compatibilityMode || "").toLowerCase())
+      ? String(source.compatibilityMode).toLowerCase()
+      : "off";
     const requestedVolume = Number(source.volume);
     return {
       enabled: source.enabled !== false,
       mode,
+      compatibilityMode,
       concurrency: allowed.includes(requested) ? requested : 32,
       volume: Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 0.7,
       subtitleLanguage: /^[\w-]+$/i.test(String(source.subtitleLanguage || "off"))

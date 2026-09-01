@@ -6,6 +6,7 @@
   const MIDDLE_BVID = "BV1midRoute03";
   const NEW_BVID = "BV1newRoute02";
   const calls = [];
+  const apiRequests = [];
   let resolvedIdentity = null;
   let identityError = "";
   let mixedStateCid = 0;
@@ -68,6 +69,8 @@
     const url = new URL(String(input), location.href);
     const bvid = url.searchParams.get("bvid") || "";
     if (url.pathname === "/x/web-interface/view") {
+      apiRequests.push(url.href);
+      if (url.origin !== "https://api.bilibili.com") return new Response("not found", { status: 404 });
       const cid = bvid === MIDDLE_BVID ? 202 : bvid === NEW_BVID ? 303 : 101;
       return new Response(JSON.stringify({ code: 0, data: { aid: cid, bvid, cid, pages: [{ cid }] } }), {
         status: 200,
@@ -75,6 +78,8 @@
       });
     }
     if (url.pathname === "/x/player/playurl") {
+      apiRequests.push(url.href);
+      if (url.origin !== "https://api.bilibili.com") return new Response("not found", { status: 404 });
       return new Response(JSON.stringify({ code: 0, data: { dash: { duration: 200, video: [], audio: [] }, marker: bvid } }), {
         status: 200,
         headers: { "content-type": "application/json" }
@@ -100,7 +105,7 @@
     );
   });
 
-  root.__navigationTest = { calls, OLD_BVID, MIDDLE_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
+  root.__navigationTest = { calls, apiRequests, OLD_BVID, MIDDLE_BVID, NEW_BVID, get resolvedIdentity() { return resolvedIdentity; }, get identityError() { return identityError; }, get mixedStateCid() { return mixedStateCid; } };
   const result = document.getElementById("navigation-result");
   setInterval(() => {
     const oldCall = calls.find((item) => item.marker === OLD_BVID);
@@ -110,6 +115,10 @@
       resolvedIdentity,
       identityError,
       mixedStateCid,
+      apiRequests,
+      apiFallbackUsedCorrectOrigin: apiRequests.some((url) => url.includes("/x/web-interface/view"))
+        && apiRequests.some((url) => url.includes("/x/player/playurl"))
+        && apiRequests.every((url) => new URL(url).origin === "https://api.bilibili.com"),
       playlistReleasedBeforeSwitch: Boolean(oldCall?.destroyed && oldCall.resumeNative === false),
       intermediateNotAttached: !calls.some((item) => item.marker === MIDDLE_BVID),
       playlistReattached: Boolean(newCall && newCall.identity?.bvid === NEW_BVID),
@@ -120,6 +129,7 @@
       debugVersion: root.__biliThreadRipperDebug?.version || "",
       settingsPanelCount: document.querySelectorAll("#__bilibili_thread_ripper_native_settings__").length,
       settingsStrategy: document.getElementById("__bilibili_thread_ripper_native_settings__")?.dataset.btrStrategy || "",
+      compatibilityOptions: Array.from(document.querySelectorAll('input[name="btr-native-compatibility"]')).map((input) => input.value),
       href: location.href
     };
     output.pass = output.playlistReleasedBeforeSwitch
@@ -128,9 +138,14 @@
       && output.newPlayerSurvivedStaleCallbacks
       && output.playlistRestartedAtZero
       && output.playlistKeptPlaying
+      && output.apiFallbackUsedCorrectOrigin
       && output.activePodKey === NEW_BVID
       && output.resolvedIdentity?.bvid === NEW_BVID
       && output.resolvedIdentity?.cid === 303
+      && output.debugVersion === "0.9.1.0"
+      && output.settingsPanelCount === 1
+      && output.settingsStrategy === "native-ui-progressive-mse-0.8-core"
+      && output.compatibilityOptions.join(",") === "off,a,b"
       && !output.identityError;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);

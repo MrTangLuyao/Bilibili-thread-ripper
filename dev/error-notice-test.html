@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR 0.9.1.0 左下错误提示测试</title>
+</head>
+<body>
+  <pre id="error-notice-result">testing</pre>
+  <script>
+    (() => {
+      const changeListeners = [];
+      const syncState = { enabled: true, mode: "mainland", concurrency: 32 };
+      const localState = { btrOnboardingRevision: "native-progressive-mse-v1" };
+      const area = (state, areaName) => ({
+        get(defaults, callback) { callback({ ...(defaults || {}), ...state }); },
+        set(update, callback) {
+          const changes = {};
+          for (const [key, value] of Object.entries(update || {})) {
+            changes[key] = { oldValue: state[key], newValue: value };
+            state[key] = value;
+          }
+          for (const listener of changeListeners) listener(changes, areaName);
+          callback?.();
+        }
+      });
+      globalThis.chrome = {
+        runtime: { lastError: null, sendMessage() { return Promise.resolve({ ok: true }); }, onMessage: { addListener() {} } },
+        storage: { sync: area(syncState, "sync"), local: area(localState, "local"), onChanged: { addListener(listener) { changeListeners.push(listener); } } }
+      };
+    })();
+  </script>
+  <script src="/src/bridge.js"></script>
+  <script src="/dev/error-notice-test.js"></script>
+</body>
+</html>

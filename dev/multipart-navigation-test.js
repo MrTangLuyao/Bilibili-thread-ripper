@@ -5,6 +5,7 @@
   const BVID = "BV1multiPart1";
   const CIDS = [101, 202, 303];
   const calls = [];
+  const apiRequests = [];
   const nativeVideo = document.querySelector("video");
   const pod = document.createElement("div");
   const items = CIDS.map((cid, index) => {
@@ -72,6 +73,8 @@
       });
     };
     if (url.pathname === "/x/web-interface/view") {
+      apiRequests.push(url.href);
+      if (url.origin !== "https://api.bilibili.com") return new Response("not found", { status: 404 });
       await delay(5);
       return new Response(JSON.stringify({
         code: 0,
@@ -79,6 +82,8 @@
       }), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (/\/x\/player\/(?:wbi\/)?playurl/.test(url.pathname)) {
+      apiRequests.push(url.href);
+      if (url.origin !== "https://api.bilibili.com") return new Response("not found", { status: 404 });
       const cid = Number(url.searchParams.get("cid"));
       if (url.searchParams.get("late") === "1") await delay(cid === 202 ? 140 : 10);
       else await delay(5);
@@ -91,7 +96,7 @@
   };
 
   const result = document.getElementById("multipart-navigation-result");
-  root.__multipartNavigationTest = { calls };
+  root.__multipartNavigationTest = { calls, apiRequests };
   setInterval(() => {
     const finalCall = [...calls].reverse().find((item) => item.route === `${BVID.toLowerCase()}:p3`);
     const output = {
@@ -99,6 +104,8 @@
       finalRoute: finalCall?.route || "",
       finalMarker: finalCall?.marker || "",
       finalUpdates: finalCall?.updates || [],
+      apiRequests,
+      apiOriginCorrect: apiRequests.length > 0 && apiRequests.every((url) => new URL(url).origin === "https://api.bilibili.com"),
       stalePartRejected: Boolean(finalCall && !finalCall.updates.includes("p2")),
       activePart: items.findIndex((item) => item.classList.contains("active")) + 1,
       href: location.href
@@ -106,6 +113,7 @@
     output.pass = output.finalRoute.endsWith(":p3")
       && output.finalMarker === "p3"
       && output.stalePartRejected
+      && output.apiOriginCorrect
       && output.activePart === 3;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
@@ -118,8 +126,8 @@
     items[1].querySelector("span")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     setTimeout(() => items[2].querySelector("span")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })), 25);
     setTimeout(() => {
-      root.fetch(`/x/player/playurl?bvid=${BVID}&cid=202&late=1`).catch(() => {});
-      root.fetch(`/x/player/playurl?bvid=${BVID}&cid=303&late=1`).catch(() => {});
+      root.fetch(`https://api.bilibili.com/x/player/playurl?bvid=${BVID}&cid=202&late=1`).catch(() => {});
+      root.fetch(`https://api.bilibili.com/x/player/playurl?bvid=${BVID}&cid=303&late=1`).catch(() => {});
     }, 900);
   }, 25);
 })(globalThis);

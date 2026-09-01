@@ -52,6 +52,32 @@ header {
 .mode-select input:checked + span { color: #fff; background: #fb7299; }
 .mode-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }
 
+.compatibility-select {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border: 1px solid #30343d;
+  border-radius: 8px;
+  background: #30343d;
+}
+
+.compatibility-select label { position: relative; }
+.compatibility-select input { position: absolute; opacity: 0; }
+.compatibility-select span {
+  display: block;
+  padding: 10px 3px;
+  color: #949baa;
+  background: #20232a;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.compatibility-select input:checked + span { color: #fff; background: #fb7299; }
+.compatibility-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }
+
 .logo {
   display: grid;
   place-items: center;
