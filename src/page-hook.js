@@ -934,7 +934,7 @@
       "Player Type": `线程撕裂者 ${stats.version} 接管`,
       "Video DataRate": `${Math.round(info.videoBandwidth / 1000)} Kbps [${String(info.codec).toUpperCase()}]`,
       "Audio DataRate": `${Math.round(info.audioBandwidth / 1000)} Kbps`,
-      "Segments": track ? `${track.nextIndex} / ${track.segments}` : undefined,
+      "Segments": track ? `${track.nextIndex} / ${track.segments}${info.lastSeekMs ? `，跳转恢复 ${(info.lastSeekMs / 1000).toFixed(1)} 秒，之后卡顿 ${info.stallsAfterSeek} 次` : ""}` : undefined,
       "Dropped Frames": frames ? `${frames.droppedVideoFrames} / ${frames.totalVideoFrames}` : undefined,
       "Video Host": lastHostByKind.video || undefined,
       "Audio Host": lastHostByKind.audio || undefined,
@@ -1271,6 +1271,17 @@
       getSettings: () => ({ ...settings }),
       getStats: () => ({ ...stats, takeoverError: stats.takeoverError ? { ...stats.takeoverError } : null, threadSpeeds: stats.threadSpeeds.map((item) => ({ ...item })) }),
       restart: () => restartPlayer(true),
+      // Everything needed to see where the time went: run copy(__biliThreadRipperDebug.report())
+      // in the console and paste the result.
+      report: () => {
+        const debug = player?.getDebug?.() || {};
+        const { timeline = [], requests = [], ...rest } = debug;
+        return JSON.stringify({
+          version: stats.version, at: Math.round(performance.now()), settings: { mode: settings.mode, concurrency: settings.concurrency, compatibilityMode: settings.compatibilityMode },
+          state: stats.playerState, player: rest, nodes: nodeStats?.dump?.() || null, bannedNodes: cdnBans?.hosts?.() || [], timeline,
+          requests: requests.map((item) => [item.at, item.kind, item.node.split(".")[0], item.bytes, item.firstByteMs, item.ms, item.end].join(" "))
+        }, null, 1);
+      },
       version: "0.9.1.4"
     })
   });

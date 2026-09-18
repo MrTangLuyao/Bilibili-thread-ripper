@@ -104,14 +104,16 @@
     return String(representation?.baseUrl || representation?.base_url || "");
   }
 
+  // The file without its node and signature: a refreshed playinfo names the same file again.
+  function representationPath(representation) {
+    try { return new URL(representationUrl(representation)).pathname; }
+    catch (_error) { return representationUrl(representation); }
+  }
+
   function sameRepresentation(left, right) {
-    const path = (representation) => {
-      try { return new URL(representationUrl(representation)).pathname; }
-      catch (_error) { return representationUrl(representation); }
-    };
     return Number(left?.id) === Number(right?.id)
       && codecFamily(left) === codecFamily(right)
-      && path(left) === path(right);
+      && representationPath(left) === representationPath(right);
   }
 
   function segmentBase(representation) {
@@ -192,6 +194,20 @@
     let generationSequence = 0;
     let seekTimer = null;
     let seekReloads = 0;
+    let seekRequestedAt = 0;
+    let seekStartedAt = 0;
+    let seekSettledAt = 0;
+    let lastSeekMs = 0;
+    let stallsAfterSeek = 0;
+    // The initialization segment and the index of a representation never change, and a seek
+    // outside the buffer starts a new session for the same one. Asking for them again cost
+    // every such seek a round trip to the CDN before any media could be requested.
+    const trackHeaders = new Map();
+    const timeline = [];
+    function note(what, detail = "") {
+      timeline.push({ at: Math.round(performance.now()), time: Math.round((Number(video.currentTime) || 0) * 10) / 10, what, detail: String(detail) });
+      if (timeline.length > 120) timeline.shift();
+    }
     const eventController = new AbortController();
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
@@ -273,15 +289,23 @@
     }
 
     async function loadTrack(candidate, kind, representation, resolver, sourceBuffer, startTime) {
-      const ranges = segmentBase(representation);
-      const [initialization, indexBytes] = await Promise.all([
-        downloader.downloadRange(ranges.init, resolver, { signal: candidate.controller.signal, parallel: false, kind: "meta" }),
-        downloader.downloadRange(ranges.index, resolver, { signal: candidate.controller.signal, parallel: false, kind: "meta" })
-      ]);
-      if (!sessionIsCurrent(candidate)) throw new DOMException("播放任务已取消", "AbortError");
-      const sidx = sidxTools.parseSidx(indexBytes.bytes, ranges.index.start);
-      if (!sidx?.segments?.length) throw new Error(`${kind === "video" ? "视频" : "音频"} SIDX 解析失败`);
-      options.onLog?.("已经确认数据的下载位置", `找到了 ${sidx.segments.length} 段${kind === "audio" ? "声音" : "画面"}数据。`, "success", "download");
+      const headerKey = `${kind}:${Number(representation?.id) || 0}:${codecFamily(representation)}:${representationPath(representation)}`;
+      let header = trackHeaders.get(headerKey);
+      note(header ? "headers kept" : "headers requested", kind);
+      if (!header) {
+        const ranges = segmentBase(representation);
+        const [initialization, indexBytes] = await Promise.all([
+          downloader.downloadRange(ranges.init, resolver, { signal: candidate.controller.signal, parallel: false, kind: "meta" }),
+          downloader.downloadRange(ranges.index, resolver, { signal: candidate.controller.signal, parallel: false, kind: "meta" })
+        ]);
+        if (!sessionIsCurrent(candidate)) throw new DOMException("播放任务已取消", "AbortError");
+        const parsed = sidxTools.parseSidx(indexBytes.bytes, ranges.index.start);
+        if (!parsed?.segments?.length) throw new Error(`${kind === "video" ? "视频" : "音频"} SIDX 解析失败`);
+        options.onLog?.("已经确认数据的下载位置", `找到了 ${parsed.segments.length} 段${kind === "audio" ? "声音" : "画面"}数据。`, "success", "download");
+        header = { initialization: initialization.bytes, sidx: parsed };
+        trackHeaders.set(headerKey, header);
+      }
+      const { sidx } = header;
       const startupIndex = sidxTools.segmentIndexAt(sidx.segments, startTime);
       const track = {
         kind, representation, resolver, sourceBuffer, sidx,
@@ -296,7 +320,7 @@
         prefetches: new Map(),
         operation: Promise.resolve()
       };
-      await append(candidate, track, initialization.bytes, candidate.generation);
+      await append(candidate, track, header.initialization, candidate.generation);
       return track;
     }
 
@@ -306,6 +330,7 @@
         parallel: true,
         kind: track.kind,
         priority: downloadOptions.priority,
+        hurry: downloadOptions.hurry === true,
         startup: downloadOptions.startup === true,
         onStartupScheduled: downloadOptions.onStartupScheduled,
         onOrderedChunk: downloadOptions.onOrderedChunk || null
@@ -315,7 +340,12 @@
       );
     }
 
+    // Measured once, when the first segments are in. It used to be measured again on every
+    // check with the same bytes over a longer time, so the longer the player waited for its
+    // target, the slower the network looked and the further the target moved away.
     function updateStartupProfile(candidate) {
+      if (candidate.startupProfiled) return candidate.startupTargetSeconds;
+      candidate.startupProfiled = candidate.tracks.length > 0 && candidate.tracks.every((track) => track.startupComplete);
       const elapsedSeconds = Math.max(0.25, (performance.now() - candidate.startupStartedAt) / 1000);
       const throughput = candidate.startupCompletedBytes / elapsedSeconds;
       const required = candidate.tracks.reduce((sum, track) => sum + mediaBytesPerSecond(track), 0);
@@ -336,7 +366,7 @@
         const index = track.startupIndex + 1;
         track.followupScheduled = true;
         const segment = track.sidx.segments[index];
-        if (segment) track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 70 }));
+        if (segment) track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 70, hurry: true }));
       }
       ensureBuffer(candidate);
     }
@@ -367,6 +397,9 @@
             const startup = !track.startupComplete && index === track.startupIndex;
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
+              // With under ten seconds buffered a late segment is a stall, so the downloader
+              // spreads its pieces and copies a slow one sooner.
+              hurry: segment.startTime - current < 10,
               startup,
               onStartupScheduled: startup ? () => {
                 track.startupScheduled = true;
@@ -388,6 +421,7 @@
           if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
           if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
           if (!track.startupComplete && settled.index === track.startupIndex) {
+            note("first segment in", `${track.kind} ${Math.round(settled.result.byteLength / 1024)} KiB in ${settled.result.pieceCount} pieces`);
             track.startupComplete = true;
             candidate.startupCompletedBytes += settled.result.byteLength;
             updateStartupProfile(candidate);
@@ -479,6 +513,14 @@
       const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || target + required) - target);
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
+      note("ready to play", `needed ${required.toFixed(1)} s buffered`);
+      if (seekStartedAt) {
+        lastSeekMs = performance.now() - seekStartedAt;
+        seekStartedAt = 0;
+        seekSettledAt = performance.now();
+        stallsAfterSeek = 0;
+        options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
+      }
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
@@ -549,6 +591,7 @@
       const previous = session;
       selectedVideo = representation;
       sessionStarts += 1;
+      note("session", `${qualityLabel(representation)} ${codecFamily(representation)} from ${Number(playbackState.time || 0).toFixed(1)}`);
       const mediaSource = new MediaSource();
       const objectUrl = URL.createObjectURL(mediaSource);
       const candidate = {
@@ -631,6 +674,8 @@
         return;
       }
       seekReloads += 1;
+      seekStartedAt = seekRequestedAt || performance.now();
+      note("seek outside the buffer", target.toFixed(1));
       options.onLog?.("你跳到的位置还需要加载", `正在为 ${target.toFixed(2)} 秒的位置重新准备数据。`, "info", "buffer");
       await startSession(selectedVideo, {
         time: target,
@@ -642,6 +687,7 @@
     }
 
     function scheduleSeek() {
+      seekRequestedAt = performance.now();
       clearTimeout(seekTimer);
       seekTimer = setTimeout(() => {
         seekTimer = null;
@@ -653,8 +699,10 @@
     video.addEventListener("timeupdate", () => ensureBuffer(), { signal: eventController.signal });
     video.addEventListener("waiting", () => {
       const candidate = session;
+      note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
+        if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
         if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking) {
           candidate.recovering = true;
           candidate.resumeWanted = true;
@@ -666,6 +714,7 @@
       }
     }, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
+    video.addEventListener("playing", () => note("playing"), { signal: eventController.signal });
     video.addEventListener("ended", () => publishState({ playerState: "ended", bufferedAhead: 0 }), { signal: eventController.signal });
 
     function playbackState() {
@@ -780,7 +829,11 @@
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         progressiveAppends: session?.progressiveAppends || 0,
         seekReloads,
+        lastSeekMs: Math.round(lastSeekMs),
+        stallsAfterSeek,
         download: downloader.stats?.() || null,
+        timeline: timeline.slice(),
+        requests: downloader.recent?.() || [],
         tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       })
     });

@@ -12,6 +12,7 @@
   const appended = {};
   let clock = 0;
   let objectUrls = 0;
+  let headerDownloads = 0;
 
   Object.defineProperty(video, "currentTime", { configurable: true, get: () => clock, set(value) { clock = Number(value) || 0; } });
   URL.createObjectURL = () => `${location.origin}/fake-media-source-${++objectUrls}`;
@@ -98,7 +99,10 @@
     createDownloader: () => ({
       async downloadRange(range, _resolver, options) {
         const bytes = new Uint8Array(8);
-        if (options.kind === "meta") return { bytes, pieceCount: 1, total: null, hosts: [] };
+        if (options.kind === "meta") {
+          headerDownloads += 1;
+          return { bytes, pieceCount: 1, total: null, hosts: [] };
+        }
         if (options.kind === "video") started[range.index] = performance.now();
         options.onStartupScheduled?.();
         await new Promise((resolve) => setTimeout(resolve, [30, 60, 120][range.index % 3]));
@@ -156,15 +160,27 @@
     clock = 92;
     await sleep(1700);
     const removalsAfterLargeStep = { ...removals };
+
+    // A seek outside the buffer starts a new session. The initialization segment and the
+    // index of the same file are not asked for a second time.
+    const headersBeforeSeek = headerDownloads;
+    const firstAfterSeek = Math.floor(150 / SEGMENT_SECONDS);
+    delete started[firstAfterSeek];
+    clock = 150;
+    video.dispatchEvent(new Event("seeking"));
+    const seekDeadline = performance.now() + 4000;
+    while (performance.now() < seekDeadline && !player.getDebug().lastSeekMs) await sleep(25);
+    const seek = { headersBeforeSeek, headersAfterSeek: headerDownloads, sessions: player.getDebug().sessionStarts, lastSeekMs: player.getDebug().lastSeekMs, startedAtTarget: Boolean(started[firstAfterSeek]) };
     player.destroy({ resumeNative: false });
 
-    const output = { errors, filledAhead, lateStarts, removalsAfterJump, removalsAfterSmallStep, removalsAfterLargeStep };
+    const output = { errors, filledAhead, lateStarts, removalsAfterJump, removalsAfterSmallStep, removalsAfterLargeStep, seek };
+    output.seekKeptHeaders = seek.headersBeforeSeek === 4 && seek.headersAfterSeek === 4 && seek.sessions === 2 && seek.lastSeekMs > 0 && seek.startedAtTarget;
     output.filled = filledAhead >= 44;
     output.keptWindowFull = lateStarts.length === 0;
     output.prunedOncePerStep = removalsAfterJump.video === 1 && removalsAfterJump.audio === 1
       && removalsAfterSmallStep.video === 1 && removalsAfterSmallStep.audio === 1
       && removalsAfterLargeStep.video === 2 && removalsAfterLargeStep.audio === 2;
-    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep;
+    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };
