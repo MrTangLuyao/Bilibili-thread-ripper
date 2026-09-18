@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR buffer window regression test</title>
+</head>
+<body>
+  <div class="bpx-player-container"><video muted></video></div>
+  <pre id="buffer-window-result">starting</pre>
+  <script src="/src/range-core.js"></script>
+  <script src="/src/cdn-resolver.js"></script>
+  <script src="/dev/buffer-window-test.js"></script>
+  <script src="/src/native-mse-player.js"></script>
+  <script>window.__runBufferWindowTest();</script>
+</body>
+</html>

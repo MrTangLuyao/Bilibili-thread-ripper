@@ -311,13 +311,15 @@ const chrome = (() => {
     }
   }
 
-  function swapOrdinaryHost(rawUrl, targetHost) {
-    if (isAkamaiUrl(rawUrl)) return null;
+  function swapOrdinaryHost(rawUrl, targetHost, allowAkamai = false) {
+    if (!allowAkamai && isAkamaiUrl(rawUrl)) return null;
     const host = String(targetHost || "").toLowerCase();
     if (!GLOBAL_HOSTS.includes(host)) return null;
     try {
       const url = new URL(rawUrl);
-      url.host = host;
+      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      url.hostname = host;
+      url.port = "";
       return url.href;
     } catch (_error) {
       return null;
@@ -331,9 +333,19 @@ const chrome = (() => {
       .map(safeMediaUrl)
       .filter(Boolean)
       .filter((value, index, all) => all.indexOf(value) === index);
-    const donor = originals.find((url) => !isAkamaiUrl(url));
     const hosts = mode === "mainland" ? MAINLAND_HOSTS : OVERSEAS_HOSTS;
-    const synthetic = donor ? hosts.map((host) => swapOrdinaryHost(donor, host)).map(safeMediaUrl).filter(Boolean) : [];
+    const donor = originals.find((url) => !isAkamaiUrl(url));
+    // Some overseas accounts are given nothing but akamaized.net addresses. That used to leave
+    // no node at all in mainland mode and a single one in overseas mode. The nodes accept
+    // those signatures too, so only in that case the akamaized.net addresses are the donors.
+    // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
+    // works, so each of them is tried; the ban list drops the refused one. Node-major order
+    // keeps the first requests spread over several nodes.
+    const synthetic = (donor
+      ? hosts.map((host) => swapOrdinaryHost(donor, host))
+      : hosts.flatMap((host) => originals.map((url) => swapOrdinaryHost(url, host, true))))
+      .map(safeMediaUrl)
+      .filter(Boolean);
     const allowedOriginals = mode === "mainland"
       ? originals.filter((url) => MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()))
       : originals.filter((url) => !MAINLAND_HOSTS.includes(new URL(url).hostname.toLowerCase()));
@@ -345,34 +357,175 @@ const chrome = (() => {
     catch (_error) { return ""; }
   }
 
+  // The signed address without its node: the same address can be asked of any node.
+  function addressOf(value) {
+    try {
+      const url = new URL(value);
+      return url.pathname + url.search;
+    } catch (_error) {
+      return "";
+    }
+  }
+
   // A CDN node that twice fails without sending a single byte is skipped for the
   // rest of the current video. The owner resets the list when the video changes.
+  //
+  // HTTP 4xx means the node answered and refused the signed address, and either side can be
+  // at fault: a node may lack the file, or Bilibili may have handed out an address that every
+  // node refuses. What has delivered data decides it. Refused by a node that serves other
+  // addresses, the address is dropped; refused where other nodes serve it, the node is.
+  // With neither known yet, the reply counts against nobody until one of them delivers.
+  // A node that delivers one address and refuses another that other nodes do serve loses only
+  // that address: banning the node took away the fastest one of an Akamai-only account.
   function createBanList(options = {}) {
     const limit = Math.max(1, Math.trunc(Number(options.limit)) || 2);
-    const strikes = new Map();
-    const banned = new Set();
+    const emptyReplies = new Map();
+    const goodNodes = new Set();
+    const goodAddresses = new Set();
+    const reported = new Set();
+    let banned = new Set();
+
+    function judge(url, error) {
+      const strikes = new Map();
+      for (const [key, count] of emptyReplies) {
+        const [node, address, refused] = key.split("\n");
+        const blamed = !refused ? `node:${node}`
+          : goodNodes.has(node) ? (goodAddresses.has(address) ? `pair:${node} ${address}` : `address:${address}`)
+            : goodAddresses.has(address) ? `node:${node}` : "";
+        if (blamed) strikes.set(blamed, (strikes.get(blamed) || 0) + count);
+      }
+      banned = new Set([...strikes].filter(([, count]) => count >= limit).map(([key]) => key));
+      let added = false;
+      for (const key of banned) {
+        if (reported.has(key)) continue;
+        reported.add(key);
+        added = true;
+        const isNode = key.startsWith("node:");
+        try { options.onBan?.(isNode ? key.slice(5) : hostOf(url), strikes.get(key), error, isNode ? "node" : "address"); } catch (_error) {}
+      }
+      return added;
+    }
+
     return Object.freeze({
       record(url, receivedBytes, error) {
         if (error?.name === "AbortError" || Number(receivedBytes) > 0) return false;
-        const host = hostOf(url);
-        if (!host || banned.has(host)) return false;
-        const count = (strikes.get(host) || 0) + 1;
-        strikes.set(host, count);
-        if (count < limit) return false;
-        banned.add(host);
-        try { options.onBan?.(host, count, error); } catch (_error) {}
-        return true;
+        const node = hostOf(url);
+        if (!node) return false;
+        const status = Number(error?.status) || 0;
+        const key = `${node}\n${addressOf(url)}\n${status >= 400 && status < 500 ? "refused" : ""}`;
+        emptyReplies.set(key, (emptyReplies.get(key) || 0) + 1);
+        return judge(url, error);
       },
-      allows: (url) => !banned.has(hostOf(url)),
-      hosts: () => [...banned],
+      success(url) {
+        const node = hostOf(url);
+        const address = addressOf(url);
+        if (!node || (goodNodes.has(node) && goodAddresses.has(address))) return;
+        goodNodes.add(node);
+        goodAddresses.add(address);
+        judge(url, null);
+      },
+      allows: (url) => !banned.has(`node:${hostOf(url)}`) && !banned.has(`address:${addressOf(url)}`) && !banned.has(`pair:${hostOf(url)} ${addressOf(url)}`),
+      delivered: (url) => goodAddresses.has(addressOf(url)),
+      allowsNode: (url) => !banned.has(`node:${hostOf(url)}`),
+      allowsAddress: (url) => !banned.has(`address:${addressOf(url)}`),
+      hosts: () => [...banned].filter((key) => key.startsWith("node:")).map((key) => key.slice(5)),
       reset() {
-        strikes.clear();
-        banned.clear();
+        emptyReplies.clear();
+        goodNodes.clear();
+        goodAddresses.clear();
+        reported.clear();
+        banned = new Set();
       }
     });
   }
 
-  function createResolver(representation, getMode, bans = null) {
+  // What the downloads have measured about each node: how long the first byte takes and how
+  // fast one connection runs. The owner shares one of these between every resolver on the
+  // page, so the audio track, another quality and the session after a seek start from what is
+  // already known instead of trying every node again.
+  function createNodeStats() {
+    const nodes = new Map();
+    const blend = (old, value) => (old ? old * 0.7 + value * 0.3 : value);
+
+    function node(url) {
+      const host = hostOf(url);
+      let item = nodes.get(host);
+      if (!item) {
+        item = { inflight: 0, receiving: 0, ttfbMs: 0, bps: 0, load: 0, limit: Infinity };
+        nodes.set(host, item);
+      }
+      return item;
+    }
+
+    // The speed of one connection was measured while the node carried `load` of them. Beyond
+    // that the node is assumed to share the same total; if it keeps its speed instead, the
+    // next measurements raise `load` and the estimate follows. A node is taken to carry at
+    // least four connections at full speed, which is the reason to split a download at all.
+    function expectedMs(url, pieceBytes) {
+      const item = node(url);
+      if (!item.bps) return null;
+      const width = Math.max(4, item.load);
+      const bps = item.bps * width / Math.max(width, item.inflight + 1);
+      return item.ttfbMs + pieceBytes / bps * 1000;
+    }
+
+    return Object.freeze({
+      begin(url) { node(url).inflight += 1; },
+      firstByte(url, ttfbMs) {
+        const item = node(url);
+        item.receiving += 1;
+        item.ttfbMs = blend(item.ttfbMs, Math.max(1, ttfbMs));
+      },
+      end(url, receiving) {
+        const item = node(url);
+        item.inflight = Math.max(0, item.inflight - 1);
+        if (receiving) item.receiving = Math.max(0, item.receiving - 1);
+      },
+      body(url, bytes, milliseconds) {
+        // An index of a few KB arrives within one packet and says nothing about speed.
+        if (bytes < 32 * 1024) return;
+        const item = node(url);
+        item.bps = blend(item.bps, bytes / Math.max(0.02, milliseconds / 1000));
+        item.load = blend(item.load, item.inflight);
+      },
+      silent(url, waitedMs) {
+        const item = node(url);
+        // No first byte although the node was sending other pieces: the request was waiting
+        // in the browser, which opens six connections to an HTTP/1.1 node. What the node was
+        // carrying at that moment is all it is given from now on.
+        if (item.receiving > 0) item.limit = Math.min(item.limit, item.receiving);
+        else item.ttfbMs = blend(item.ttfbMs, waitedMs);
+      },
+      // The other copy of the piece won before this node had sent anything. How long it had
+      // been waiting is the least its first byte would have taken.
+      outrun(url, waitedMs) {
+        const item = node(url);
+        if (waitedMs > item.ttfbMs) item.ttfbMs = blend(item.ttfbMs, waitedMs);
+      },
+      // The other copy won while this node was still sending. A transfer that is outrun never
+      // reaches body(), so a node that answers at once and then trickles would keep the speed
+      // it showed on a part of the file it had ready, and keep getting most of the pieces.
+      crawl(url, bytes, milliseconds) {
+        const item = node(url);
+        const bps = bytes / Math.max(0.02, milliseconds / 1000);
+        if (milliseconds >= 300 && bps < item.bps) item.bps = blend(item.bps, bps);
+      },
+      full: (url) => node(url).inflight >= node(url).limit,
+      // A node that is sending other pieces is alive, whatever happened to this one.
+      busy: (url) => node(url).receiving > 0,
+      known: (url) => node(url).bps > 0,
+      inflight: (url) => node(url).inflight,
+      ttfbMs: (url) => node(url).ttfbMs,
+      expectedMs,
+      bps: (url) => node(url).bps,
+      dump: () => Object.fromEntries([...nodes].map(([host, item]) => [host, {
+        ttfbMs: Math.round(item.ttfbMs), kbps: Math.round(item.bps / 1024), load: Math.round(item.load * 10) / 10,
+        limit: Number.isFinite(item.limit) ? item.limit : null, inflight: item.inflight
+      }]))
+    });
+  }
+
+  function createResolver(representation, getMode, bans = null, nodeStats = createNodeStats()) {
     const health = new Map();
     let cursor = 0;
     let mediaRangeCount = 0;
@@ -460,6 +613,7 @@ const chrome = (() => {
     }
 
     function success(url, bps) {
+      bans?.success?.(url);
       const old = health.get(url) || {};
       health.set(url, {
         failures: 0,
@@ -469,8 +623,56 @@ const chrome = (() => {
       });
     }
 
-    function failure(url, error, receivedBytes = 0) {
-      if (error?.name === "AbortError") return;
+    // The address expected to deliver a piece of this size first, counting what each node is
+    // already carrying. A node nothing is known about is tried with one piece at a time.
+    //
+    // `hurry` is set while the player has next to nothing buffered. One measurement must not
+    // decide where a whole segment goes then: a node that answered the first request of a
+    // video at once may need seconds for a part of the file it has not served lately. So the
+    // pieces are spread, unknown nodes take their share, and no node gets more than half.
+    function pick(candidates, tried, pieceBytes, hurry = false) {
+      const now = Date.now();
+      const untried = candidates.filter((url) => !tried.has(url));
+      const open = untried.filter((url) => allows(url));
+      const ready = (open.length ? open : untried).filter((url) => (health.get(url)?.blockedUntil || 0) <= now);
+      const pool = ready.length ? ready : open.length ? open : untried;
+      const known = pool.map((url) => nodeStats.expectedMs(url, pieceBytes)).filter((value) => value !== null);
+      const best = known.length ? Math.min(...known) : 0;
+      const hosts = new Set(pool.map(hostOf));
+      const carried = [...hosts].reduce((sum, host) => sum + nodeStats.inflight(`https://${host}/`), 0);
+      let chosen = null;
+      let chosenCost = Infinity;
+      for (const url of pool) {
+        const inflight = nodeStats.inflight(url);
+        const expected = nodeStats.expectedMs(url, pieceBytes);
+        let cost = expected;
+        if (expected === null) cost = !known.length ? inflight : hurry ? best * 2 * (inflight + 1) : !inflight ? best * 0.9 : best * 4 + inflight;
+        if (hurry && hosts.size > 2 && inflight >= 2 && inflight * 2 > carried) cost += 1e5;
+        // The addresses of one node cost the same; the one that has delivered goes first.
+        if (bans?.delivered && !bans.delivered(url)) cost += 1;
+        if (nodeStats.full(url)) cost += 1e6;
+        if (cost < chosenCost) {
+          chosen = url;
+          chosenCost = cost;
+        }
+      }
+      return chosen;
+    }
+
+    // Small pieces cost a round trip each, and from far away that is most of their time: 64 KiB
+    // from a node 300 ms away that sends 3 MB/s is 300 ms of waiting for 20 ms of data, which
+    // made the nearest node look best however slow it was. A piece is sized to keep the
+    // fastest usable node sending for about 150 ms.
+    function pieceBytes(minimum) {
+      const fastest = Math.max(0, ...urls().map((url) => nodeStats.bps(url)));
+      return Math.max(minimum, Math.min(512 * 1024, Math.round(fastest * 0.15)));
+    }
+
+    // `busy` is a first byte that never came from a node that was sending other pieces at the
+    // time. The request was waiting in the browser (six connections per node over HTTP/1.1),
+    // so it says nothing against the node.
+    function failure(url, error, receivedBytes = 0, busy = false) {
+      if (error?.name === "AbortError" || busy) return;
       bans?.record(url, receivedBytes, error);
       const old = health.get(url) || {};
       const failures = (old.failures || 0) + 1;
@@ -483,18 +685,22 @@ const chrome = (() => {
 
     function status() {
       const now = Date.now();
-      return allUrls().map((url) => {
+      // A refused address says nothing about its node, so it is left out of the node list.
+      const all = allUrls();
+      const usable = bans?.allowsAddress ? all.filter(bans.allowsAddress) : all;
+      return (usable.length ? usable : all).map((url) => {
         const item = health.get(url) || {};
+        const nodeBanned = bans && !(bans.allowsNode ? bans.allowsNode(url) : bans.allows(url));
         return {
           host: new URL(url).hostname,
-          state: bans && !bans.allows(url) ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
+          state: nodeBanned ? "banned" : (item.blockedUntil || 0) > now ? "blocked" : item.lastSuccessAt ? "healthy" : "untested",
           bps: item.bps || 0
         };
       });
     }
 
     const allows = (url) => !bans || bans.allows(url);
-    return Object.freeze({ allows, failure, ordered, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
+    return Object.freeze({ allows, failure, nodes: nodeStats, ordered, pick, pieceBytes, rangeCandidates, rescueCandidates, startupCandidates, status, success, urls });
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
@@ -502,6 +708,7 @@ const chrome = (() => {
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
     createBanList,
+    createNodeStats,
     createResolver,
     isAkamaiUrl,
     representationUrls,
@@ -632,6 +839,11 @@ const chrome = (() => {
   const core = root.__BILI_RANGE_CORE__;
   if (!core) return;
 
+  const PIECE_ROUNDS = 3;
+  const PIECE_RETRY_WINDOW_MS = 25000;
+  const DUPLICATE_CANCELED = "并发副本已取消";
+  const NO_ADDRESS = "没有可用 CDN";
+
   function abortError(reason) {
     if (reason instanceof Error || reason instanceof DOMException) return reason;
     return new DOMException("播放器任务已取消", "AbortError");
@@ -642,7 +854,6 @@ const chrome = (() => {
       this.limit = limit;
       this.active = 0;
       this.queue = [];
-      this.sequence = 0;
     }
 
     setLimit(limit) {
@@ -650,13 +861,16 @@ const chrome = (() => {
       this.drain();
     }
 
+    // A priority can be a function: the second copy of a piece only becomes urgent once that
+    // piece is what the player is waiting for, which can happen while it is still queued.
     drain() {
       while (this.active < this.limit && this.queue.length) {
-        const entry = this.queue.shift();
-        if (entry.signal?.aborted) {
-          entry.reject(abortError(entry.signal.reason));
-          continue;
+        let best = 0;
+        for (let index = 1; index < this.queue.length; index += 1) {
+          if (this.queue[index].priority() > this.queue[best].priority()) best = index;
         }
+        const entry = this.queue.splice(best, 1)[0];
+        entry.signal?.removeEventListener("abort", entry.canceled);
         this.active += 1;
         entry.resolve(() => {
           if (entry.released) return;
@@ -675,11 +889,15 @@ const chrome = (() => {
           resolve,
           signal,
           released: false,
-          priority: Number(priority) || 0,
-          sequence: this.sequence++
+          priority: typeof priority === "function" ? priority : () => Number(priority) || 0,
+          canceled: () => {
+            const at = this.queue.indexOf(entry);
+            if (at >= 0) this.queue.splice(at, 1);
+            reject(abortError(signal.reason));
+          }
         };
+        signal?.addEventListener("abort", entry.canceled, { once: true });
         this.queue.push(entry);
-        this.queue.sort((a, b) => b.priority - a.priority || a.sequence - b.sequence);
         this.drain();
       });
     }
@@ -690,6 +908,15 @@ const chrome = (() => {
     const getSettings = options.getSettings;
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
     const semaphore = new Semaphore(core.normalizeSettings(getSettings()).concurrency);
+    // duplicateBytes is what arrived on a second copy of a piece before the other copy won.
+    const counters = { requests: 0, copies: 0, bytes: 0, duplicateBytes: 0 };
+    // The last requests, for the diagnostic report: when, which node, how long until the first
+    // byte and until the end, and how it ended.
+    const recent = [];
+    function remember(entry) {
+      recent.push(entry);
+      if (recent.length > 400) recent.shift();
+    }
 
     async function readBody(response, controller, transferId, settings, received) {
       if (!response.body?.getReader) {
@@ -716,6 +943,7 @@ const chrome = (() => {
           chunks.push(chunk);
           total += chunk.byteLength;
           received.bytes += chunk.byteLength;
+          received.lastByteAt = performance.now();
           onTransfer({ phase: "progress", id: transferId, bytes: chunk.byteLength });
         }
       } finally {
@@ -731,9 +959,20 @@ const chrome = (() => {
       return bytes;
     }
 
-    async function attempt(piece, url, signal, kind, resolver, priority = 0) {
+    // `choose` names the address only once a thread is free. More is known about the nodes by
+    // then than when the piece joined the queue, and a fast node ends up with more pieces.
+    async function attempt(piece, choose, signal, kind, resolver, priority = 0, watch = null) {
       const settings = core.normalizeSettings(getSettings());
       const release = await semaphore.acquire(signal, priority);
+      const url = choose();
+      if (!url) {
+        release();
+        throw new Error(NO_ADDRESS);
+      }
+      const nodes = resolver.nodes || null;
+      let receiving = false;
+      nodes?.begin(url);
+      counters.requests += 1;
       const controller = new AbortController();
       const cancel = () => controller.abort(abortError(signal?.reason));
       if (signal?.aborted) cancel();
@@ -742,7 +981,9 @@ const chrome = (() => {
       const totalTimer = setTimeout(() => controller.abort(new DOMException("CDN 子块总耗时超限", "TimeoutError")), settings.attemptTimeoutMs);
       const transferId = onTransfer({ phase: "start", kind, totalBytes: piece.length, url });
       const startedAt = performance.now();
-      const received = { bytes: 0 };
+      const received = watch || { bytes: 0 };
+      received.url = url;
+      received.startedAt = startedAt;
       try {
         const response = await nativeFetch(url, {
           method: "GET",
@@ -755,33 +996,68 @@ const chrome = (() => {
           signal: controller.signal
         });
         clearTimeout(firstByteTimer);
+        const firstByteAt = performance.now();
+        receiving = true;
+        received.firstByteAt = received.lastByteAt = firstByteAt;
+        nodes?.firstByte(url, firstByteAt - startedAt);
         const contentRange = core.parseContentRange(response.headers.get("content-range"));
         if (response.status !== 206 || !contentRange || contentRange.start !== piece.start || contentRange.end !== piece.end) {
-          throw new Error(`Range 校验失败：HTTP ${response.status}`);
+          // The status tells a refused signed address (4xx) apart from a node that is down.
+          throw Object.assign(new Error(`Range 校验失败：HTTP ${response.status}`), { status: response.status });
         }
         const bytes = await readBody(response, controller, transferId, settings, received);
         if (bytes.byteLength !== piece.length) throw new Error(`子块长度不符：${bytes.byteLength}/${piece.length}`);
         const seconds = Math.max(0.001, (performance.now() - startedAt) / 1000);
+        nodes?.body(url, bytes.byteLength, performance.now() - firstByteAt);
         resolver.success(url, bytes.byteLength / seconds);
+        counters.bytes += bytes.byteLength;
+        remember({ at: Math.round(startedAt), kind, node: new URL(url).hostname, bytes: piece.length, firstByteMs: Math.round(firstByteAt - startedAt), ms: Math.round(performance.now() - startedAt), end: "ok" });
         onTransfer({ phase: "done", id: transferId });
         return { bytes, total: contentRange.total, url };
       } catch (error) {
+        const outrun = controller.signal.reason?.message === DUPLICATE_CANCELED;
+        const silent = !receiving && error?.name === "TimeoutError";
+        const busy = silent && Boolean(nodes?.busy(url));
+        if (silent) nodes?.silent(url, performance.now() - startedAt);
+        if (outrun) counters.duplicateBytes += received.bytes;
+        if (outrun && !receiving) nodes?.outrun?.(url, performance.now() - startedAt);
+        if (outrun && receiving) nodes?.crawl?.(url, received.bytes, performance.now() - received.firstByteAt);
+        remember({ at: Math.round(startedAt), kind, node: new URL(url).hostname, bytes: piece.length, firstByteMs: received.firstByteAt ? Math.round(received.firstByteAt - startedAt) : null, ms: Math.round(performance.now() - startedAt), end: outrun ? "other copy won" : String(error?.message || error).slice(0, 60) });
         // Received bytes tell a dead node (0 KiB) apart from a transfer that stalled midway.
-        resolver.failure(url, error, received.bytes);
+        resolver.failure(url, error, received.bytes, busy);
         const canceled = error?.name === "AbortError";
         onTransfer({ phase: canceled ? "cancel" : "error", id: transferId, error });
+        received.failed = true;
+        received.wake?.();
         throw error;
       } finally {
         clearTimeout(firstByteTimer);
         clearTimeout(totalTimer);
         signal?.removeEventListener("abort", cancel);
+        nodes?.end(url, receiving);
         release();
       }
     }
 
-    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0) {
+    function pause(delayMs, signal) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(done, delayMs);
+        function done() {
+          signal?.removeEventListener("abort", canceled);
+          resolve();
+        }
+        function canceled() {
+          clearTimeout(timer);
+          reject(abortError(signal.reason));
+        }
+        if (signal?.aborted) canceled();
+        else signal?.addEventListener("abort", canceled, { once: true });
+      });
+    }
+
+    function pieceCandidates(piece, resolver, preferredUrls, round) {
       const preferred = Array.isArray(preferredUrls) ? preferredUrls : [];
-      const preferredOffset = preferred.length ? piece.index % preferred.length : 0;
+      const preferredOffset = preferred.length ? (piece.index + round) % preferred.length : 0;
       const rotatedPreferred = preferred.slice(preferredOffset).concat(preferred.slice(0, preferredOffset));
       const rescue = (typeof resolver.rescueCandidates === "function" ? resolver.rescueCandidates() : resolver.ordered(piece.index))
         .filter((url) => !rotatedPreferred.includes(url));
@@ -794,54 +1070,123 @@ const chrome = (() => {
       for (const url of resolver.ordered(piece.index)) {
         if (!candidates.includes(url)) candidates.push(url);
       }
+      return candidates;
+    }
+
+    // Settles once a second copy of the piece is worth its bandwidth: the first byte is
+    // taking far longer than this node usually needs, the transfer has stopped, or it is
+    // heading for several times the expected duration. A fixed delay copied every piece
+    // that was merely not finished yet, and the copies took the bandwidth it was short of.
+    function overdue(watch, piece, resolver, settings, startup, signal) {
+      return new Promise((resolve) => {
+        const nodes = resolver.nodes || null;
+        let timer = setTimeout(check, 150);
+        function done() {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", done);
+          resolve();
+        }
+        function check() {
+          timer = setTimeout(check, 150);
+          if (!watch.startedAt) return;
+          const now = performance.now();
+          const elapsed = now - watch.startedAt;
+          if (!watch.firstByteAt) {
+            const usual = nodes?.ttfbMs(watch.url) || 0;
+            // With next to nothing buffered a second copy costs less than the wait: a node can
+            // take seconds over a part of the file it has not served lately.
+            const budget = startup
+              ? (usual ? Math.min(600, Math.max(250, usual * 2)) : 250)
+              : usual ? Math.min(3000, Math.max(600, usual * 3)) : settings.hedgeDelayMs;
+            if (elapsed >= budget) done();
+            return;
+          }
+          if (now - watch.lastByteAt >= (startup ? 1000 : 1500)) return done();
+          const expected = nodes?.expectedMs(watch.url, piece.length) || settings.hedgeDelayMs;
+          const allowed = startup ? Math.max(400, expected * 2) : Math.max(settings.hedgeDelayMs, expected * 3);
+          if (elapsed >= allowed && watch.bytes < piece.length * 0.75) done();
+        }
+        watch.wake = done;
+        if (signal.aborted) done();
+        else signal.addEventListener("abort", done, { once: true });
+      });
+    }
+
+    // `urgent` tells whether the player is waiting for this very piece. Only then may its
+    // second copy go ahead of pieces that have not been asked for at all.
+    async function downloadPiece(piece, resolver, signal, kind, preferredUrls, startupMode = false, priority = 0, urgent = null) {
       const settings = core.normalizeSettings(getSettings());
-      const limit = Math.min(8, candidates.length);
       const allowed = (url) => typeof resolver.allows !== "function" || resolver.allows(url);
-      const tried = new Set();
+      const startup = startupMode === true || startupMode === "probe";
+      const startedAt = performance.now();
       let lastError = null;
 
-      const startup = startupMode === true || startupMode === "probe";
-      const probe = startupMode === "probe";
-      const batchWidth = probe ? limit : 2;
-      while (tried.size < limit) {
-        if (signal?.aborted) throw abortError(signal.reason);
+      // Failing a piece ends acceleration for the whole video, and the list can be as short as
+      // one working address. One slow reply must not decide that, so the list is walked again
+      // after a pause; node health and bans have changed by then, so it is rebuilt each time.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), signal);
+        }
+        const candidates = pieceCandidates(piece, resolver, preferredUrls, round);
+        const limit = Math.min(8, candidates.length);
+        const tried = new Set();
         // A node banned while this piece was waiting is skipped, unless only banned nodes are left.
-        const untried = candidates.filter((url) => !tried.has(url));
-        const open = untried.filter(allowed);
-        const pair = (open.length ? open : untried).slice(0, batchWidth);
-        if (!pair.length) break;
-        pair.forEach((url) => tried.add(url));
-        const controllers = pair.map(() => new AbortController());
-        const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
-        if (signal?.aborted) cancelAll();
-        else signal?.addEventListener("abort", cancelAll, { once: true });
-        const attempts = pair.map((url, pairIndex) => (async () => {
-          if (pairIndex) await new Promise((resolve, reject) => {
-            const delay = probe ? 0 : startup ? Math.min(250, settings.hedgeDelayMs) : settings.hedgeDelayMs;
-            const timer = setTimeout(resolve, delay);
-            const canceled = () => {
-              clearTimeout(timer);
-              reject(abortError(controllers[pairIndex].signal.reason));
-            };
-            if (controllers[pairIndex].signal.aborted) canceled();
-            else controllers[pairIndex].signal.addEventListener("abort", canceled, { once: true });
-          });
-          return attempt(piece, url, controllers[pairIndex].signal, kind, resolver, priority + (pairIndex ? 20 : 0));
-        })());
-        try {
-          const winner = await Promise.any(attempts);
-          controllers.forEach((controller) => {
-            if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
-          });
-          return winner;
-        } catch (aggregate) {
-          lastError = aggregate?.errors?.at?.(-1) || aggregate;
+        const choose = () => {
+          if (tried.size >= limit) return null;
+          const untried = candidates.filter((url) => !tried.has(url));
+          const url = typeof resolver.pick === "function"
+            ? resolver.pick(candidates, tried, piece.length, startup)
+            : untried.find(allowed) || untried[0];
+          if (url) tried.add(url);
+          return url || null;
+        };
+        // With nothing known about any node yet, the first piece of a video is asked of all
+        // of them at once: the fastest answer starts playback and every node gets measured.
+        const race = startupMode === "probe" && !candidates.some((url) => resolver.nodes?.known(url));
+        while (tried.size < limit) {
           if (signal?.aborted) throw abortError(signal.reason);
-        } finally {
-          signal?.removeEventListener("abort", cancelAll);
+          const before = tried.size;
+          const controllers = Array.from({ length: race ? limit : startup ? 3 : 2 }, () => new AbortController());
+          const cancelAll = () => controllers.forEach((controller) => controller.abort(abortError(signal?.reason)));
+          if (signal?.aborted) cancelAll();
+          else signal?.addEventListener("abort", cancelAll, { once: true });
+          // Each copy is watched by the next one: with little buffered, a second copy that
+          // trickles like the first gets a third.
+          const watches = controllers.map(() => ({ bytes: 0 }));
+          const attempts = controllers.map((controller, copy) => (async () => {
+            if (copy && !race) {
+              await overdue(watches[copy - 1], piece, resolver, settings, startup, controller.signal);
+              if (controller.signal.aborted) throw abortError(controller.signal.reason);
+              if (!watches[copy - 1].failed) counters.copies += 1;
+            }
+            const copyPriority = copy && !race ? () => (startup || !urgent || urgent() ? priority + 20 : priority - 100) : priority;
+            return attempt(piece, choose, controller.signal, kind, resolver, copyPriority, race ? null : watches[copy]);
+          })());
+          const cancelCopies = () => {
+            signal?.removeEventListener("abort", cancelAll);
+            controllers.forEach((controller) => {
+              if (!controller.signal.aborted) controller.abort(new DOMException(DUPLICATE_CANCELED, "AbortError"));
+            });
+          };
+          try {
+            const winner = await Promise.any(attempts);
+            // The other nodes of that first race get a moment to finish their 64 KiB, so that
+            // each of them has been measured once. Nodes are not raced again on this page.
+            if (race) setTimeout(cancelCopies, 1500);
+            else cancelCopies();
+            return winner;
+          } catch (aggregate) {
+            const errors = aggregate?.errors || [aggregate];
+            lastError = errors.find((error) => error?.message !== NO_ADDRESS) || errors.at(-1);
+            signal?.removeEventListener("abort", cancelAll);
+            if (signal?.aborted) throw abortError(signal.reason);
+          }
+          if (tried.size === before) break;
         }
       }
-      throw lastError || new Error("没有可用 CDN");
+      throw lastError || new Error(NO_ADDRESS);
     }
 
     async function delayedAttempt(piece, url, delayMs, signal, kind, resolver, controller, priority = 0) {
@@ -857,16 +1202,10 @@ const chrome = (() => {
         });
       }
       if (signal?.aborted) throw abortError(signal.reason);
-      return attempt(piece, url, controller.signal, kind, resolver, priority);
+      return attempt(piece, () => url, controller.signal, kind, resolver, priority);
     }
 
-    async function downloadStartupRange(range, resolver, options) {
-      const candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
-        .filter((url, index, all) => all.indexOf(url) === index)
-        .slice(0, 3);
-      if (!candidates.length) throw new Error("没有可用 CDN");
-      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
-      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+    async function startupAttempt(piece, candidates, resolver, options) {
       const controllers = candidates.map(() => new AbortController());
       const cancelAll = () => controllers.forEach((controller) => {
         if (!controller.signal.aborted) controller.abort(abortError(options.signal?.reason));
@@ -876,10 +1215,13 @@ const chrome = (() => {
       try {
         let winner;
         try {
+          // The copies used to follow after 120 and 300 ms whatever the node. A node that
+          // usually needs longer than that for its first byte got all three every time.
+          const step = Math.min(600, Math.max(120, (resolver.nodes?.ttfbMs(candidates[0]) || 0) * 1.5));
           winner = await Promise.any(candidates.map((url, index) => delayedAttempt(
             piece,
             url,
-            index === 0 ? 0 : index === 1 ? 120 : 300,
+            index === 0 ? 0 : index === 1 ? step : step * 2.5,
             options.signal,
             options.kind || "meta",
             resolver,
@@ -893,15 +1235,68 @@ const chrome = (() => {
         controllers.forEach((controller) => {
           if (!controller.signal.aborted) controller.abort(new DOMException("并发副本已取消", "AbortError"));
         });
-        return {
-          bytes: winner.bytes,
-          pieceCount: 1,
-          total: winner.total || null,
-          hosts: [new URL(winner.url).hostname]
-        };
+        return winner;
       } finally {
         options.signal?.removeEventListener("abort", cancelAll);
       }
+    }
+
+    async function downloadStartupRange(range, resolver, options) {
+      semaphore.setLimit(core.normalizeSettings(getSettings()).concurrency);
+      const piece = { index: 0, start: range.start, end: range.end, length: range.length };
+      const startedAt = performance.now();
+      let lastError = null;
+      // The addresses that just failed are backing off by the next round, so each round
+      // moves on to the next three.
+      for (let round = 0; round < PIECE_ROUNDS; round += 1) {
+        if (round) {
+          if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
+          await pause(Math.min(2000, 500 * (2 ** (round - 1))), options.signal);
+        }
+        let candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
+          .filter((url, index, all) => all.indexOf(url) === index);
+        if (typeof resolver.pick === "function") {
+          const chosen = new Set();
+          while (chosen.size < 3) {
+            const url = resolver.pick(candidates, chosen, piece.length);
+            if (!url) break;
+            chosen.add(url);
+          }
+          candidates = [...chosen];
+        } else candidates = candidates.slice(0, 3);
+        if (!candidates.length && round) candidates = resolver.ordered(round).slice(0, 3);
+        if (!candidates.length) break;
+        try {
+          const winner = await startupAttempt(piece, candidates, resolver, options);
+          return {
+            bytes: winner.bytes,
+            pieceCount: 1,
+            total: winner.total || null,
+            hosts: [new URL(winner.url).hostname]
+          };
+        } catch (error) {
+          if (options.signal?.aborted) throw abortError(options.signal.reason);
+          lastError = error;
+        }
+      }
+      throw lastError || new Error("没有可用 CDN");
+    }
+
+    // The second copy of a piece is urgent when that piece is the one holding up the append,
+    // or one of the last few its range is waiting for.
+    function trackPieces(count) {
+      const finished = new Array(count).fill(false);
+      let first = 0;
+      let left = count;
+      return {
+        finish(index) {
+          if (finished[index]) return;
+          finished[index] = true;
+          left -= 1;
+          while (finished[first]) first += 1;
+        },
+        urgent: (index) => index <= first || left <= Math.max(2, count >> 3)
+      };
     }
 
     async function downloadStartupMediaRange(range, resolver, options, settings) {
@@ -916,7 +1311,10 @@ const chrome = (() => {
         end: range.start + headLength - 1,
         length: headLength
       };
-      const headResult = await downloadPiece(
+      // The head goes first and alone so that every node is raced once. With the nodes known
+      // already it is only one more round trip before the rest may start, so it is left out.
+      const warm = candidateUrls.some((url) => resolver.nodes?.known(url));
+      const headResult = warm ? null : await downloadPiece(
         head,
         resolver,
         options.signal,
@@ -925,8 +1323,8 @@ const chrome = (() => {
         "probe",
         220
       );
-      await options.onOrderedChunk(headResult.bytes, head);
-      if (head.end >= range.end) {
+      if (headResult) await options.onOrderedChunk(headResult.bytes, head);
+      if (headResult && head.end >= range.end) {
         options.onStartupScheduled?.();
         return {
           bytes: null,
@@ -945,12 +1343,13 @@ const chrome = (() => {
         ? audioBudget
         : Math.max(1, mediaBudget - audioBudget);
       const pieces = core.splitRange(
-        head.end + 1,
+        headResult ? head.end + 1 : range.start,
         range.end,
         pieceBudget,
         settings.minChunkBytes
-      ).map((piece, index) => ({ ...piece, index: index + 1 }));
+      ).map((piece, index) => ({ ...piece, index: index + (headResult ? 1 : 0) }));
       const ordered = new Array(pieces.length);
+      const progress = trackPieces(pieces.length);
       let nextOrderedIndex = 0;
       let flushOperation = Promise.resolve();
       const flushOrdered = () => {
@@ -970,10 +1369,12 @@ const chrome = (() => {
           resolver,
           options.signal,
           options.kind || "media",
-          [headResult.url],
+          headResult ? [headResult.url] : candidateUrls,
           true,
-          120 - Math.min(30, piece.index)
+          120 - Math.min(30, piece.index),
+          () => progress.urgent(orderedIndex)
         );
+        progress.finish(orderedIndex);
         ordered[orderedIndex] = result;
         await flushOrdered();
         return result;
@@ -981,15 +1382,16 @@ const chrome = (() => {
       options.onStartupScheduled?.();
       const results = await Promise.all(pendingPieces);
       await flushOperation;
-      const totals = [headResult, ...results].map((item) => item.total).filter(Number.isSafeInteger);
+      const parts = [headResult, ...results].filter(Boolean);
+      const totals = parts.map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
         bytes: null,
         byteLength: range.length,
-        pieceCount: pieces.length + 1,
+        pieceCount: parts.length,
         streamed: true,
         total: totals[0] || null,
-        hosts: [...new Set([headResult, ...results].map((item) => new URL(item.url).hostname))]
+        hosts: [...new Set(parts.map((item) => new URL(item.url).hostname))]
       };
     }
 
@@ -1022,9 +1424,16 @@ const chrome = (() => {
         range.start,
         range.end,
         pieceConcurrency,
-        parallel ? settings.minChunkBytes : Number.MAX_SAFE_INTEGER
+        // Right after a seek every node is slow over a part of the file it has not served
+        // lately, each in its own way: one takes a second or more for the first byte, another
+        // answers at once and then trickles. Many small requests get through that best. Once a
+        // few segments are buffered, larger pieces save round trips and requests.
+        !parallel ? Number.MAX_SAFE_INTEGER
+          : options.hurry === true ? settings.minChunkBytes
+            : resolver.pieceBytes?.(settings.minChunkBytes) || settings.minChunkBytes
       );
       const progressive = typeof options.onOrderedChunk === "function";
+      const progress = trackPieces(pieces.length);
       const ordered = new Array(pieces.length);
       let nextOrderedIndex = 0;
       let flushOperation = Promise.resolve();
@@ -1046,9 +1455,11 @@ const chrome = (() => {
           options.signal,
           options.kind || "media",
           preferredUrls,
-          options.startup === true,
-          basePriority - Math.min(20, piece.index)
+          options.startup === true || options.hurry === true,
+          basePriority - Math.min(20, piece.index),
+          () => progress.urgent(piece.index)
         );
+        progress.finish(piece.index);
         if (progressive) {
           ordered[piece.index] = result;
           await flushOrdered();
@@ -1068,7 +1479,7 @@ const chrome = (() => {
       };
     }
 
-    return Object.freeze({ downloadRange });
+    return Object.freeze({ downloadRange, stats: () => ({ ...counters }), recent: () => recent.slice() });
   }
 
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = Object.freeze({ createDownloader });
@@ -1242,6 +1653,11 @@ const chrome = (() => {
       if (ranges.start(index) <= time + 0.25 && ranges.end(index) >= time - 0.25) return ranges.end(index);
     }
     return time;
+  }
+
+  function bufferedStart(sourceBuffer, fallback) {
+    try { return sourceBuffer.buffered.length ? sourceBuffer.buffered.start(0) : fallback; }
+    catch (_error) { return fallback; }
   }
 
   function mediaBytesPerSecond(track) {
@@ -1426,16 +1842,18 @@ const chrome = (() => {
             break;
           }
           if (bufferedEndAt(track.sourceBuffer, current) - current >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
-          const batchSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
-          const batch = [];
+          // A sliding window: the next segment starts as soon as one has been appended. Waiting
+          // for a whole batch left the connections idle until its slowest segment arrived.
+          const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
           let projectedEnd = bufferedEndAt(track.sourceBuffer, current);
-          for (let offset = 0; offset < batchSize; offset += 1) {
+          for (let offset = 0; offset < windowSize; offset += 1) {
             const index = track.nextIndex + offset;
             const segment = track.sidx.segments[index];
             if (!segment || projectedEnd - current >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
+            projectedEnd = segment.endTime;
+            if (track.prefetches.has(index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
-            const prefetched = track.prefetches.get(index);
-            batch.push(prefetched || segmentDownload(candidate, track, segment, index, {
+            track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
               startup,
               onStartupScheduled: startup ? () => {
@@ -1449,25 +1867,23 @@ const chrome = (() => {
                 ensureBuffer(candidate);
               } : null
             }));
-            projectedEnd = segment.endTime;
           }
-          if (!batch.length) break;
-          for (const pending of batch) {
-            const settled = await pending;
-            track.prefetches.delete(settled.index);
-            if (settled.error) throw settled.error;
-            if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
-            if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
-            if (!track.startupComplete && settled.index === track.startupIndex) {
-              track.startupComplete = true;
-              candidate.startupCompletedBytes += settled.result.byteLength;
-              updateStartupProfile(candidate);
-            }
-            track.nextIndex = settled.index + 1;
-            track.started = true;
-            options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
-            ensureBuffer(candidate);
+          const pending = track.prefetches.get(track.nextIndex);
+          if (!pending) break;
+          const settled = await pending;
+          track.prefetches.delete(settled.index);
+          if (settled.error) throw settled.error;
+          if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
+          if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
+          if (!track.startupComplete && settled.index === track.startupIndex) {
+            track.startupComplete = true;
+            candidate.startupCompletedBytes += settled.result.byteLength;
+            updateStartupProfile(candidate);
           }
+          track.nextIndex = settled.index + 1;
+          track.started = true;
+          options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
+          ensureBuffer(candidate);
         }
       } catch (error) {
         if (!signal.aborted && sessionIsCurrent(candidate)) fatal(candidate, error);
@@ -1583,7 +1999,12 @@ const chrome = (() => {
     function prune(candidate = session) {
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || video.currentTime < 75) return;
       const end = video.currentTime - 30;
-      Promise.all(candidate.tracks.map((track) => removeRange(candidate, track, 0, end).catch(() => {}))).catch(() => {});
+      for (const track of candidate.tracks) {
+        // A removal waits in the same queue as the appends. Asking for one on every tick put a
+        // buffer operation there every 750 ms, so it waits until ten seconds can go at once.
+        if (end - bufferedStart(track.sourceBuffer, end) < 10) continue;
+        removeRange(candidate, track, 0, end).catch(() => {});
+      }
     }
 
     function disposeSession(candidate, detach = true) {
@@ -1632,9 +2053,10 @@ const chrome = (() => {
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
         internalSeekTarget: null,
-        // One ban list per video, shared by every quality and by the audio track.
-        videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode, options.cdnBans),
-        audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode, options.cdnBans)
+        // One ban list per video, shared by every quality and by the audio track. What has been
+        // measured about the nodes is kept for the whole page, so a seek does not start over.
+        videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode, options.cdnBans, options.nodeStats || undefined),
+        audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode, options.cdnBans, options.nodeStats || undefined)
       };
       session = candidate;
       if (previous) disposeSession(previous, false);
@@ -1846,6 +2268,7 @@ const chrome = (() => {
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         progressiveAppends: session?.progressiveAppends || 0,
         seekReloads,
+        download: downloader.stats?.() || null,
         tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       })
     });
@@ -2034,10 +2457,12 @@ const chrome = (() => {
   // Restarting the takeover for the same video keeps the list.
   let cdnBanRoute = "";
   const cdnBans = root.__BILI_CDN_RESOLVER_FACTORY__?.createBanList({
-    onBan(host) {
-      notices?.log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "", cdnBanRoute, "download");
+    onBan(host, _count, _error, kind) {
+      if (kind === "address") notices?.log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "", cdnBanRoute, "download");
+      else notices?.log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "", cdnBanRoute, "download");
     }
   }) || null;
+  const nodeStats = root.__BILI_CDN_RESOLVER_FACTORY__?.createNodeStats?.() || null;
   let playerContainer = null;
   let playerLifecycle = 0;
   let qualityPlayer = null;
@@ -2059,6 +2484,10 @@ const chrome = (() => {
   let takeoverFailureCount = 0;
   let takeoverFailureStartedAt = 0;
   let takeoverErrorSequence = 1;
+  let autoRetakeTimer = null;
+  let autoRetakeRoute = "";
+  let autoRetakeCount = 0;
+  let autoRetakeAt = 0;
   let compatibilityReloadTimer = null;
   let compatibilityReloadRoute = "";
   let compatibilityReloadTicket = 0;
@@ -2127,6 +2556,30 @@ const chrome = (() => {
     }
     publish();
     scheduleCompatibilityFailureReload(route);
+  }
+
+  // A failed download used to leave the video on Bilibili's own connection until the page
+  // changed. Most such failures are one slow CDN reply, so the takeover is tried again a few
+  // times with a growing pause. The compatibility modes reload the page instead.
+  function scheduleAutoRetake(route) {
+    if (settings.compatibilityMode !== "off") return;
+    const now = Date.now();
+    if (autoRetakeRoute !== route || now - autoRetakeAt > 120000) {
+      autoRetakeRoute = route;
+      autoRetakeCount = 0;
+    }
+    if (autoRetakeCount >= 3) return;
+    autoRetakeCount += 1;
+    autoRetakeAt = now;
+    const attempt = autoRetakeCount;
+    clearTimeout(autoRetakeTimer);
+    autoRetakeTimer = setTimeout(() => {
+      autoRetakeTimer = null;
+      if (!settings.enabled || player || failedRoute !== route || routeIdentity()?.key !== route) return;
+      notices?.log("正在自动重新接管", `刚才的下载出了问题，现在重新接管这个视频（第 ${attempt} 次）。`, "info", "", route, "takeover");
+      failedRoute = "";
+      restartPlayer(true);
+    }, 4000 * (2 ** (attempt - 1)));
   }
 
   function readCompatibilityReloadState() {
@@ -2364,7 +2817,9 @@ const chrome = (() => {
       });
       stats.lastHost = host;
       if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
-      publish();
+      // One segment starts and ends dozens of transfers within the same moment. Publishing
+      // each of them at once copied the whole thread list to the side panel every time.
+      schedulePublish();
       return id;
     }
     const item = transfers.get(Number(event?.id));
@@ -2394,13 +2849,13 @@ const chrome = (() => {
     } else {
       if (event.phase === "cancel") {
         transfers.delete(item.id);
-        publish();
+        schedulePublish();
         return event.id;
       }
       item.state = event.phase === "done" ? "done" : "error";
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
-      publish();
+      schedulePublish();
     }
     return event.id;
   }
@@ -2574,6 +3029,13 @@ const chrome = (() => {
         }
       });
     } else {
+      // Bilibili's own request answered first, so ours for the same video is no longer needed.
+      // Waiting for it delayed the takeover by two more round trips to the API.
+      if (startingRoute === identity.key) {
+        routeRequestController?.abort();
+        routeRequestController = null;
+        startingRoute = "";
+      }
       clearTimeout(restartTimer);
       restartTimer = setTimeout(startPlayer, 0);
     }
@@ -2659,6 +3121,30 @@ const chrome = (() => {
       document.querySelector(".bilibili-player")
     ].filter(Boolean);
     return candidates.find((node) => node.querySelector("video") && node.clientWidth > 200) || null;
+  }
+
+  // The first request to a node otherwise pays for its TLS handshake, which takes over a second
+  // on the distant ones. The downloads are sent without cookies and the browser only reuses a
+  // connection opened the same way, hence crossOrigin. Asked again for every video, because
+  // idle connections are closed after a while.
+  let preconnectKey = "";
+  function preconnectCdnNodes(route) {
+    const key = `${settings.mode}:${route}`;
+    if (preconnectKey === key) return;
+    const factory = root.__BILI_CDN_RESOLVER_FACTORY__;
+    const hosts = settings.mode === "overseas" ? factory?.OVERSEAS_HOSTS : factory?.MAINLAND_HOSTS;
+    const parent = document.head || document.documentElement;
+    if (!Array.isArray(hosts) || !parent) return;
+    preconnectKey = key;
+    for (const link of document.querySelectorAll("link[data-btr-preconnect]")) link.remove();
+    for (const host of hosts) {
+      const link = document.createElement("link");
+      link.rel = "preconnect";
+      link.href = `https://${host}`;
+      link.crossOrigin = "anonymous";
+      link.dataset.btrPreconnect = "";
+      parent.append(link);
+    }
   }
 
   function settingGroup(title, name, values, selected) {
@@ -2868,6 +3354,8 @@ const chrome = (() => {
       .reduce((sum, item) => sum + item.bps, 0) * 8 / 1000);
     const track = info.tracks?.find((item) => item.kind === "video");
     const frames = player.video?.getVideoPlaybackQuality?.();
+    // Bytes that arrived on a second copy of a piece after the other copy had already won.
+    const repeated = info.download?.bytes ? `，重复下载 ${(info.download.duplicateBytes / (info.download.bytes + info.download.duplicateBytes) * 100).toFixed(1)}%` : "";
     return {
       "Mime Type": `${info.videoType}, ${info.audioType}`,
       "Player Type": `线程撕裂者 ${stats.version} 接管`,
@@ -2879,7 +3367,7 @@ const chrome = (() => {
       "Audio Host": lastHostByKind.audio || undefined,
       "Video Speed": `${speed("video")} Kbps`,
       "Audio Speed": `${speed("audio")} Kbps`,
-      "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
+      "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB${repeated}`
     };
   }
 
@@ -2929,6 +3417,7 @@ const chrome = (() => {
       }
     }
     const route = identity.key;
+    preconnectCdnNodes(route);
     if (takeoverFailureRoute && takeoverFailureRoute !== route) {
       clearTakeoverFailure();
       stats.lastError = "";
@@ -3008,6 +3497,7 @@ const chrome = (() => {
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
         cdnBans,
+        nodeStats,
         onLog(title, detail, level = "info", category = "other") {
           if (lifecycle !== playerLifecycle) return;
           notices?.log(title, detail, level, "", route, category);
@@ -3068,6 +3558,7 @@ const chrome = (() => {
               earlyMask?.release?.();
               stats.playerState = "native-fallback";
               publish();
+              scheduleAutoRetake(route);
             }
           }, 3500);
         },
@@ -3146,6 +3637,8 @@ const chrome = (() => {
     } else if (event.data.type === "get-stats") {
       publish();
     } else if (event.data.type === "retry-takeover") {
+      clearTimeout(autoRetakeTimer);
+      autoRetakeCount = 0;
       cancelCompatibilityReload(false);
       clearTakeoverFailure();
       stats.lastError = "";
@@ -4131,7 +4624,7 @@ const chrome = (() => {
 })();
 
 /* popup/popup.html, popup/popup.css */
-const POPUP_HTML = "\u003cmain\u003e\n      \u003cheader\u003e\n        \u003cdiv class=\"logo\" aria-hidden=\"true\"\u003eB\u003c/div\u003e\n        \u003ch1\u003e线程撕裂者\u003c/h1\u003e\n        \u003clabel class=\"switch\" title=\"启用或停用\"\u003e\n          \u003cinput id=\"enabled\" type=\"checkbox\"\u003e\n          \u003cspan\u003e\u003c/span\u003e\n        \u003c/label\u003e\n      \u003c/header\u003e\n\n      \u003csection class=\"mode-select\" aria-label=\"CDN 模式\"\u003e\n        \u003clabel\u003e\u003cinput type=\"radio\" name=\"mode\" value=\"mainland\"\u003e\u003cspan\u003e大陆\u003c/span\u003e\u003c/label\u003e\n        \u003clabel\u003e\u003cinput type=\"radio\" name=\"mode\" value=\"overseas\"\u003e\u003cspan\u003e海外\u003c/span\u003e\u003c/label\u003e\n      \u003c/section\u003e\n\n      \u003csection class=\"compatibility-select\" aria-label=\"兼容模式\"\u003e\n        \u003clabel\u003e\u003cinput type=\"radio\" name=\"compatibility-mode\" value=\"off\"\u003e\u003cspan\u003e标准模式\u003c/span\u003e\u003c/label\u003e\n        \u003clabel\u003e\u003cinput type=\"radio\" name=\"compatibility-mode\" value=\"a\"\u003e\u003cspan\u003e兼容模式 A\u003c/span\u003e\u003c/label\u003e\n        \u003clabel\u003e\u003cinput type=\"radio\" name=\"compatibility-mode\" value=\"b\"\u003e\u003cspan\u003e兼容模式 B\u003c/span\u003e\u003c/label\u003e\n      \u003c/section\u003e\n\n      \u003csection class=\"controls\"\u003e\n        \u003cdiv class=\"control-title\"\u003e\n          \u003clabel for=\"concurrency\"\u003e线程加载数\u003c/label\u003e\n          \u003coutput id=\"thread-value\" for=\"concurrency\"\u003e8\u003c/output\u003e\n        \u003c/div\u003e\n        \u003cdiv class=\"slider\"\u003e\n          \u003cdiv id=\"slider-fill\" class=\"slider-fill\" aria-hidden=\"true\"\u003e\u003c/div\u003e\n          \u003cinput id=\"concurrency\" type=\"range\" min=\"0\" max=\"5\" step=\"1\" value=\"1\" aria-label=\"线程加载数\" aria-valuetext=\"8\"\u003e\n        \u003c/div\u003e\n        \u003cdiv class=\"scale\" aria-hidden=\"true\"\u003e\n          \u003cspan\u003e4\u003c/span\u003e\u003cspan\u003e8\u003c/span\u003e\u003cspan\u003e16\u003c/span\u003e\u003cspan\u003e32\u003c/span\u003e\u003cspan\u003e64\u003c/span\u003e\u003cspan\u003e128\u003c/span\u003e\n        \u003c/div\u003e\n      \u003c/section\u003e\n\n      \u003csection class=\"notice-controls\" aria-label=\"提示设置\"\u003e\n        \u003cdiv class=\"notice-row\"\u003e\u003clabel for=\"error-notices\"\u003e显示错误\u003c/label\u003e\u003clabel class=\"switch\"\u003e\u003cinput id=\"error-notices\" type=\"checkbox\" aria-label=\"显示错误\"\u003e\u003cspan\u003e\u003c/span\u003e\u003c/label\u003e\u003c/div\u003e\n        \u003cdiv class=\"notice-row\"\u003e\u003clabel for=\"debug-notices\"\u003eDebug 模式\u003c/label\u003e\u003clabel class=\"switch\"\u003e\u003cinput id=\"debug-notices\" type=\"checkbox\" aria-label=\"Debug 模式\"\u003e\u003cspan\u003e\u003c/span\u003e\u003c/label\u003e\u003c/div\u003e\n        \u003cfieldset id=\"debug-filters\" class=\"debug-filters\" hidden\u003e\n          \u003clegend\u003e显示哪些 Debug 消息\u003c/legend\u003e\n          \u003cdiv class=\"debug-filter-actions\"\u003e\u003cbutton id=\"debug-select-all\" type=\"button\"\u003e全选\u003c/button\u003e\u003cbutton id=\"debug-select-none\" type=\"button\"\u003e全不选\u003c/button\u003e\u003c/div\u003e\n          \u003cdiv class=\"debug-filter-options\"\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"takeover\"\u003e接管与切换\u003c/label\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"playback\"\u003e播放与暂停\u003c/label\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"download\"\u003e下载线程\u003c/label\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"buffer\"\u003e缓冲与跳转\u003c/label\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"settings\"\u003e设置变化\u003c/label\u003e\n            \u003clabel\u003e\u003cinput type=\"checkbox\" data-debug-category=\"other\"\u003e其他日志\u003c/label\u003e\n          \u003c/div\u003e\n        \u003c/fieldset\u003e\n      \u003c/section\u003e\n\n      \u003csection class=\"current-threads\" aria-live=\"polite\"\u003e\n        \u003cspan\u003e目前总线程\u003c/span\u003e\n        \u003cb id=\"active-count\"\u003e0\u003c/b\u003e\n      \u003c/section\u003e\n\n    \u003c/main\u003e";
+const POPUP_HTML = "<main>\n      <header>\n        <div class=\"logo\" aria-hidden=\"true\">B</div>\n        <h1>线程撕裂者</h1>\n        <label class=\"switch\" title=\"启用或停用\">\n          <input id=\"enabled\" type=\"checkbox\">\n          <span></span>\n        </label>\n      </header>\n\n      <section class=\"mode-select\" aria-label=\"CDN 模式\">\n        <label><input type=\"radio\" name=\"mode\" value=\"mainland\"><span>大陆</span></label>\n        <label><input type=\"radio\" name=\"mode\" value=\"overseas\"><span>海外</span></label>\n      </section>\n\n      <section class=\"compatibility-select\" aria-label=\"兼容模式\">\n        <label><input type=\"radio\" name=\"compatibility-mode\" value=\"off\"><span>标准模式</span></label>\n        <label><input type=\"radio\" name=\"compatibility-mode\" value=\"a\"><span>兼容模式 A</span></label>\n        <label><input type=\"radio\" name=\"compatibility-mode\" value=\"b\"><span>兼容模式 B</span></label>\n      </section>\n\n      <section class=\"controls\">\n        <div class=\"control-title\">\n          <label for=\"concurrency\">线程加载数</label>\n          <output id=\"thread-value\" for=\"concurrency\">8</output>\n        </div>\n        <div class=\"slider\">\n          <div id=\"slider-fill\" class=\"slider-fill\" aria-hidden=\"true\"></div>\n          <input id=\"concurrency\" type=\"range\" min=\"0\" max=\"5\" step=\"1\" value=\"1\" aria-label=\"线程加载数\" aria-valuetext=\"8\">\n        </div>\n        <div class=\"scale\" aria-hidden=\"true\">\n          <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>\n        </div>\n      </section>\n\n      <section class=\"notice-controls\" aria-label=\"提示设置\">\n        <div class=\"notice-row\"><label for=\"error-notices\">显示错误</label><label class=\"switch\"><input id=\"error-notices\" type=\"checkbox\" aria-label=\"显示错误\"><span></span></label></div>\n        <div class=\"notice-row\"><label for=\"debug-notices\">Debug 模式</label><label class=\"switch\"><input id=\"debug-notices\" type=\"checkbox\" aria-label=\"Debug 模式\"><span></span></label></div>\n        <fieldset id=\"debug-filters\" class=\"debug-filters\" hidden>\n          <legend>显示哪些 Debug 消息</legend>\n          <div class=\"debug-filter-actions\"><button id=\"debug-select-all\" type=\"button\">全选</button><button id=\"debug-select-none\" type=\"button\">全不选</button></div>\n          <div class=\"debug-filter-options\">\n            <label><input type=\"checkbox\" data-debug-category=\"takeover\">接管与切换</label>\n            <label><input type=\"checkbox\" data-debug-category=\"playback\">播放与暂停</label>\n            <label><input type=\"checkbox\" data-debug-category=\"download\">下载线程</label>\n            <label><input type=\"checkbox\" data-debug-category=\"buffer\">缓冲与跳转</label>\n            <label><input type=\"checkbox\" data-debug-category=\"settings\">设置变化</label>\n            <label><input type=\"checkbox\" data-debug-category=\"other\">其他日志</label>\n          </div>\n        </fieldset>\n      </section>\n\n      <section class=\"current-threads\" aria-live=\"polite\">\n        <span>目前总线程</span>\n        <b id=\"active-count\">0</b>\n      </section>\n\n    </main>";
 const POPUP_CSS = ":root {\n  color-scheme: dark;\n  font-family: Inter, \"PingFang SC\", \"Microsoft YaHei\", system-ui, sans-serif;\n  background: #17191f;\n  color: #f5f7fb;\n}\n\n* { box-sizing: border-box; }\n\nbody {\n  width: auto;\n  min-width: 280px;\n  margin: 0;\n  background: #17191f;\n}\n\nmain {\n  min-height: 100vh;\n  padding: 18px 16px;\n}\n\nheader {\n  display: grid;\n  grid-template-columns: 42px 1fr auto;\n  align-items: center;\n  gap: 11px;\n  margin-bottom: 22px;\n}\n\n.mode-select {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  gap: 1px;\n  margin-bottom: 12px;\n  overflow: hidden;\n  border: 1px solid #30343d;\n  border-radius: 8px;\n  background: #30343d;\n}\n\n.mode-select label { position: relative; }\n.mode-select input { position: absolute; opacity: 0; }\n.mode-select span {\n  display: block;\n  padding: 10px 6px;\n  color: #949baa;\n  background: #20232a;\n  font-size: 12px;\n  text-align: center;\n  cursor: pointer;\n}\n.mode-select input:checked + span { color: #fff; background: #fb7299; }\n.mode-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }\n\n.compatibility-select {\n  display: grid;\n  grid-template-columns: repeat(3, 1fr);\n  gap: 1px;\n  margin-bottom: 12px;\n  overflow: hidden;\n  border: 1px solid #30343d;\n  border-radius: 8px;\n  background: #30343d;\n}\n\n.compatibility-select label { position: relative; }\n.compatibility-select input { position: absolute; opacity: 0; }\n.compatibility-select span {\n  display: block;\n  padding: 10px 3px;\n  color: #949baa;\n  background: #20232a;\n  font-size: 11px;\n  text-align: center;\n  white-space: nowrap;\n  cursor: pointer;\n}\n.compatibility-select input:checked + span { color: #fff; background: #fb7299; }\n.compatibility-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }\n\n.logo {\n  display: grid;\n  place-items: center;\n  width: 42px;\n  height: 42px;\n  border-radius: 8px;\n  color: #fff;\n  font-size: 23px;\n  font-weight: 800;\n  background: #fb7299;\n}\n\nh1 { margin: 0; font-size: 17px; letter-spacing: 0.2px; }\n.switch { position: relative; width: 42px; height: 24px; }\n.switch input { position:absolute; inset:0; z-index:1; width:100%; height:100%; margin:0; opacity:0; cursor:pointer; }\n.switch span {\n  position: absolute;\n  inset: 0;\n  border-radius: 999px;\n  background: #313a4c;\n  cursor: pointer;\n  transition: 160ms ease;\n}\n.switch span::after {\n  content: \"\";\n  position: absolute;\n  top: 3px;\n  left: 3px;\n  width: 18px;\n  height: 18px;\n  border-radius: 50%;\n  background: #fff;\n  transition: 160ms ease;\n}\n.switch input:checked + span { background: #fb7299; }\n.switch input:checked + span::after { transform: translateX(18px); }\n.switch input:focus-visible + span { outline: 2px solid #fff; outline-offset: 3px; }\n.notice-controls { margin-top:12px; padding:14px 16px; border:1px solid #30343d; border-radius:8px; background:#20232a; }\n.notice-row { display:flex; align-items:center; justify-content:space-between; gap:12px; color:#c9ced9; font-size:13px; }\n.notice-row + .notice-row { margin-top:14px; }\n.debug-filters { min-width:0; margin:16px 0 0; padding:12px 0 0; border:0; border-top:1px solid #343943; }\n.debug-filters[hidden] { display:none; }\n.debug-filters legend { padding:0 0 4px; color:#c9ced9; font-size:12px; }\n.debug-filter-actions { display:flex; gap:8px; margin-bottom:12px; }\n.debug-filter-actions button { padding:4px 8px; border:1px solid #444b57; border-radius:4px; background:#292d35; color:#d9dee8; font:inherit; font-size:11px; cursor:pointer; }\n.debug-filter-actions button:hover { border-color:#fb7299; }\n.debug-filter-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 8px; }\n.debug-filter-options label { display:flex; align-items:center; gap:7px; color:#c9ced9; font-size:12px; cursor:pointer; }\n.debug-filter-options input { flex:none; width:15px; height:15px; margin:0; accent-color:#fb7299; cursor:pointer; }\n.debug-filter-actions button:focus-visible,.debug-filter-options input:focus-visible { outline:2px solid #fff; outline-offset:3px; }\n\n.controls {\n  padding: 16px;\n  border: 1px solid #30343d;\n  border-radius: 8px;\n  background: #20232a;\n}\n\n.control-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 14px;\n}\n\n.control-title label {\n  color: #c9ced9;\n  font-size: 13px;\n}\n\noutput {\n  min-width: 42px;\n  padding: 4px 8px;\n  border-radius: 5px;\n  color: #fff;\n  background: #fb7299;\n  font-size: 13px;\n  font-weight: 700;\n  text-align: center;\n}\n\n.slider {\n  position: relative;\n  width: 100%;\n  height: 18px;\n  border-radius: 9px;\n  background: #3a3e47;\n}\n\n.slider-fill {\n  position: absolute;\n  top: 0;\n  bottom: 0;\n  left: 0;\n  width: 60%;\n  border-radius: 9px;\n  background: #fb7299;\n  pointer-events: none;\n}\n\ninput[type=\"range\"] {\n  position: absolute;\n  inset: 0;\n  width: 100%;\n  height: 18px;\n  margin: 0;\n  appearance: none;\n  -webkit-appearance: none;\n  border: 0;\n  outline: 0;\n  background: transparent;\n  cursor: pointer;\n}\n\ninput[type=\"range\"]::-webkit-slider-runnable-track {\n  height: 18px;\n  background: transparent;\n}\n\ninput[type=\"range\"]::-webkit-slider-thumb {\n  width: 24px;\n  height: 24px;\n  margin-top: -3px;\n  appearance: none;\n  -webkit-appearance: none;\n  border: 2px solid #ffffff;\n  border-radius: 50%;\n  background: #ffffff;\n}\n\ninput[type=\"range\"]:focus-visible::-webkit-slider-thumb {\n  border-color: #fb7299;\n}\n\n.scale {\n  display: flex;\n  justify-content: space-between;\n  margin-top: 5px;\n  color: #7f8797;\n  font-size: 10px;\n}\n\n.scale span {\n  width: 24px;\n  text-align: center;\n}\n\n.scale span:first-child { text-align: left; }\n.scale span:last-child { text-align: right; }\n\n.current-threads {\n  margin-top: 12px;\n  padding: 16px;\n  border: 1px solid #30343d;\n  border-radius: 8px;\n  background: #20232a;\n}\n\n.current-threads {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  color: #c9ced9;\n  font-size: 13px;\n}\n\n.current-threads b {\n  color: #ffffff;\n  font-size: 20px;\n  font-variant-numeric: tabular-nums;\n}";
 
 /* popup/popup.js */

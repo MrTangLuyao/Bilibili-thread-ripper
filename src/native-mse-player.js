@@ -167,6 +167,11 @@
     return time;
   }
 
+  function bufferedStart(sourceBuffer, fallback) {
+    try { return sourceBuffer.buffered.length ? sourceBuffer.buffered.start(0) : fallback; }
+    catch (_error) { return fallback; }
+  }
+
   function mediaBytesPerSecond(track) {
     const segment = track?.sidx?.segments?.[track.startupIndex];
     if (segment?.durationSeconds > 0 && segment?.length > 0) return segment.length / segment.durationSeconds;
@@ -349,16 +354,18 @@
             break;
           }
           if (bufferedEndAt(track.sourceBuffer, current) - current >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
-          const batchSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
-          const batch = [];
+          // A sliding window: the next segment starts as soon as one has been appended. Waiting
+          // for a whole batch left the connections idle until its slowest segment arrived.
+          const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
           let projectedEnd = bufferedEndAt(track.sourceBuffer, current);
-          for (let offset = 0; offset < batchSize; offset += 1) {
+          for (let offset = 0; offset < windowSize; offset += 1) {
             const index = track.nextIndex + offset;
             const segment = track.sidx.segments[index];
             if (!segment || projectedEnd - current >= core.normalizeSettings(getSettings()).bufferAheadSeconds) break;
+            projectedEnd = segment.endTime;
+            if (track.prefetches.has(index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
-            const prefetched = track.prefetches.get(index);
-            batch.push(prefetched || segmentDownload(candidate, track, segment, index, {
+            track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
               startup,
               onStartupScheduled: startup ? () => {
@@ -372,25 +379,23 @@
                 ensureBuffer(candidate);
               } : null
             }));
-            projectedEnd = segment.endTime;
           }
-          if (!batch.length) break;
-          for (const pending of batch) {
-            const settled = await pending;
-            track.prefetches.delete(settled.index);
-            if (settled.error) throw settled.error;
-            if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
-            if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
-            if (!track.startupComplete && settled.index === track.startupIndex) {
-              track.startupComplete = true;
-              candidate.startupCompletedBytes += settled.result.byteLength;
-              updateStartupProfile(candidate);
-            }
-            track.nextIndex = settled.index + 1;
-            track.started = true;
-            options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
-            ensureBuffer(candidate);
+          const pending = track.prefetches.get(track.nextIndex);
+          if (!pending) break;
+          const settled = await pending;
+          track.prefetches.delete(settled.index);
+          if (settled.error) throw settled.error;
+          if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
+          if (!settled.result.streamed) await append(candidate, track, settled.result.bytes, generation);
+          if (!track.startupComplete && settled.index === track.startupIndex) {
+            track.startupComplete = true;
+            candidate.startupCompletedBytes += settled.result.byteLength;
+            updateStartupProfile(candidate);
           }
+          track.nextIndex = settled.index + 1;
+          track.started = true;
+          options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
+          ensureBuffer(candidate);
         }
       } catch (error) {
         if (!signal.aborted && sessionIsCurrent(candidate)) fatal(candidate, error);
@@ -506,7 +511,12 @@
     function prune(candidate = session) {
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || video.currentTime < 75) return;
       const end = video.currentTime - 30;
-      Promise.all(candidate.tracks.map((track) => removeRange(candidate, track, 0, end).catch(() => {}))).catch(() => {});
+      for (const track of candidate.tracks) {
+        // A removal waits in the same queue as the appends. Asking for one on every tick put a
+        // buffer operation there every 750 ms, so it waits until ten seconds can go at once.
+        if (end - bufferedStart(track.sourceBuffer, end) < 10) continue;
+        removeRange(candidate, track, 0, end).catch(() => {});
+      }
     }
 
     function disposeSession(candidate, detach = true) {
@@ -555,9 +565,10 @@
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
         internalSeekTarget: null,
-        // One ban list per video, shared by every quality and by the audio track.
-        videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode, options.cdnBans),
-        audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode, options.cdnBans)
+        // One ban list per video, shared by every quality and by the audio track. What has been
+        // measured about the nodes is kept for the whole page, so a seek does not start over.
+        videoResolver: resolverFactory.createResolver(representation, () => core.normalizeSettings(getSettings()).mode, options.cdnBans, options.nodeStats || undefined),
+        audioResolver: resolverFactory.createResolver(selection.audio, () => core.normalizeSettings(getSettings()).mode, options.cdnBans, options.nodeStats || undefined)
       };
       session = candidate;
       if (previous) disposeSession(previous, false);
@@ -769,6 +780,7 @@
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         progressiveAppends: session?.progressiveAppends || 0,
         seekReloads,
+        download: downloader.stats?.() || null,
         tracks: (session?.tracks || []).map((track) => ({ kind: track.kind, nextIndex: track.nextIndex, segments: track.sidx.segments.length }))
       })
     });
