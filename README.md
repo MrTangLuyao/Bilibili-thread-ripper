@@ -37,11 +37,14 @@
 
 ## 安装
 
-#### ⚠️如果是通过视频了解的这个插件 注意 请看2P来安装：针对Chrome的插件已经停止更新。请卸载独立安装的插件版并按照下面步骤安装新版BTR
+[视频安装步骤(参考2P 通过油猴脚本安装)](https://www.bilibili.com/video/BV1Teec6BE3s)
+
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 插件
 2. 点这里：[**安装线程撕裂者**](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 3. 打开 B 站视频，完事
+
+#### ⚠️如果是通过视频了解的这个插件 注意 请看2P来安装：针对Chrome的插件已经停止更新。请卸载独立安装的插件版并按步骤安装新版BTR。
 
 #### ⚠️注意
 
