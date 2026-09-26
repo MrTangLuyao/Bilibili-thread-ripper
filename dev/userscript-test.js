@@ -1,16 +1,28 @@
 "use strict";
-// Needs dev/server.js. Checks the built user_scripts/bilibili-thread-ripper.user.js.
+// Needs dev/server.js. Builds the userscript from the current source files into
+// dist/userscript-test.user.js and runs that in dev/userscript-test.html; the published
+// user_scripts/bilibili-thread-ripper.user.js only changes when a version is released.
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), path = require("node:path"), vm = require("node:vm");
+const { pathToFileURL } = require("node:url");
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
 const meta = JSON.parse(fs.readFileSync(path.join(root, "user_scripts/adapter/meta.json"), "utf8"));
-// The published file carries the version of the newest release in CHANGELOG.md.
+// The published file carries the version of the newest release in CHANGELOG.md; the test
+// build uses the same one.
 const version = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+\.\d+)\]/m)[1];
-const script = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
+const published = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
+let script = "";
 const scriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js";
 const source = file => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd().split("__BTR_VERSION__").join(version);
+
+function checkPublished() {
+  const header = published.slice(0, published.indexOf("// ==/UserScript=="));
+  const values = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1].trim());
+  assert.deepEqual(values("version"), [version], "the published script is not the newest release in CHANGELOG.md");
+  assert.deepEqual(values("updateURL"), [scriptUrl]);
+}
 
 function checkFile() {
   assert.ok(script.startsWith("// ==UserScript==\n"), "Tampermonkey needs the header on the first line");
@@ -24,7 +36,7 @@ function checkFile() {
   // modules keep to their own hostnames in the page code.
   assert.deepEqual(values("match"), ["https://*.bilibili.com/*"]);
   assert.deepEqual(values("run-at"), ["document-start"]);
-  assert.deepEqual(values("grant").sort(), ["GM_addElement", "GM_registerMenuCommand", "unsafeWindow"]);
+  assert.deepEqual(values("grant").sort(), ["GM.getValue", "GM.setValue", "GM_addElement", "GM_addValueChangeListener", "GM_registerMenuCommand", "unsafeWindow"]);
   // Live players sit in live.bilibili.com iframes, so the script must run in frames; the
   // page code itself keeps other sites' iframes out.
   assert.doesNotMatch(header, /^\/\/ @noframes$/m);
@@ -50,6 +62,11 @@ const openSettings = page => page.evaluate(() => document.dispatchEvent(new Cust
 const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettings());
 
 (async () => {
+  checkPublished();
+  const { buildUserscript } = await import(pathToFileURL(path.join(root, "scripts/build.mjs")).href);
+  script = buildUserscript(version);
+  fs.mkdirSync(path.join(root, "dist"), { recursive: true });
+  fs.writeFileSync(path.join(root, "dist/userscript-test.user.js"), script);
   checkFile();
   const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true });
   const origin = "http://127.0.0.1:18763/dev/userscript-test.html";
@@ -237,6 +254,78 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await isolated.locator(settingsHost).waitFor({ state: "detached" });
     assert.equal(await isolated.locator("#__btr_notification_stack__").count() <= 1, true);
     console.log("PASS 油猴在独立环境运行时：核心只注入页面一次，油猴菜单“线程撕裂者设置”能打开和关闭设置页");
+
+    // Settings in the manager's storage, shared by every bilibili subdomain. Separate browser
+    // contexts stand in for subdomains: each has its own localStorage, all share the store.
+    const gmStore = new Map();
+    const gmPages = new Set();
+    const managerTab = async (seed) => {
+      const context = await browser.newContext();
+      if (seed) await context.addInitScript(value => { if (!sessionStorage.getItem("seeded")) { localStorage.setItem("BTR_Userscript.sync", value); sessionStorage.setItem("seeded", "1"); } }, JSON.stringify(seed));
+      await context.exposeBinding("__gmCall", async (source, op, key, value) => {
+        if (op === "get") return gmStore.get(key);
+        const old = gmStore.get(key);
+        gmStore.set(key, value);
+        for (const other of gmPages) {
+          if (other === source.page || other.isClosed()) continue;
+          await other.evaluate(([name, before, after]) => __gmListeners.filter(item => item.key === name).forEach(item => item.callback(name, before, after, true)), [key, old, value]).catch(() => {});
+        }
+      });
+      const tab = await context.newPage();
+      tab.on("pageerror", error => errors.push(error.message));
+      gmPages.add(tab);
+      return tab;
+    };
+    const modeOf = (target, mode) => target.waitForFunction(value => window.__biliThreadRipperDebug?.getSettings().mode === value, mode);
+    // What an earlier subdomain kept is taken over the first time, and stays where it was.
+    const space = await managerTab({ mode: "overseas", autoConcurrency: false, concurrency: 16 });
+    await space.goto(`${origin}?gm=live`);
+    await modeOf(space, "overseas");
+    assert.equal(JSON.parse(gmStore.get("sync")).mode, "overseas");
+    assert.equal(JSON.parse(await space.evaluate(() => localStorage.getItem("BTR_Userscript.sync"))).mode, "overseas");
+    // Another subdomain, with nothing in its own localStorage, reads the same settings.
+    const video = await managerTab();
+    await video.goto(`${origin}?gm=live`);
+    await modeOf(video, "overseas");
+    assert.deepEqual(await settingsOf(video).then(value => [value.autoConcurrency, value.concurrency]), [false, 16]);
+    // A change on one shows on the other at once, is stored for both, and nothing lands in
+    // that subdomain's own localStorage. A reload keeps it.
+    await openSettings(space);
+    const spacePanel = space.locator(`${settingsHost} .btr-popup`);
+    await spacePanel.waitFor();
+    await spacePanel.locator('input[name="mode"][value="mainland"]').check({ force: true });
+    await modeOf(video, "mainland");
+    assert.equal(JSON.parse(gmStore.get("sync")).mode, "mainland");
+    assert.equal(await video.evaluate(() => localStorage.getItem("BTR_Userscript.sync")), null);
+    await video.goto(`${origin}?gm=live`);
+    await modeOf(video, "mainland");
+    // A manager that does not report other tabs' changes: the tab reads the storage again
+    // when it comes back.
+    const plain = await managerTab();
+    await plain.goto(`${origin}?gm=plain`);
+    await modeOf(plain, "mainland");
+    await spacePanel.locator('input[name="mode"][value="overseas"]').check({ force: true });
+    await modeOf(video, "overseas");
+    assert.equal(await settingsOf(plain).then(value => value.mode), "mainland");
+    await plain.evaluate(() => dispatchEvent(new Event("focus")));
+    await modeOf(plain, "overseas");
+    // The same when the manager runs the script outside the page and injects it.
+    const injectedTab = await managerTab();
+    await injectedTab.goto(`${origin}?mode=sandbox&gm=live`);
+    await modeOf(injectedTab, "overseas");
+    await spacePanel.locator('input[name="mode"][value="mainland"]').check({ force: true });
+    await modeOf(injectedTab, "mainland");
+    // A manager whose storage never answers must not keep the settings, and so the takeover,
+    // from loading: after three seconds this site's localStorage is used as before.
+    const silentContext = await browser.newContext();
+    await silentContext.addInitScript(() => localStorage.setItem("BTR_Userscript.sync", JSON.stringify({ mode: "overseas" })));
+    const silent = await silentContext.newPage();
+    silent.on("pageerror", error => errors.push(error.message));
+    const silentStarted = Date.now();
+    await silent.goto(`${origin}?gm=silent`);
+    await silent.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas", null, { timeout: 8000 });
+    assert.ok(Date.now() - silentStarted < 6000);
+    console.log("PASS 设置存在脚本管理器里：各子域共用一份，第一次会导入这个子域原来的设置，其他标签页马上同步（不报告变化的管理器在切回标签页时同步），管理器的存储不回应时退回本站 localStorage");
 
     assert.deepEqual(errors, []);
     console.log("PASS 没有脚本错误");

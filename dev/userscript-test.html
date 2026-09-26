@@ -11,6 +11,7 @@
     // ?mode=sandbox imitates a userscript manager that runs the script outside the page:
     // unsafeWindow is another object and the manager provides its menu and injection APIs.
     const sandbox = new URLSearchParams(location.search).get("mode") === "sandbox";
+    const gm = new URLSearchParams(location.search).get("gm");
     history.replaceState(null, "", "/video/BV1userA0001");
     window.__INITIAL_STATE__ = { videoData: { bvid: "BV1userA0001", cid: 101 } };
     window.__playinfo__ = { data: { dash: { video: [], audio: [] } } };
@@ -32,6 +33,16 @@
       }
     };
     Object.defineProperty(window, "__BILI_NATIVE_MSE_PLAYER_FACTORY__", { configurable: false, get: () => factory, set() {} });
+    // ?gm=live / ?gm=plain: a manager with its own storage, which the test keeps outside the
+    // browser so that separate contexts (standing in for bilibili subdomains) share it. "live"
+    // also reports other tabs' changes, like Tampermonkey; "plain" does not, like Greasemonkey.
+    // "silent" is a manager whose storage never answers.
+    if (gm === "silent") window.GM = { getValue: () => new Promise(() => {}), setValue: () => new Promise(() => {}) };
+    else if (gm) {
+      window.GM = { getValue: key => window.__gmCall("get", key), setValue: (key, value) => window.__gmCall("set", key, value) };
+      window.__gmListeners = [];
+      if (gm === "live") window.GM_addValueChangeListener = (key, callback) => __gmListeners.push({ key, callback });
+    }
     if (sandbox) {
       window.unsafeWindow = { note: "the manager's view of the page" };
       window.GM_registerMenuCommand = (name, callback) => __userscriptTest.menus.push({ name, callback });
@@ -44,6 +55,6 @@
       };
     }
   </script>
-  <script src="/user_scripts/bilibili-thread-ripper.user.js"></script>
+  <script src="/dist/userscript-test.user.js"></script>
 </body>
 </html>

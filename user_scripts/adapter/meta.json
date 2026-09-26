@@ -15,6 +15,9 @@
     ["grant", "GM_registerMenuCommand"],
     ["grant", "GM_addElement"],
     ["grant", "unsafeWindow"],
+    ["grant", "GM.getValue"],
+    ["grant", "GM.setValue"],
+    ["grant", "GM_addValueChangeListener"],
     ["sandbox", "JavaScript"],
     ["inject-into", "content"]
   ],
