@@ -44,9 +44,9 @@
 2. 点这里：[**安装线程撕裂者**](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 3. 打开 B 站视频，完事
 
-#### ⚠️如果是通过视频了解的这个插件 注意 请看2P来安装：针对Chrome的插件已经停止更新。请卸载独立安装的插件版并按步骤安装新版BTR。
+#### ⚠️如果是早期通过视频了解的这个插件 注意：针对Chrome的独立版插件已经停止更新。请卸载独立插件版插件并按步骤安装基于油猴脚本的新版BTR。⚠️
 
-#### ⚠️注意
+#### ⚠️⚠️⚠️注意⚠️⚠️⚠️
 
 - 插件支持 基于Chromium/Firefox/Safari 的浏览器
 
