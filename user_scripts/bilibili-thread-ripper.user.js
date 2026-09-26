@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      0.9.4.3
+// @version      2026.9.27.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
+// @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
 // @license      MIT
 // @homepageURL  https://github.com/MrTangLuyao/Bilibili-thread-ripper
@@ -14,11 +15,14 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_addElement
 // @grant        unsafeWindow
+// @grant        GM.getValue
+// @grant        GM.setValue
+// @grant        GM_addValueChangeListener
 // @sandbox      JavaScript
 // @inject-into  content
 // ==/UserScript==
 
-// 这个文件由 scripts/build-userscript.ps1 生成，不要直接修改。
+// 这个文件由 scripts/build.mjs 生成，不要直接修改。
 (function () {
 "use strict";
 
@@ -29,23 +33,27 @@ if (document.documentElement?.hasAttribute("data-btr-userscript")) return;
 document.documentElement?.setAttribute("data-btr-userscript", "");
 
 /* user_scripts/adapter/storage-shim.js */
-// Userscripts have no extension storage. This small stand-in keeps the parts of the
-// chrome.* API that bridge.js uses and saves settings in this site's localStorage.
-// Changes made in another bilibili tab arrive through the storage event.
+// This small stand-in keeps the parts of the chrome.* API that bridge.js uses: storage,
+// and runtime.lastError for its callbacks.
+//
+// The settings live in the script manager's storage, which every bilibili subdomain shares.
+// Only the manager's side of the script (loader.js) can reach it, so this page code asks it
+// with events. loader.js marks the page when it answers them; without that mark, or when it
+// does not answer, the settings stay in this site's localStorage as before, which is kept per
+// subdomain. Changes made in another tab arrive from the manager, or, where the manager does
+// not report them, are read again when this tab comes back into view.
 const chrome = (() => {
   const PREFIX = "BTR_Userscript.";
+  const AREAS = ["sync", "local"];
+  const mark = document.documentElement?.getAttribute("data-btr-userscript-storage") || "";
   const listeners = new Set();
   const parse = (text) => {
     try {
-      const value = JSON.parse(text || "{}");
+      const value = typeof text === "string" ? JSON.parse(text || "{}") : text;
       return value && typeof value === "object" && !Array.isArray(value) ? value : {};
     } catch (_error) {
       return {};
     }
-  };
-  const read = (area) => {
-    try { return parse(localStorage.getItem(PREFIX + area)); }
-    catch (_error) { return {}; }
   };
   const diff = (before, after) => {
     const changes = {};
@@ -61,52 +69,127 @@ const chrome = (() => {
       catch (error) { console.error("BTR settings listener", error); }
     }
   };
-  // No toolbar icon or background page: nothing sends messages here.
-  const runtime = {
-    lastError: null,
-    sendMessage: () => Promise.resolve(),
-    onMessage: { addListener() {} }
+
+  // This site's localStorage: the fallback, and what every version before 2026 used.
+  const localBackend = {
+    load: (area) => {
+      try { return Promise.resolve(parse(localStorage.getItem(PREFIX + area))); }
+      catch (_error) { return Promise.resolve({}); }
+    },
+    change: (area, op, value) => {
+      let next = {};
+      try { next = parse(localStorage.getItem(PREFIX + area)); } catch (_error) {}
+      if (op === "set") Object.assign(next, value);
+      else for (const key of value) delete next[key];
+      try { localStorage.setItem(PREFIX + area, JSON.stringify(next)); }
+      catch (error) { return Promise.reject(error); }
+      return Promise.resolve(next);
+    }
   };
+
+  // The manager's storage, through loader.js. Requests and answers are JSON text: objects
+  // would not cross Firefox's boundary between the page and the manager's sandbox.
+  let requestCount = 0;
+  const pending = new Map();
+  const managerBackend = {
+    request(message) {
+      return new Promise((resolve, reject) => {
+        const id = String(++requestCount);
+        pending.set(id, { resolve, reject });
+        document.dispatchEvent(new CustomEvent("btr-userscript-storage-request", { detail: JSON.stringify({ ...message, id }) }));
+      });
+    },
+    load(area) { return this.request({ op: "get", area }); },
+    change(area, op, value) { return this.request(op === "set" ? { op, area, items: value } : { op, area, keys: value }); }
+  };
+  document.addEventListener("btr-userscript-storage-reply", (event) => {
+    let reply = null;
+    try { reply = JSON.parse(event.detail); } catch (_error) { return; }
+    const entry = pending.get(String(reply?.id));
+    if (!entry) return;
+    pending.delete(String(reply.id));
+    if (reply.error) entry.reject(new Error(reply.error));
+    else entry.resolve(parse(reply.value));
+  });
+
+  const cache = {};
+  const loads = {};
+  let backend = mark ? managerBackend : localBackend;
+  // A manager that marked the page but never answers must not keep the settings from loading.
+  const load = (area) => {
+    loads[area] ||= (backend === managerBackend
+      ? Promise.race([backend.load(area), new Promise((_resolve, reject) => setTimeout(() => reject(new Error("no answer")), 3000))])
+        .catch(() => { backend = localBackend; return backend.load(area); })
+      : backend.load(area)).then((value) => { cache[area] = value; return value; });
+    return loads[area];
+  };
+  // What the storage now holds after a change, from this tab or from another one.
+  const settle = (area, value) => {
+    const before = cache[area] || {};
+    cache[area] = value;
+    notify(diff(before, value), area);
+  };
+
+  const runtime = { lastError: null };
   // Callers either pass a callback and read runtime.lastError, or await the promise.
-  const finish = (value, callback, error = null) => {
-    if (typeof callback !== "function") return error ? Promise.reject(error) : Promise.resolve(value);
-    queueMicrotask(() => {
+  const finish = (promise, callback) => {
+    const done = promise.then((value) => [value, null], (error) => [undefined, error]);
+    if (typeof callback !== "function") return done.then(([value, error]) => (error ? Promise.reject(error) : value));
+    return done.then(([value, error]) => {
       runtime.lastError = error ? { message: String(error.message || error) } : null;
       try { callback(value); }
       finally { runtime.lastError = null; }
+      return value;
     });
-    return Promise.resolve(value);
   };
-  const write = (area, next) => {
-    const before = read(area);
-    try { localStorage.setItem(PREFIX + area, JSON.stringify(next)); }
-    catch (error) { return error; }
-    queueMicrotask(() => notify(diff(before, next), area));
-    return null;
-  };
+  // The change shows at once in this tab; the storage's own answer, which may also carry
+  // another tab's change, settles it.
+  const change = (area, op, value) => load(area).then((stored) => {
+    const next = { ...stored };
+    if (op === "set") Object.assign(next, value);
+    else for (const key of value) delete next[key];
+    settle(area, next);
+    return backend.change(area, op, value).then((result) => settle(area, result));
+  });
   const storageArea = (area) => ({
     get(keys, callback) {
-      const stored = read(area);
-      let value;
-      if (keys === null || keys === undefined) value = { ...stored };
-      else if (typeof keys === "string") value = keys in stored ? { [keys]: stored[keys] } : {};
-      else if (Array.isArray(keys)) value = Object.fromEntries(keys.filter((key) => key in stored).map((key) => [key, stored[key]]));
-      else value = Object.fromEntries(Object.keys(keys).map((key) => [key, key in stored ? stored[key] : keys[key]]));
-      return finish(value, callback);
+      return finish(load(area).then((stored) => {
+        if (keys === null || keys === undefined) return { ...stored };
+        if (typeof keys === "string") return keys in stored ? { [keys]: stored[keys] } : {};
+        if (Array.isArray(keys)) return Object.fromEntries(keys.filter((key) => key in stored).map((key) => [key, stored[key]]));
+        return Object.fromEntries(Object.keys(keys).map((key) => [key, key in stored ? stored[key] : keys[key]]));
+      }), callback);
     },
     set(items, callback) {
-      return finish(undefined, callback, write(area, { ...read(area), ...items }));
+      return finish(change(area, "set", { ...items }), callback);
     },
     remove(keys, callback) {
-      const next = read(area);
-      for (const key of [].concat(keys)) delete next[key];
-      return finish(undefined, callback, write(area, next));
+      return finish(change(area, "remove", [].concat(keys)), callback);
     }
   });
+
+  // Another tab changed something.
   addEventListener("storage", (event) => {
-    if (!event.key?.startsWith(PREFIX)) return;
-    notify(diff(parse(event.oldValue), parse(event.newValue)), event.key.slice(PREFIX.length));
+    if (backend !== localBackend || !event.key?.startsWith(PREFIX)) return;
+    const area = event.key.slice(PREFIX.length);
+    if (AREAS.includes(area) && cache[area]) settle(area, parse(event.newValue));
   });
+  document.addEventListener("btr-userscript-storage-change", (event) => {
+    let message = null;
+    try { message = JSON.parse(event.detail); } catch (_error) { return; }
+    if (backend === managerBackend && AREAS.includes(message?.area) && cache[message.area]) settle(message.area, parse(message.value));
+  });
+  // Managers that do not report other tabs' changes ("live" is missing from the mark): read
+  // the storage again whenever this tab comes back.
+  if (mark && !mark.split(" ").includes("live")) {
+    const refresh = () => {
+      if (document.visibilityState !== "visible" || backend !== managerBackend) return;
+      for (const area of AREAS) if (cache[area]) backend.load(area).then((value) => settle(area, value), () => {});
+    };
+    addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+  }
+
   return Object.freeze({
     runtime,
     storage: Object.freeze({
@@ -3230,7 +3313,7 @@ const chrome = (() => {
       urlDeadlineSeconds,
       video,
       getDebug: () => ({
-        version: "0.9.4.3",
+        version: "2026.9.27.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4013,10 +4096,10 @@ const chrome = (() => {
 })(globalThis);
 
 /* src/settings-panel.js */
-// The settings panel of both the extension and the userscript. It runs in the bilibili page
-// and opens from the extension's toolbar icon, the userscript manager's menu, or "自定义" in
-// the player's gear menu. Settings are read and saved through bridge.js, which keeps them in
-// the extension's storage (in the userscript, in localStorage).
+// The settings panel. It runs in the bilibili page and opens from the button in the page's
+// corner, the userscript manager's menu, or "自定义" in the player's gear menu. Settings are
+// read and saved through bridge.js; storage-shim.js keeps them in the script manager's
+// storage.
 (function installSettingsPanel(root) {
   "use strict";
 
@@ -4439,9 +4522,9 @@ const chrome = (() => {
 
   const toggle = () => (current ? current.close() : open());
 
-  // The button in the corner of every bilibili page. The toolbar icon only reaches the pages
-  // the extension runs on, and the userscript manager's menu is not obvious (and on the home
-  // page people do not find it at all), so the panel needs a way in that is always visible.
+  // The button in the corner of every bilibili page. The userscript manager's menu is not
+  // obvious (and on the home page people do not find it at all), so the panel needs a way in
+  // that is always visible.
   // It hides while the video is fullscreen and while the panel itself is open.
   const launcher = (() => {
     if (root.top !== root) return null;
@@ -4629,9 +4712,8 @@ const chrome = (() => {
     } else if (event.data.type === "stats") {
       latestStats = event.data.payload;
     } else if (event.data.type === "open-settings" && root.top === root) {
-      // The toolbar icon toggles the panel; "自定义" in the gear menu only opens it.
-      if (event.data.payload?.toggle) toggle();
-      else open();
+      // "自定义" in the gear menu.
+      open();
     }
   });
   // The userscript manager's menu entry.
@@ -4653,8 +4735,8 @@ const chrome = (() => {
   const SETTINGS_ID = "__bilibili_thread_ripper_native_settings__";
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
-  // The userscript runs on every bilibili.com page (the extension picks pages in its
-  // manifest). The video takeover belongs to the video pages only: the live site has its
+  // The userscript runs on every bilibili.com page. The video takeover belongs to the video
+  // pages only: the live site has its
   // own module (live-hook.js), and elsewhere only the settings panel is wanted.
   const pageHost = root.location?.hostname || "";
   if (/(^|\.)bilibili\.com$/i.test(pageHost) && !/^(www|m)\.bilibili\.com$/i.test(pageHost)) return;
@@ -4719,7 +4801,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "0.9.4.3",
+    version: "2026.9.27.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -4881,7 +4963,7 @@ const chrome = (() => {
       if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
       trackBusy(kind, now);
       // One segment starts and ends dozens of transfers within the same moment. Publishing
-      // each of them at once copied the whole thread list to the extension every time.
+      // each of them at once posted the whole thread list every time.
       schedulePublish();
       return id;
     }
@@ -6084,7 +6166,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "0.9.4.3"
+      version: "2026.9.27.1"
     })
   });
   publish();
@@ -6336,9 +6418,9 @@ const chrome = (() => {
     } catch (_error) {}
   }
 
-  // ---- stats for the extension badge and the settings panel ----
+  // ---- stats for the settings panel ----
   const stats = {
-    version: "0.9.4.3",
+    version: "2026.9.27.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -6802,7 +6884,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "0.9.4.3"
+      version: "2026.9.27.1"
     })
   });
   publish();
@@ -7119,7 +7201,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.9.4.3";
+  const VERSION = "2026.9.27.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
@@ -7131,7 +7213,6 @@ const chrome = (() => {
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
-  let lastBadge = null;
   let errorNoticeMotion = null;
 
   // The page checks each custom server again with the full rules before using it; here it
@@ -7160,16 +7241,6 @@ const chrome = (() => {
 
   function postSettings() {
     window.postMessage({ channel: CHANNEL, type: "settings", payload: latestSettings }, "*");
-  }
-
-  function updateBadge() {
-    const count = Math.max(0, Math.min(512, Math.trunc(Number(latestStats?.activeThreads) || 0)));
-    const text = loaded && latestSettings.enabled !== false ? String(count) : "";
-    if (text === lastBadge) return;
-    lastBadge = text;
-    try {
-      chrome.runtime.sendMessage({ type: "setThreadBadge", enabled: latestSettings.enabled !== false, activeThreads: count })?.catch?.(() => {});
-    } catch (_error) {}
   }
 
   function normalizeTakeoverError(input) {
@@ -7333,7 +7404,6 @@ const chrome = (() => {
     loaded = true;
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
-    updateBadge();
     postSettings();
   });
 
@@ -7346,7 +7416,6 @@ const chrome = (() => {
     loaded = true;
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
-    updateBadge();
     postSettings();
   });
 
@@ -7410,14 +7479,7 @@ const chrome = (() => {
         host: String(item?.host || "").slice(0, 120)
       })) : []
     };
-    updateBadge();
     syncTakeoverErrorNotice();
-  });
-
-  // The toolbar icon of the extension. The settings panel runs in the page.
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === "openSettings" && window.top === window) window.postMessage({ channel: CHANNEL, type: "open-settings", payload: { toggle: true } }, "*");
-    return false;
   });
 })();
 }
@@ -7428,6 +7490,53 @@ const chrome = (() => {
 // event that opens the settings panel.
 const LOADED = "data-btr-userscript";
 const pageWindow = typeof unsafeWindow !== "undefined" && unsafeWindow ? unsafeWindow : window;
+
+// The settings live in the manager's storage, which every bilibili subdomain shares; this
+// site's localStorage is separate on each one, so a setting changed on space.bilibili.com
+// never reached the video pages. Only this side of the script can use the manager's storage:
+// the page code (storage-shim.js) asks for it with events carrying JSON text. The first time,
+// what this subdomain's localStorage held is taken over; it stays there too.
+const STORAGE_MARK = "data-btr-userscript-storage";
+const manager = typeof GM !== "undefined" && typeof GM?.getValue === "function" && typeof GM?.setValue === "function" ? GM : null;
+const managerReportsChanges = typeof GM_addValueChangeListener === "function";
+
+function answerPage(type, message) {
+  document.dispatchEvent(new CustomEvent(type, { detail: JSON.stringify(message) }));
+}
+
+function serveStorage() {
+  const read = async (area) => {
+    const stored = await manager.getValue(area);
+    if (typeof stored === "string") return stored;
+    let earlier = null;
+    try { earlier = localStorage.getItem(`BTR_Userscript.${area}`); } catch (_error) {}
+    if (earlier) await manager.setValue(area, earlier);
+    return earlier || "{}";
+  };
+  // One request at a time: a change reads what is stored and writes it back.
+  let queue = Promise.resolve();
+  document.addEventListener("btr-userscript-storage-request", (event) => {
+    let request = null;
+    try { request = JSON.parse(event.detail); } catch (_error) { return; }
+    if (!request || !["sync", "local"].includes(request.area)) return;
+    queue = queue.then(async () => {
+      let value = {};
+      try { value = JSON.parse(await read(request.area)) || {}; } catch (_error) {}
+      if (request.op === "set") Object.assign(value, request.items);
+      else if (request.op === "remove") for (const key of [].concat(request.keys)) delete value[key];
+      if (request.op === "set" || request.op === "remove") await manager.setValue(request.area, JSON.stringify(value));
+      answerPage("btr-userscript-storage-reply", { id: request.id, value });
+    }).catch((error) => answerPage("btr-userscript-storage-reply", { id: request.id, error: String(error?.message || error) }));
+  });
+  if (managerReportsChanges) {
+    for (const area of ["sync", "local"]) {
+      GM_addValueChangeListener(area, (_name, _oldValue, value, remote) => {
+        if (remote) answerPage("btr-userscript-storage-change", { area, value: typeof value === "string" ? value : "{}" });
+      });
+    }
+  }
+}
+if (manager) serveStorage();
 
 function injected() {
   return document.documentElement?.hasAttribute(LOADED) === true;
@@ -7448,13 +7557,20 @@ function inject() {
   if (!injected()) console.error("BTR: 无法在页面里启动线程撕裂者");
 }
 
-if (pageWindow === window) pageCode();
-else if (document.documentElement) inject();
+// The page code reads this mark once, when it starts, to know whether its settings go
+// through the manager ("live": the manager also reports other tabs' changes).
+function start() {
+  if (manager) document.documentElement.setAttribute(STORAGE_MARK, managerReportsChanges ? "manager live" : "manager");
+  if (pageWindow === window) pageCode();
+  else inject();
+}
+
+if (document.documentElement) start();
 else {
   const observer = new MutationObserver(() => {
     if (!document.documentElement) return;
     observer.disconnect();
-    inject();
+    start();
   });
   observer.observe(document, { childList: true });
 }
