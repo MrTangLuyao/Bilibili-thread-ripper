@@ -18,7 +18,7 @@
 // @inject-into  content
 // ==/UserScript==
 
-// 这个文件由 scripts/build-userscript.ps1 生成，不要直接修改。
+// 这个文件由 scripts/build.mjs 生成，不要直接修改。
 (function () {
 "use strict";
 

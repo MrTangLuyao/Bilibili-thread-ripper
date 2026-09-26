@@ -1,0 +1,39 @@
+{
+  "header": [
+    ["name", "Bilibili 线程撕裂者"],
+    ["namespace", "https://github.com/MrTangLuyao/Bilibili-thread-ripper"],
+    ["version", "{version}"],
+    ["description", "保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。"],
+    ["author", "MrTangLuyao"],
+    ["license", "MIT"],
+    ["homepageURL", "https://github.com/MrTangLuyao/Bilibili-thread-ripper"],
+    ["supportURL", "https://github.com/MrTangLuyao/Bilibili-thread-ripper/issues"],
+    ["updateURL", "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js"],
+    ["downloadURL", "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js"],
+    ["match", "https://*.bilibili.com/*"],
+    ["run-at", "document-start"],
+    ["grant", "GM_registerMenuCommand"],
+    ["grant", "GM_addElement"],
+    ["grant", "unsafeWindow"],
+    ["sandbox", "JavaScript"],
+    ["inject-into", "content"]
+  ],
+  "pageFiles": [
+    "user_scripts/adapter/storage-shim.js",
+    "src/range-core.js",
+    "src/cdn-resolver.js",
+    "src/sidx.js",
+    "src/idm-downloader.js",
+    "src/native-mse-player.js",
+    "src/native-range-transport.js",
+    "src/runtime-notices.js",
+    "src/settings-panel.js",
+    "src/page-hook.js",
+    "src/live-core.js",
+    "src/live-hook.js",
+    "src/notification-view.js",
+    "src/bridge.js"
+  ],
+  "loader": "user_scripts/adapter/loader.js",
+  "output": "user_scripts/bilibili-thread-ripper.user.js"
+}
