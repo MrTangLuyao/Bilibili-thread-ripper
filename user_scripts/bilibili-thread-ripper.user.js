@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      0.9.4.2
+// @version      0.9.4.3
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @author       MrTangLuyao
 // @license      MIT
@@ -1999,6 +1999,13 @@ const chrome = (() => {
     return ["av1", "hevc", "avc"].includes(value) ? value : "";
   }
 
+  // The audio picked in the player: 0 the ordinary track, 1 杜比全景声, 2 Hi-Res 无损
+  // (Bilibili's own numbering, the newA of player.getQuality()).
+  function normalizeAudio(value) {
+    const audio = Math.trunc(Number(value)) || 0;
+    return audio === 1 || audio === 2 ? audio : 0;
+  }
+
   // "默认" in the player's 播放策略 menu keeps AV1 > HEVC > AVC. A codec picked there comes
   // first; a quality that does not have it falls back to that order.
   function codecPriority(representation, preferredCodec = "") {
@@ -2028,8 +2035,8 @@ const chrome = (() => {
 
   // preferredQuality is the quality chosen in the native menu; 0 is "auto" and keeps the
   // quality the playinfo itself asks for. preferredCodec is the codec chosen there, "" for
-  // "默认".
-  function selectRepresentations(playinfo, preferredQuality = 0, preferredCodec = "") {
+  // "默认". preferredAudio is the audio chosen there (see normalizeAudio).
+  function selectRepresentations(playinfo, preferredQuality = 0, preferredCodec = "", preferredAudio = 0) {
     const body = dashBody(playinfo);
     const dash = body?.dash;
     if (!dash) throw new Error("页面没有 DASH 播放清单");
@@ -2048,10 +2055,12 @@ const chrome = (() => {
       (Number(b.bandwidth) || 0) - (Number(a.bandwidth) || 0));
     // Dolby and Hi-Res sources keep their tracks in dash.dolby.audio / dash.flac.audio;
     // some of them have nothing in dash.audio at all, which used to fail the takeover.
-    // Ordinary tracks stay preferred, like the native player's default.
+    // The track picked in the player comes first when this browser can play it; otherwise
+    // the ordinary track, like the native player's default.
     const audioOf = (list) => [].concat(list || []).filter((item) => supported(item, "audio"))
       .sort((a, b) => (Number(b.bandwidth) || 0) - (Number(a.bandwidth) || 0))[0];
-    const audio = audioOf(dash.audio) || audioOf(dash.flac?.audio) || audioOf(dash.dolby?.audio);
+    const picked = { 1: dash.dolby?.audio, 2: dash.flac?.audio }[normalizeAudio(preferredAudio)];
+    const audio = audioOf(picked) || audioOf(dash.audio) || audioOf(dash.flac?.audio) || audioOf(dash.dolby?.audio);
     if (!videos.length || !audio) throw new Error("浏览器不支持清单中的视频或音频编码");
     const requestedQuality = Number(body?.quality || body?.qn) || 0;
     const preferred = [Number(preferredQuality) || 0, requestedQuality]
@@ -2198,6 +2207,93 @@ const chrome = (() => {
     }, true);
   }
 
+  // Bilibili's player attaches its own MediaSource to the element and creates its source
+  // buffers a moment after it opens. A takeover that replaced the element's source in
+  // between closed that MediaSource under it, so its addSourceBuffer threw, and Bilibili took
+  // that for "this browser cannot play the codec" (#29): it stopped using HEVC in the whole
+  // tab, so 杜比视界 and HDR vanished from the quality menu, it stopped offering Hi-Res and
+  // Dolby audio on the page, and it restarted at a lower quality. The page's MediaSources
+  // are remembered by their object URL, and a takeover waits while the element holds one
+  // that is open without its buffers.
+  const pageMediaSources = new Map();
+  const ownMediaSources = new WeakSet();
+  const NATIVE_SOURCE_WAIT_MS = 1000;
+  let mediaSourceWatchInstalled = false;
+  function installMediaSourceWatch() {
+    if (mediaSourceWatchInstalled || typeof root.URL?.createObjectURL !== "function") return;
+    mediaSourceWatchInstalled = true;
+    const createObjectURL = root.URL.createObjectURL;
+    root.URL.createObjectURL = function (object) {
+      const url = createObjectURL.apply(this, arguments);
+      if (object instanceof root.MediaSource) {
+        pageMediaSources.set(url, object);
+        if (pageMediaSources.size > 16) pageMediaSources.delete(pageMediaSources.keys().next().value);
+      }
+      return url;
+    };
+  }
+
+  // Resolves once Bilibili's MediaSource on the element has its buffers, has closed, or after
+  // a second at most. null when there is nothing to wait for.
+  function nativeSourceSettled(video) {
+    const source = (video.srcObject instanceof root.MediaSource ? video.srcObject : null)
+      || pageMediaSources.get(video.src) || pageMediaSources.get(video.currentSrc);
+    if (!source || ownMediaSources.has(source) || source.readyState !== "open" || source.sourceBuffers.length >= 2) return null;
+    return new Promise((resolve) => {
+      let grace = null;
+      const done = () => {
+        clearTimeout(limit);
+        clearTimeout(grace);
+        source.sourceBuffers.removeEventListener("addsourcebuffer", added);
+        source.removeEventListener("sourceclose", done);
+        source.removeEventListener("sourceended", done);
+        resolve();
+      };
+      // Video and audio are added one right after the other; a source with a single track
+      // only costs the short grace period.
+      const added = () => {
+        if (source.sourceBuffers.length >= 2) done();
+        else if (!grace) grace = setTimeout(done, 150);
+      };
+      const limit = setTimeout(done, NATIVE_SOURCE_WAIT_MS);
+      source.sourceBuffers.addEventListener("addsourcebuffer", added);
+      source.addEventListener("sourceclose", done);
+      source.addEventListener("sourceended", done);
+    });
+  }
+
+  // Should Bilibili still record a codec failure while BTR plays, the failure is about BTR's
+  // takeover and not about the browser, yet it would keep HEVC and the Hi-Res / Dolby tracks
+  // off for the rest of the tab (sessionStorage) or, when its server asks for it, for days
+  // (localStorage). While a takeover is active those records are not written.
+  const CODEC_FAILURE_KEYS = new Set(["enableHEVCError", "enableAV1Error", "decodeHEVCError", "decodeAV1Error", "bilibili_decode_error_obj"]);
+  const codecFailures = { blocked: 0, last: "" };
+  let codecFailureGuardInstalled = false;
+  function installCodecFailureGuard() {
+    const storage = root.Storage?.prototype;
+    if (codecFailureGuardInstalled || typeof storage?.setItem !== "function") return;
+    codecFailureGuardInstalled = true;
+    const setItem = storage.setItem;
+    storage.setItem = function (key, value) {
+      if (CODEC_FAILURE_KEYS.has(String(key)) && document.querySelector('[data-btr-mse-active="true"]')) {
+        codecFailures.blocked += 1;
+        codecFailures.last = String(key);
+        return;
+      }
+      return setItem.apply(this, arguments);
+    };
+    // Versions up to 0.9.4.2 could leave such records behind; they are cleared once.
+    try {
+      if (root.localStorage.getItem("BTR.codecFailuresCleared") !== "1") {
+        for (const key of CODEC_FAILURE_KEYS) {
+          root.localStorage.removeItem(key);
+          root.sessionStorage.removeItem(key);
+        }
+        setItem.call(root.localStorage, "BTR.codecFailuresCleared", "1");
+      }
+    } catch (_error) {}
+  }
+
   function createNativePlayer(options) {
     const getSettings = options.getSettings;
     const video = options.container.querySelector("video");
@@ -2205,13 +2301,15 @@ const chrome = (() => {
     let currentPlayinfo = options.playinfo;
     let preferredQuality = Math.max(0, Math.trunc(Number(options.preferredQuality)) || 0);
     let preferredCodec = normalizeCodec(options.preferredCodec);
-    let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec);
+    const preferredAudio = normalizeAudio(options.preferredAudio);
+    let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec, preferredAudio);
     let selectedVideo = selection.preferred;
     // The two representation objects the running session downloads from. Its resolvers keep
     // reading them, so fresh addresses always go into these two and never into a newer
     // selection's copies.
     let selectedAudio = selection.audio;
     let sessionStarts = 0;
+    let sessionRequests = 0;
     let session = null;
     let destroyed = false;
     let generationSequence = 0;
@@ -2729,6 +2827,15 @@ const chrome = (() => {
 
       downloaderFactory.autoConcurrency?.newSession();
       if (destroyed) return;
+      const request = ++sessionRequests;
+      const settling = nativeSourceSettled(video);
+      if (settling) {
+        const waitedFrom = performance.now();
+        await settling;
+        note("waited for Bilibili's source buffers", `${Math.round(performance.now() - waitedFrom)} ms`);
+        // A later start replaced this one meanwhile.
+        if (destroyed || request !== sessionRequests) return;
+      }
       options.onLog?.("正在准备播放器", `使用 ${qualityLabel(representation)} 清晰度，从 ${Number(playbackState.time || 0).toFixed(2)} 秒开始。`, "info", "takeover");
       const previous = session;
       // Read once: selection can be replaced by a new playinfo while this session starts.
@@ -2738,6 +2845,7 @@ const chrome = (() => {
       sessionStarts += 1;
       note("session", `${qualityLabel(representation)} ${codecFamily(representation)} from ${Number(playbackState.time || 0).toFixed(1)}`);
       const mediaSource = new MediaSource();
+      ownMediaSources.add(mediaSource);
       const objectUrl = URL.createObjectURL(mediaSource);
       const candidate = {
         disposed: false, fatal: false, externalSourceDetected: false, generation: 0,
@@ -3017,7 +3125,7 @@ const chrome = (() => {
 
     async function updatePlayinfo(playinfo) {
       if (destroyed) return;
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec);
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -3122,12 +3230,14 @@ const chrome = (() => {
       urlDeadlineSeconds,
       video,
       getDebug: () => ({
-        version: "0.9.4.2",
+        version: "0.9.4.3",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
         preferredQuality,
         preferredCodec,
+        preferredAudio,
+        codecFailuresBlocked: codecFailures.blocked,
         sessionStarts,
         codec: codecFamily(selectedVideo),
         width: Number(selectedVideo?.width) || 0,
@@ -3162,6 +3272,8 @@ const chrome = (() => {
 
   installBufferedShim();
   installNativeErrorGuard();
+  installMediaSourceWatch();
+  installCodecFailureGuard();
   root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = Object.freeze({ createNativePlayer, playbackDeadlineAt, qualityLabel, selectRepresentations });
 })(globalThis);
 
@@ -4607,7 +4719,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "0.9.4.2",
+    version: "0.9.4.3",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5512,6 +5624,16 @@ const chrome = (() => {
     catch (_error) { return ""; }
   }
 
+  // The audio picked with the player's Hi-Res / 杜比全景声 buttons: 0 the ordinary track,
+  // 1 杜比全景声, 2 Hi-Res (newA of getQuality()). Bilibili reloads its source when it
+  // changes, and the takeover that follows reads it again.
+  function nativeAudio() {
+    try {
+      const audio = Math.trunc(Number(root.player?.getQuality?.()?.newA)) || 0;
+      return audio === 1 || audio === 2 ? audio : 0;
+    } catch (_error) { return 0; }
+  }
+
   function syncNativeCodec() {
     if (player?.nativeTransport) return;
     const wanted = nativeCodec();
@@ -5725,6 +5847,7 @@ const chrome = (() => {
     }
     const preferredQuality = nativeQuality();
     const preferredCodec = nativeCodec();
+    const preferredAudio = nativeAudio();
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
@@ -5737,6 +5860,7 @@ const chrome = (() => {
         identity,
         preferredQuality,
         preferredCodec,
+        preferredAudio,
         // A collection item is a different video. Its native <video> element
         // can still expose the previous item's currentTime until new metadata
         // arrives, so carrying that value across would clamp short videos to
@@ -5960,7 +6084,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "0.9.4.2"
+      version: "0.9.4.3"
     })
   });
   publish();
@@ -6214,7 +6338,7 @@ const chrome = (() => {
 
   // ---- stats for the extension badge and the settings panel ----
   const stats = {
-    version: "0.9.4.2",
+    version: "0.9.4.3",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -6678,7 +6802,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "0.9.4.2"
+      version: "0.9.4.3"
     })
   });
   publish();
@@ -6995,7 +7119,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "0.9.4.2";
+  const VERSION = "0.9.4.3";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";

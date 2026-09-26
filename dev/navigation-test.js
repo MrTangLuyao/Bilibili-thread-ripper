@@ -131,7 +131,7 @@
       && output.playlistKeptPlaying
       && output.apiFallbackUsedCorrectOrigin
       && output.activePodKey === NEW_BVID
-      && output.debugVersion === "0.9.4.2"
+      && output.debugVersion === "0.9.4.3"
       && output.settingsPanelCount === 1
       && output.settingsStrategy === "native-ui-progressive-mse-0.8-core"
       && output.cdnOptions.join(",") === "mainland,overseas,custom";

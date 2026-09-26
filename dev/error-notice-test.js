@@ -12,7 +12,7 @@
     channel: CHANNEL,
     type: "stats",
     payload: {
-      version: "0.9.4.2",
+      version: "0.9.4.3",
       playerState: "error",
       takeoverError: { id: 1, at: Date.now(), route: "bv1errorroute:p1", stage: "playinfo", message: "读取视频信息失败（HTTP 404）", retryCount: 2 }
     }
@@ -23,7 +23,7 @@
   notice?.querySelector(".btr-error-retry")?.click();
   await wait(50);
   const logText = notice?.querySelector(".btr-error-log")?.textContent || "";
-  root.postMessage({ channel: CHANNEL, type: "stats", payload: { version: "0.9.4.2", playerState: "ready", takeoverError: null } }, "*");
+  root.postMessage({ channel: CHANNEL, type: "stats", payload: { version: "0.9.4.3", playerState: "ready", takeoverError: null } }, "*");
   await wait(650);
   const output = {
     title: notice?.querySelector(".btr-error-title")?.textContent || "",

@@ -76,7 +76,7 @@
   });
 
   const stats = {
-    version: "0.9.4.2",
+    version: "0.9.4.3",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -981,6 +981,16 @@
     catch (_error) { return ""; }
   }
 
+  // The audio picked with the player's Hi-Res / 杜比全景声 buttons: 0 the ordinary track,
+  // 1 杜比全景声, 2 Hi-Res (newA of getQuality()). Bilibili reloads its source when it
+  // changes, and the takeover that follows reads it again.
+  function nativeAudio() {
+    try {
+      const audio = Math.trunc(Number(root.player?.getQuality?.()?.newA)) || 0;
+      return audio === 1 || audio === 2 ? audio : 0;
+    } catch (_error) { return 0; }
+  }
+
   function syncNativeCodec() {
     if (player?.nativeTransport) return;
     const wanted = nativeCodec();
@@ -1194,6 +1204,7 @@
     }
     const preferredQuality = nativeQuality();
     const preferredCodec = nativeCodec();
+    const preferredAudio = nativeAudio();
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
@@ -1206,6 +1217,7 @@
         identity,
         preferredQuality,
         preferredCodec,
+        preferredAudio,
         // A collection item is a different video. Its native <video> element
         // can still expose the previous item's currentTime until new metadata
         // arrives, so carrying that value across would clamp short videos to
@@ -1429,7 +1441,7 @@
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "0.9.4.2"
+      version: "0.9.4.3"
     })
   });
   publish();
