@@ -5,6 +5,7 @@
   "license": "MIT",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "release": "node scripts/release.mjs",
     "test": "node dev/run-tests.js"
   }
 }
