@@ -13,7 +13,7 @@
 - [开发与构建](#开发与构建)
 - [开源协议](#开源协议)
 
-## 一个真的能解决海外用户B站卡顿的 Chrome 插件 当前版本：`0.9.4.3`
+## 一个真的能解决海外用户B站卡顿的油猴脚本
 
 更新日志： [CHANGELOG.md](CHANGELOG.md)
 
@@ -27,7 +27,7 @@
 
 很多海外用户的宽带明明很快，打开 B 站热门视频也没什么问题，但是一到冷门视频、4K、4K 60 帧就开始卡。传统 CDN 优选插件只是换一个节点，换完以后本质上还是单连接下载。碰到冷门资源或者单连接限速，照样该卡就卡。线程撕裂者不再赌某一个 CDN。它会把 B 站的视频分段继续拆成多个字节块，像 IDM 一样并发下载，下载完成后按原顺序交给播放器。
 
-> 本项目是非官方、实验性质的开源扩展。它不会绕过会员、登录、区域、清晰度、审核状态、数字版权保护或媒体签名限制。
+> 本项目是非官方、实验性质的开源项目。它不会绕过会员、登录、区域、清晰度、审核状态、数字版权保护或媒体签名限制。
 
 ### 直观速度对比 （墨尔本 运营商Superloop实测）
 
@@ -37,41 +37,15 @@
 
 ## 安装
 
-### 有两种方式安装，对于Chrome内核的比如Chrome,Edge,Opera 等浏览器可以尝试插件版。对于Firefox，Safari浏览器的用户可以用油猴脚本，搭配Tampermonkey插件使用，优点是可以自动检测更新，并且跨平台。
-
-### 方式1 插件安装
-
-1. 在项目发布页下载最新的扩展压缩包；
-2. 将压缩包完整解压到固定目录，不要直接在压缩包里打开；
-3. 在 Chrome 地址栏输入 `chrome://extensions`；
-4. 打开右上角的“开发者模式”；
-5. 点击“加载已解压的扩展程序”；
-6. 选择解压后的扩展目录，该目录中应直接包含 `manifest.json`；
-7. 刷新已经打开的哔哩哔哩视频页面。
-
-#### ⚠️对于插件版
-- 插件版不会自动更新
-- 插件版是BTR插件的主线维护
-- Firefox / Safari 用户无法使用插件版，请使用方式二油猴脚本安装
-
-### 方式2 油猴脚本安装
-
 1. 装 [Tampermonkey](https://www.tampermonkey.net/)
 2. 点这里：[**安装线程撕裂者**](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 3. 打开 B 站视频，完事
 
-#### ⚠️对于油猴版
-- 油猴版有新版会自动更新，如果有更新弹窗 请点击 更新
-- 油猴版与插件版共享源代码
-- 油猴版适用于 Firefox/Safari 浏览器
-- Safari 浏览器建议开启兼容模式
+#### ⚠️注意
+- 有新版会自动更新，如果有更新弹窗 请点击 更新
 - Chrome / Edge 没反应：扩展管理 → Tampermonkey → 详情 → 打开“允许用户脚本”（老版本是打开“开发者模式”）
-
-### 从源码安装
-
-克隆或下载源码后，可以直接在扩展管理页面选择项目根目录。
-
-更新版本时，请在扩展管理页面点击“重新加载”，然后刷新视频页面。若旧版目录已经移动或删除，可以先移除旧版，再加载新版目录。
+- Safari 浏览器建议开启兼容模式
+- 以前装过插件版的：插件版已经不再更新，先在扩展管理里把它移除，再装油猴脚本。两个都开着的话，不知道实际跑的是哪一个
 
 ## 建议设置
 
@@ -87,7 +61,7 @@
 | 设备性能弱 | 大陆 CDN | 4 到 8 |
 | 本地网络连接大陆网太差 | 海外 CDN | 自动 |
 
-BTR有三个设置入口：设置菜单可以点击Bilibili网页端的BTR悬浮窗 或 再B站打开情况下点击右上角插件（插件版）/Tampermonkey->Bilibili线程撕裂者->设置（油猴版） 打开全面设置。或者在播放器中点击 设置在播放器 ⚙ → 更多播放设置。
+BTR有三个设置入口：设置菜单可以点击Bilibili网页端的BTR悬浮窗 或 再B站打开情况下点击 Tampermonkey->Bilibili线程撕裂者->线程撕裂者设置 打开全面设置。或者在播放器中点击 设置在播放器 ⚙ → 更多播放设置。
 
 CDN 除了大陆和海外，还可以选“自定义”：勾选已知的服务器，或者手动添加 B 站的视频服务器地址（bilivideo.com、akamaized.net 等），插件只用你选的这些。一个都没选时按大陆 CDN 下载。
 
@@ -149,7 +123,6 @@ BTR的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 ## 怎么知道插件到底有没有工作
 
-- 扩展图标在下载时会显示当前在途线程数；
 - 设置面板会显示目前总线程；
 - 播放器右键“视频统计信息”里的节点、速度和分段是插件实际的下载数据，Player Type 一行会写“BTR Native”；
 - 播放器前方的缓存持续增长，说明下载的数据正在正常交给播放器。
@@ -227,7 +200,7 @@ BTR的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 如果你要反馈“还是卡”，最好一起提供这些信息：
 
-- Chrome 版本和插件版本；
+- 浏览器和 Tampermonkey 的版本，BTR 的版本；
 - 所在国家或地区以及网络运营商；
 - 视频 BV 号、清晰度和编码；
 - CDN 模式与线程数；
@@ -238,31 +211,21 @@ BTR的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 ## 开发与构建
 
-项目没有运行时包管理器依赖，Chrome 可以直接加载源码目录。
+项目没有任何依赖，装了 Node.js 就能构建和测试。
 
 ```text
-src/       原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
-icons/     扩展图标
-scripts/   Windows 构建脚本
-user_scripts/ 油猴脚本（自动生成）和它的小适配层
-dev/       本地回归测试
+src/          原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
+user_scripts/ 油猴脚本（发版时生成）和它的适配层；adapter/meta.json 是脚本头和打包顺序
+scripts/      构建和发版脚本
+dev/          本地测试
+icons/        脚本图标
 ```
 
-Windows PowerShell 构建：
+- 构建：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag。想在自己浏览器里试，就在 Tampermonkey 里新建一个脚本，把这个文件的内容整个贴进去保存。
+- 测试：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（`NODE_PATH` 指向它所在的 node_modules）和 Chrome（默认路径不对时设 `BTR_CHROME_PATH`）。
+- 发版：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]`，然后在 main 上运行 `node scripts/release.mjs`（或 `npm run release`）。它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令。推送要自己来，推到 main 就等于发给所有用户。
 
-```powershell
-.\scripts\build.ps1
-```
-
-构建结果会写入 `dist`。扩展签名私钥保存在本地 `private` 目录，并已被仓库忽略，任何情况下都不要上传。
-
-油猴脚本：改完 `src` 后运行下面这条，重新生成 `user_scripts/bilibili-thread-ripper.user.js`，一起提交。
-
-```powershell
-.\scripts\build-userscript.ps1
-```
-
-油猴只看版本号更新，想让大家收到新版，记得先改 `manifest.json` 里的版本。
+源码里的版本号都写成 `__BTR_VERSION__`，构建时才换成真实版本，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices 这 5 个文件桌面版也在用，改了要同步过去。
 
 ## 开源协议
 

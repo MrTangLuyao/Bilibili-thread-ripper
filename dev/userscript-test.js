@@ -54,7 +54,7 @@ function checkFile() {
     position = at;
   }
   assert.ok(files.includes("src/settings-panel.js"));
-  console.log("PASS 油猴脚本头部、自动更新地址和打包内容正确，设置面板和扩展是同一份代码");
+  console.log("PASS 油猴脚本头部、自动更新地址和打包内容正确");
 }
 
 const settingsHost = "#__bilibili_thread_ripper_settings__";
@@ -101,7 +101,7 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await menu.waitFor({ state: "attached" });
     assert.deepEqual(await menu.locator(".btr-native-setting-title").allTextContents(), ["线程撕裂者 CDN", "并发线程"]);
     assert.deepEqual(await menu.locator('input[name="btr-native-mode"]').evaluateAll(nodes => nodes.map(node => node.value)), ["mainland", "overseas", "custom"]);
-    console.log("PASS 不再弹欢迎设置；页面角落的悬浮按钮能打开设置；播放器菜单保持扩展原样");
+    console.log("PASS 不再弹欢迎设置；页面角落的悬浮按钮能打开设置；播放器菜单里的设置项齐全");
 
     // The menu command opens the settings panel inside the bilibili page, the same one the
     // extension's toolbar icon opens.

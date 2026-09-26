@@ -1,7 +1,7 @@
-// The settings panel of both the extension and the userscript. It runs in the bilibili page
-// and opens from the extension's toolbar icon, the userscript manager's menu, or "自定义" in
-// the player's gear menu. Settings are read and saved through bridge.js, which keeps them in
-// the extension's storage (in the userscript, in localStorage).
+// The settings panel. It runs in the bilibili page and opens from the button in the page's
+// corner, the userscript manager's menu, or "自定义" in the player's gear menu. Settings are
+// read and saved through bridge.js; storage-shim.js keeps them in the script manager's
+// storage.
 (function installSettingsPanel(root) {
   "use strict";
 
@@ -424,9 +424,9 @@
 
   const toggle = () => (current ? current.close() : open());
 
-  // The button in the corner of every bilibili page. The toolbar icon only reaches the pages
-  // the extension runs on, and the userscript manager's menu is not obvious (and on the home
-  // page people do not find it at all), so the panel needs a way in that is always visible.
+  // The button in the corner of every bilibili page. The userscript manager's menu is not
+  // obvious (and on the home page people do not find it at all), so the panel needs a way in
+  // that is always visible.
   // It hides while the video is fullscreen and while the panel itself is open.
   const launcher = (() => {
     if (root.top !== root) return null;
@@ -614,9 +614,8 @@
     } else if (event.data.type === "stats") {
       latestStats = event.data.payload;
     } else if (event.data.type === "open-settings" && root.top === root) {
-      // The toolbar icon toggles the panel; "自定义" in the gear menu only opens it.
-      if (event.data.payload?.toggle) toggle();
-      else open();
+      // "自定义" in the gear menu.
+      open();
     }
   });
   // The userscript manager's menu entry.

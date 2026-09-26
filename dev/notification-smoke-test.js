@@ -1,7 +1,6 @@
 "use strict";
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
-const manifest = require("../manifest.json");
 
 function mockChrome() {
   const listeners = [];
@@ -48,8 +47,6 @@ function mockChrome() {
     await tab.locator("#__bilibili_thread_ripper_settings__ .btr-popup").waitFor();
   };
   try {
-    assert.deepEqual(manifest.content_scripts.find(item => item.world === "ISOLATED").matches, ["https://*.bilibili.com/*"]);
-    assert.deepEqual(manifest.content_scripts.find(item => item.world === "MAIN").matches, ["https://www.bilibili.com/*", "https://m.bilibili.com/*"]);
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await context.addInitScript(mockChrome);
     const page = await context.newPage(), popup = await context.newPage(), home = await context.newPage();

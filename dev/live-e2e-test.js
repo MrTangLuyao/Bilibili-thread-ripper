@@ -1,13 +1,14 @@
 "use strict";
-// End-to-end: loads the real extension into a Chromium-based browser, opens a real live
-// room on live.bilibili.com and checks that the live module takes over inside the player
-// frame (many rooms embed the player in a live.bilibili.com/blanc iframe). Needs network;
-// not part of the default regression run.
-//   BTR_CHROME_PATH  browser executable (default: Edge)
+// End-to-end: runs a build of the userscript in Chrome (in every frame, at document start,
+// as a script manager would), opens a real live room on live.bilibili.com and checks that
+// the live module takes over inside the player frame (many rooms embed the player in a
+// live.bilibili.com/blanc iframe). Needs network; not part of the default regression run.
+//   BTR_CHROME_PATH  browser executable (default: Chrome)
 //   BTR_E2E_ROOM     room id (default: picked from the recommend API)
 //   BTR_E2E_SECONDS  observation window (default 25)
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
@@ -25,17 +26,24 @@ async function pickRoom() {
   const roomid = await pickRoom();
   const seconds = Number(process.env.BTR_E2E_SECONDS) || 25;
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "btr-e2e-"));
+  const { buildUserscript, latestTag } = await import(pathToFileURL(path.join(root, "scripts/build.mjs")).href);
   const browser = await chromium.launchPersistentContext(userDataDir, {
-    executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     headless: true,
     viewport: { width: 1280, height: 800 },
-    args: [
-      `--disable-extensions-except=${root}`,
-      `--load-extension=${root}`,
-      "--autoplay-policy=no-user-gesture-required",
-      "--mute-audio"
-    ]
+    args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"]
   });
+  const script = buildUserscript(latestTag());
+  await browser.addInitScript({ content: script });
+  // addInitScript does not reach the live.bilibili.com/blanc player iframe, where a script
+  // manager does run the script. Those frames get it as soon as they have navigated, which
+  // is a little later than a manager would start it.
+  browser.on("page", (tab) => tab.on("framenavigated", (frame) => {
+    if (frame === tab.mainFrame() || !frame.url().startsWith("https://live.bilibili.com/")) return;
+    frame.evaluate((source) => {
+      if (!document.documentElement?.hasAttribute("data-btr-userscript")) (0, eval)(source);
+    }, script).catch(() => {});
+  }));
   try {
     const page = await browser.newPage();
     console.log(`opening room ${roomid}`);

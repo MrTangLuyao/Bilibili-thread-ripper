@@ -14,7 +14,6 @@
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
-  let lastBadge = null;
   let errorNoticeMotion = null;
 
   // The page checks each custom server again with the full rules before using it; here it
@@ -43,16 +42,6 @@
 
   function postSettings() {
     window.postMessage({ channel: CHANNEL, type: "settings", payload: latestSettings }, "*");
-  }
-
-  function updateBadge() {
-    const count = Math.max(0, Math.min(512, Math.trunc(Number(latestStats?.activeThreads) || 0)));
-    const text = loaded && latestSettings.enabled !== false ? String(count) : "";
-    if (text === lastBadge) return;
-    lastBadge = text;
-    try {
-      chrome.runtime.sendMessage({ type: "setThreadBadge", enabled: latestSettings.enabled !== false, activeThreads: count })?.catch?.(() => {});
-    } catch (_error) {}
   }
 
   function normalizeTakeoverError(input) {
@@ -216,7 +205,6 @@
     loaded = true;
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
-    updateBadge();
     postSettings();
   });
 
@@ -229,7 +217,6 @@
     loaded = true;
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
-    updateBadge();
     postSettings();
   });
 
@@ -293,13 +280,6 @@
         host: String(item?.host || "").slice(0, 120)
       })) : []
     };
-    updateBadge();
     syncTakeoverErrorNotice();
-  });
-
-  // The toolbar icon of the extension. The settings panel runs in the page.
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === "openSettings" && window.top === window) window.postMessage({ channel: CHANNEL, type: "open-settings", payload: { toggle: true } }, "*");
-    return false;
   });
 })();

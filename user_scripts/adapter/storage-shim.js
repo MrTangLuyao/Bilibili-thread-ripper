@@ -1,5 +1,5 @@
-// Userscripts have no extension storage. This small stand-in keeps the parts of the
-// chrome.* API that bridge.js uses.
+// This small stand-in keeps the parts of the chrome.* API that bridge.js uses: storage,
+// and runtime.lastError for its callbacks.
 //
 // The settings live in the script manager's storage, which every bilibili subdomain shares.
 // Only the manager's side of the script (loader.js) can reach it, so this page code asks it
@@ -95,12 +95,7 @@ const chrome = (() => {
     notify(diff(before, value), area);
   };
 
-  // No toolbar icon or background page: nothing sends messages here.
-  const runtime = {
-    lastError: null,
-    sendMessage: () => Promise.resolve(),
-    onMessage: { addListener() {} }
-  };
+  const runtime = { lastError: null };
   // Callers either pass a callback and read runtime.lastError, or await the promise.
   const finish = (promise, callback) => {
     const done = promise.then((value) => [value, null], (error) => [undefined, error]);

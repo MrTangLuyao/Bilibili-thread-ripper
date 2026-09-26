@@ -10,8 +10,8 @@
   const SETTINGS_ID = "__bilibili_thread_ripper_native_settings__";
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
-  // The userscript runs on every bilibili.com page (the extension picks pages in its
-  // manifest). The video takeover belongs to the video pages only: the live site has its
+  // The userscript runs on every bilibili.com page. The video takeover belongs to the video
+  // pages only: the live site has its
   // own module (live-hook.js), and elsewhere only the settings panel is wanted.
   const pageHost = root.location?.hostname || "";
   if (/(^|\.)bilibili\.com$/i.test(pageHost) && !/^(www|m)\.bilibili\.com$/i.test(pageHost)) return;
@@ -238,7 +238,7 @@
       if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
       trackBusy(kind, now);
       // One segment starts and ends dozens of transfers within the same moment. Publishing
-      // each of them at once copied the whole thread list to the extension every time.
+      // each of them at once posted the whole thread list every time.
       schedulePublish();
       return id;
     }

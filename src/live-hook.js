@@ -46,7 +46,7 @@
     } catch (_error) {}
   }
 
-  // ---- stats for the extension badge and the settings panel ----
+  // ---- stats for the settings panel ----
   const stats = {
     version: "__BTR_VERSION__",
     architecture: "live-segment-ripper",
