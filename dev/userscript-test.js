@@ -5,16 +5,19 @@ const fs = require("node:fs"), path = require("node:path"), vm = require("node:v
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+const meta = JSON.parse(fs.readFileSync(path.join(root, "user_scripts/adapter/meta.json"), "utf8"));
+// The published file carries the version of the newest release in CHANGELOG.md.
+const version = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+\.\d+)\]/m)[1];
 const script = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
 const scriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js";
-const source = file => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd();
+const source = file => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd().split("__BTR_VERSION__").join(version);
 
 function checkFile() {
   assert.ok(script.startsWith("// ==UserScript==\n"), "Tampermonkey needs the header on the first line");
   const header = script.slice(0, script.indexOf("// ==/UserScript=="));
   const values = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1].trim());
-  assert.deepEqual(values("version"), [manifest.version]);
+  assert.deepEqual(values("version"), [version]);
+  assert.equal(script.includes("__BTR_VERSION__"), false, "the version placeholder was left in the built file");
   assert.deepEqual(values("updateURL"), [scriptUrl]);
   assert.deepEqual(values("downloadURL"), [scriptUrl]);
   // Every bilibili.com page: the settings panel opens everywhere, the video and live
@@ -27,9 +30,9 @@ function checkFile() {
   assert.doesNotMatch(header, /^\/\/ @noframes$/m);
   assert.match(script, /window\.top !== window && !\/\^live/);
   new vm.Script(script, { filename: "bilibili-thread-ripper.user.js" });
-  // The extension's content scripts, settings panel included, are there unchanged and in
-  // order; a file both script lists use appears once.
-  const files = [...new Set(["user_scripts/adapter/storage-shim.js", ...manifest.content_scripts.flatMap(item => item.js), "user_scripts/adapter/loader.js"])];
+  // The page files, settings panel included, are there unchanged (apart from the version)
+  // and in the order meta.json gives; each appears once.
+  const files = [...meta.pageFiles, meta.loader];
   let position = 0;
   for (const file of files) {
     const part = `/* ${file} */\n${source(file)}\n`;
