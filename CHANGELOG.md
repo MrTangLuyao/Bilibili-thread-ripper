@@ -8,6 +8,11 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 番剧（`/bangumi/play/ep…`、`/ss…`）、课程（`/cheese/play/ep…`、`/ss…`）和活动页（`/festival/…?bvid=`）也会接管。番剧和课程按分集 ID 区分；`ss` 链接没写是哪一集，先让原生播放器开始，等页面自己的播放清单请求说出分集再接管。番剧的播放清单（`result`、web/v2 的 `result.video_info`）会整理成普通视频的格式；只能试看的分集、地区限制和非 DASH 的清单交给原生播放器。
+- 视频页屏蔽 P2P：在视频页隐藏 WebRTC 和 B 站的 P2P SDK（`PCDNLoader`、`BPP2PSDK`、`SeederSDK`），让播放器只走 HTTP CDN。设置面板里新增开关「视频页屏蔽 P2P」，默认打开，改了之后刷新页面生效。直播页照旧由直播模块处理。
+
 ## [2026.9.27.1] - 2026-09-27
 
 ### 移除

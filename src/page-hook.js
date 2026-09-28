@@ -330,7 +330,7 @@
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
     if (match) return match[1];
 
-    if (/^\/list\//i.test(location.pathname)) {
+    if (/^\/(?:list|festival)\//i.test(location.pathname)) {
       const bvid = new URLSearchParams(location.search).get("bvid") || "";
       if (/^BV[0-9A-Za-z]+$/i.test(bvid)) return bvid;
     }
@@ -338,7 +338,29 @@
     return "";
   }
 
+  // Bangumi (pgc) and course (pugv) pages are addressed by episode, not by BVID. A season
+  // link (/ss…) names no episode, so it waits until the page's own playurl request says
+  // which one it plays; the native player runs meanwhile.
+  const seasonEpisodes = new Map();
+  function episodePath() {
+    const match = /^\/(bangumi|cheese)\/play\/(ep|ss)(\d+)/i.exec(location.pathname);
+    if (!match) return null;
+    return { kind: match[1].toLowerCase() === "bangumi" ? "pgc" : "pugv", type: match[2].toLowerCase(), id: Number(match[3]) || 0 };
+  }
+
+  // undefined: not an episode page. null: an episode page whose episode is not known yet.
+  function episodeIdentity() {
+    const path = episodePath();
+    if (!path) return undefined;
+    const epId = path.type === "ep" ? path.id : seasonEpisodes.get(`${path.kind}:ss${path.id}`) || 0;
+    if (!epId) return null;
+    const key = `${path.kind}:ep${epId}`;
+    return { kind: path.kind, epId, aid: 0, bvid: "", part: 1, key, videoKey: key };
+  }
+
   function routeIdentity() {
+    const episode = episodeIdentity();
+    if (episode !== undefined) return episode;
     const pathId = urlPathId();
     if (!pathId) return null;
     const podBvid = activePodBvid();
@@ -438,9 +460,31 @@
     return null;
   }
 
+  // The ordinary video playurl, the bangumi one (web and web/v2) and the course one.
+  const PLAYURL_RE = /\/(?:x\/player\/(?:wbi\/)?playurl|pgc\/player\/web\/(?:v2\/)?playurl|pugv\/player\/web\/playurl)/i;
+  const episodeKindOf = (url) => /\/pgc\/player\//i.test(url) ? "pgc" : /\/pugv\/player\//i.test(url) ? "pugv" : "";
+
+  // Bangumi answers carry the playinfo under result (web) or result.video_info (web/v2);
+  // this brings them to the { code, data } shape of the ordinary playurl. A preview-only
+  // answer (a member episode without membership) gives null: the native player keeps it.
+  function normalizePlayinfo(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    if (payload.data?.dash) return payload;
+    const result = payload.result;
+    const info = result?.video_info || result;
+    if (!info?.dash) return null;
+    const preview = result.is_preview === 1 || info.is_preview === 1 || /PREVIEW/i.test(String(result.play_check?.play_detail || ""));
+    return preview ? null : { code: 0, message: "0", data: info };
+  }
+
   function requestedVideoKey(url) {
     try {
       const parsed = new URL(String(url), location.href);
+      const kind = episodeKindOf(parsed.pathname);
+      if (kind) {
+        const epId = Number(parsed.searchParams.get("ep_id")) || 0;
+        return epId ? `${kind}:ep${epId}` : "";
+      }
       const bvid = String(parsed.searchParams.get("bvid") || "");
       const aid = Number(parsed.searchParams.get("avid") || parsed.searchParams.get("aid")) || 0;
       return bvid ? bvid.toLowerCase() : aid ? `av${aid}` : "";
@@ -449,13 +493,25 @@
     }
   }
 
+  // An episode key already names one file, so its episode ID stands in for the CID that
+  // keeps the parts of one BVID apart.
   function requestedCid(url) {
-    try { return Number(new URL(String(url), location.href).searchParams.get("cid")) || 0; }
+    try {
+      const parsed = new URL(String(url), location.href);
+      return Number(parsed.searchParams.get(episodeKindOf(parsed.pathname) ? "ep_id" : "cid")) || 0;
+    }
     catch (_error) { return 0; }
   }
 
   function capturePlayinfoRequest(url) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return null;
+    if (!PLAYURL_RE.test(String(url))) return null;
+    const path = episodePath();
+    const kind = episodeKindOf(String(url));
+    if (path?.type === "ss" && path.kind === kind) {
+      const seasonKey = `${kind}:ss${path.id}`;
+      const epId = requestedCid(url);
+      if (epId && !seasonEpisodes.has(seasonKey)) seasonEpisodes.set(seasonKey, epId);
+    }
     const identity = routeIdentity();
     const videoKey = requestedVideoKey(url);
     const cid = requestedCid(url);
@@ -463,8 +519,9 @@
     return { routeKey: identity.key, videoKey, cid };
   }
 
-  function observePlayinfo(url, payload, requestContext = null) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+  function observePlayinfo(url, rawPayload, requestContext = null) {
+    const payload = normalizePlayinfo(rawPayload);
+    if (!PLAYURL_RE.test(String(url)) || !isDashPlayinfo(payload)) return;
     const context = requestContext || capturePlayinfoRequest(url);
     const identity = routeIdentity();
     if (!context || !identity || context.routeKey !== identity.key || context.videoKey !== identity.videoKey) return;
@@ -498,7 +555,7 @@
   }
 
   function observeFetchResponse(url, response, requestContext) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return;
+    if (!PLAYURL_RE.test(String(url))) return;
     response.clone().json().then((payload) => observePlayinfo(url, payload, requestContext)).catch(() => {});
   }
 
@@ -524,7 +581,7 @@
     };
     xhrPrototype.send = function (...args) {
       const url = xhrUrls.get(this) || "";
-      if (/\/x\/player\/(?:wbi\/)?playurl/i.test(url)) {
+      if (PLAYURL_RE.test(url)) {
         this.addEventListener("load", () => {
           try {
             const payload = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
@@ -588,7 +645,34 @@
 
   // refresh: new addresses for the video that is already playing. Its CID is known by then,
   // so the video information is not asked for again, and the takeover notices stay quiet.
+  // Bangumi needs only the episode; a course also wants its AV number and CID, which its
+  // season information lists per episode.
+  async function fetchEpisodePlayinfo(identity, signal, refresh) {
+    if (!refresh) notices?.log("正在读取剧集信息", "确认你要看的这一集。", "info", "", identity.key, "takeover");
+    let query = `ep_id=${identity.epId}`;
+    if (identity.kind === "pugv") {
+      const seasonResponse = await nativeFetch(`${BILIBILI_API_ORIGIN}/pugv/view/web/season?ep_id=${identity.epId}`, { credentials: "include", signal });
+      if (!seasonResponse.ok) throw new Error(`读取课程信息失败（HTTP ${seasonResponse.status}）`);
+      const season = await seasonResponse.json();
+      const episode = (season?.data?.episodes || []).find((item) => Number(item?.id) === identity.epId);
+      if (!episode?.aid || !episode?.cid) throw new Error(season?.message || "课程里找不到这一集");
+      query += `&avid=${Number(episode.aid)}&cid=${Number(episode.cid)}`;
+    }
+    const endpoint = identity.kind === "pgc" ? "/pgc/player/web/playurl" : "/pugv/player/web/playurl";
+    const playResponse = await nativeFetch(`${BILIBILI_API_ORIGIN}${endpoint}?${query}&qn=127&fnval=4048&fnver=0&fourk=1`, { credentials: "include", signal });
+    if (!playResponse.ok) throw new Error(`读取播放清单失败（HTTP ${playResponse.status}）`);
+    const payload = await playResponse.json();
+    const playinfo = normalizePlayinfo(payload);
+    if (Number(payload?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(payload?.message || "这一集没有可用的 DASH 播放清单（可能是试看或地区限制）");
+    if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
+    routeCids.set(identity.key, identity.epId);
+    cachePlayinfo(identity, playinfo, identity.epId);
+    if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+    return playinfo;
+  }
+
   async function fetchRoutePlayinfo(identity, signal, refresh = false) {
+    if (identity.kind) return fetchEpisodePlayinfo(identity, signal, refresh);
     let cid = refresh ? Number(routeCids.get(identity.key)) || 0 : 0;
     let canonicalBvid = String(identity.bvid || "");
     let canonicalAid = Number(identity.aid) || 0;

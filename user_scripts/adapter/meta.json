@@ -34,6 +34,7 @@
     "src/settings-panel.js",
     "src/page-hook.js",
     "src/live-core.js",
+    "src/video-p2p-guard.js",
     "src/live-hook.js",
     "src/notification-view.js",
     "src/bridge.js"

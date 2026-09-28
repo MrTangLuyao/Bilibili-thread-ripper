@@ -91,6 +91,8 @@
       enabled: source.enabled !== false,
       // The live module on live.bilibili.com; the master switch above still rules.
       liveEnabled: source.liveEnabled !== false,
+      // Hides WebRTC and Bilibili's P2P SDKs on video pages so the player stays on HTTP.
+      videoP2pBlock: source.videoP2pBlock !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",

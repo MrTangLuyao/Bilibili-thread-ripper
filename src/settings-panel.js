@@ -78,6 +78,7 @@
 
       <section class="notice-controls" aria-label="提示设置">
         <div class="notice-row"><label for="live-enabled">直播加速（实验性）</label><label class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></label></div>
+        <div class="notice-row"><label for="video-p2p-block">视频页屏蔽 P2P（刷新后生效）</label><label class="switch"><input id="video-p2p-block" type="checkbox" aria-label="视频页屏蔽 P2P"><span></span></label></div>
         <div class="notice-row"><label for="error-notices">显示错误</label><label class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></label></div>
         <div class="notice-row"><label for="debug-notices">Debug 模式</label><label class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></label></div>
         <div class="notice-row"><label for="floating-button">悬浮按钮</label><label class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></label></div>
@@ -242,6 +243,7 @@
     const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
+    const videoP2pBlock = $("video-p2p-block");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
@@ -322,6 +324,7 @@
       customHosts = settings.customHosts;
       renderHosts();
       liveEnabled.checked = settings.liveEnabled !== false;
+      videoP2pBlock.checked = settings.videoP2pBlock !== false;
       floatingButton.checked = settings.floatingButton !== false;
       errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
@@ -332,6 +335,7 @@
     const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
+    videoP2pBlock.addEventListener("change", () => save({ videoP2pBlock: videoP2pBlock.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {
       const threads = THREAD_OPTIONS[Number(concurrency.value)];
