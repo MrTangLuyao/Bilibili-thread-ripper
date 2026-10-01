@@ -330,6 +330,9 @@
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
     if (match) return match[1];
 
+    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(location.pathname);
+    if (episode) return episode[1];
+
     if (/^\/list\//i.test(location.pathname)) {
       const bvid = new URLSearchParams(location.search).get("bvid") || "";
       if (/^BV[0-9A-Za-z]+$/i.test(bvid)) return bvid;
@@ -341,6 +344,14 @@
   function routeIdentity() {
     const pathId = urlPathId();
     if (!pathId) return null;
+    if (/^(ep|ss)/i.test(pathId)) {
+      // A season address plays the episode its embedded playinfo names.
+      const embedded = normalizePlayinfo(root.__playinfo__);
+      const epId = /^ep/i.test(pathId) ? Number(pathId.slice(2)) || 0
+        : embedded?.season === Number(pathId.slice(2)) ? embedded.episode : 0;
+      if (!epId) return null;
+      return { aid: 0, bvid: "", epId, part: 1, key: `ep${epId}:p1`, videoKey: `ep${epId}` };
+    }
     const podBvid = activePodBvid();
     const pathVideoKey = /^BV/i.test(pathId) ? pathId.toLowerCase() : `av${Number(pathId.slice(2)) || 0}`;
     const podVideoKey = podBvid ? podBvid.toLowerCase() : "";
@@ -372,6 +383,30 @@
 
   function isDashPlayinfo(playinfo) {
     return Boolean((playinfo?.data || playinfo)?.dash);
+  }
+
+  const PLAYURL_PATTERN = /\/x\/player\/(?:wbi\/)?playurl/i;
+  const EPISODE_PLAYURL_PATTERN = /\/ogv\/player\/playview|\/pgc\/player\/web\/(?:v2\/)?playurl/i;
+  const isPlayurl = (url) => PLAYURL_PATTERN.test(String(url)) || EPISODE_PLAYURL_PATTERN.test(String(url));
+
+  // Bangumi answers put the stream in video_info, next to the episode's arc (aid, cid, bvid)
+  // and, in the playinfo embedded in the page, the episode and season it belongs to.
+  function normalizePlayinfo(payload) {
+    const body = payload?.data || payload?.result;
+    if (!body?.video_info) return payload;
+    return {
+      code: payload.code,
+      data: body.video_info,
+      arc: body.arc || null,
+      episode: Number(body.supplement?.ogv_episode_info?.episode_id) || 0,
+      season: Number(body.supplement?.ogv_season_info?.season_id) || 0
+    };
+  }
+
+  function unsupportedEpisode(playinfo) {
+    if (playinfo?.data?.is_drm) return "这一集有数字版权保护，交给 B 站自己的播放器。";
+    if (playinfo?.data?.is_preview) return "这一集只能试看，交给 B 站自己的播放器。";
+    return "";
   }
 
   const routePlayinfo = new Map();
@@ -416,6 +451,12 @@
   function currentPlayinfo(identity) {
     const cached = routePlayinfo.get(identity?.key);
     if (isDashPlayinfo(cached)) return cached;
+    if (identity?.epId) {
+      const embedded = normalizePlayinfo(root.__playinfo__);
+      const playinfo = embedded?.episode === identity.epId ? embedded : null;
+      if (unsupportedEpisode(playinfo)) return playinfo;
+      return cachePlayinfo(identity, playinfo, playinfo?.arc?.cid) ? playinfo : null;
+    }
     try {
       const initialIdentity = stateIdentity(root.__INITIAL_STATE__);
       if (identity?.key === bootRouteKey && initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
@@ -454,8 +495,25 @@
     catch (_error) { return 0; }
   }
 
-  function capturePlayinfoRequest(url) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return null;
+  // playview names the episode in its JSON body, the older playurl in its query.
+  function requestedEpisode(url, body) {
+    try {
+      const fromQuery = Number(new URL(String(url), location.href).searchParams.get("ep_id")) || 0;
+      if (fromQuery) return fromQuery;
+      return typeof body === "string" ? Number(JSON.parse(body)?.video_index?.ogv_episode_id) || 0 : 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function capturePlayinfoRequest(url, body) {
+    if (EPISODE_PLAYURL_PATTERN.test(String(url))) {
+      const identity = routeIdentity();
+      const epId = requestedEpisode(url, body);
+      if (!identity?.epId || epId !== identity.epId) return null;
+      return { routeKey: identity.key, videoKey: identity.videoKey, epId, cid: 0 };
+    }
+    if (!PLAYURL_PATTERN.test(String(url))) return null;
     const identity = routeIdentity();
     const videoKey = requestedVideoKey(url);
     const cid = requestedCid(url);
@@ -464,10 +522,19 @@
   }
 
   function observePlayinfo(url, payload, requestContext = null) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+    if (!isPlayurl(url)) return;
+    payload = normalizePlayinfo(payload);
+    if (!isDashPlayinfo(payload)) return;
     const context = requestContext || capturePlayinfoRequest(url);
     const identity = routeIdentity();
     if (!context || !identity || context.routeKey !== identity.key || context.videoKey !== identity.videoKey) return;
+    // The episode ID in the route already tells episodes apart, so no CID check is needed.
+    if (identity.epId) {
+      if (unsupportedEpisode(payload)) return;
+      cachePlayinfo(identity, payload, payload.arc?.cid);
+      usePlayinfo(identity, payload);
+      return;
+    }
     const cid = Number(context.cid) || 0;
     const expectedCid = routeCids.get(identity.key) || 0;
     // The same BVID can contain many parts. A late response from the previous
@@ -477,6 +544,10 @@
     if (!cid || (expectedCid && cid !== expectedCid)) return;
     if (!expectedCid) routeCids.set(identity.key, cid);
     cachePlayinfo(identity, payload, cid);
+    usePlayinfo(identity, payload);
+  }
+
+  function usePlayinfo(identity, payload) {
     if (player && playerRoute === identity.key) {
       const observedLifecycle = playerLifecycle;
       player.updatePlayinfo?.(payload).catch((error) => {
@@ -498,13 +569,13 @@
   }
 
   function observeFetchResponse(url, response, requestContext) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return;
+    if (!isPlayurl(url)) return;
     response.clone().json().then((payload) => observePlayinfo(url, payload, requestContext)).catch(() => {});
   }
 
   root.fetch = function (...args) {
     const url = typeof args[0] === "string" || args[0] instanceof URL ? String(args[0]) : String(args[0]?.url || "");
-    const requestContext = capturePlayinfoRequest(url);
+    const requestContext = capturePlayinfoRequest(url, args[1]?.body);
     const pending = nativeFetch(...args);
     pending.then((response) => observeFetchResponse(response.url || url, response, requestContext)).catch(() => {});
     return pending;
@@ -524,11 +595,12 @@
     };
     xhrPrototype.send = function (...args) {
       const url = xhrUrls.get(this) || "";
-      if (/\/x\/player\/(?:wbi\/)?playurl/i.test(url)) {
+      if (isPlayurl(url)) {
+        const requestContext = xhrContexts.get(this) || capturePlayinfoRequest(url, args[0]);
         this.addEventListener("load", () => {
           try {
             const payload = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
-            observePlayinfo(this.responseURL || url, payload, xhrContexts.get(this));
+            observePlayinfo(this.responseURL || url, payload, requestContext);
           } catch (_error) {}
         }, { once: true });
       }
@@ -589,6 +661,7 @@
   // refresh: new addresses for the video that is already playing. Its CID is known by then,
   // so the video information is not asked for again, and the takeover notices stay quiet.
   async function fetchRoutePlayinfo(identity, signal, refresh = false) {
+    if (identity.epId) return fetchEpisodePlayinfo(identity, signal, refresh);
     let cid = refresh ? Number(routeCids.get(identity.key)) || 0 : 0;
     let canonicalBvid = String(identity.bvid || "");
     let canonicalAid = Number(identity.aid) || 0;
@@ -622,6 +695,23 @@
     if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
     if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
     cachePlayinfo(identity, playinfo, cid);
+    if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+    return playinfo;
+  }
+
+  async function fetchEpisodePlayinfo(identity, signal, refresh) {
+    const response = await nativeFetch(`${BILIBILI_API_ORIGIN}/pgc/player/web/v2/playurl?ep_id=${identity.epId}&qn=127&fnval=4048&fnver=0&fourk=1`, {
+      credentials: "include",
+      signal
+    });
+    if (!response.ok) throw new Error(`读取播放清单失败（HTTP ${response.status}）`);
+    const payload = await response.json();
+    const playinfo = normalizePlayinfo(payload);
+    if (Number(payload?.code) !== 0 || !playinfo?.data) throw new Error(payload?.message || "读取播放清单失败");
+    if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
+    if (unsupportedEpisode(playinfo)) return playinfo;
+    if (!isDashPlayinfo(playinfo)) throw new Error("这一集没有 DASH 播放清单");
+    cachePlayinfo(identity, playinfo);
     if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
     return playinfo;
   }
@@ -1190,6 +1280,15 @@
         if (routeRequestController === controller) routeRequestController = null;
       }
       if (generation !== routeGeneration || routeIdentity()?.key !== route) return;
+    }
+    const unsupported = identity.epId ? unsupportedEpisode(playinfo) : "";
+    if (unsupported) {
+      failedRoute = route;
+      notices?.log("没有接管这一集", unsupported, "info", "", route, "takeover");
+      if (player) stopPlayer(true);
+      stats.playerState = "native-fallback";
+      publish();
+      return;
     }
     if (player) stopPlayer(false);
     stats.playerState = "loading";
