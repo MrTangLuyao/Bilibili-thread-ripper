@@ -34,6 +34,13 @@ async function pickRoom() {
     args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"]
   });
   const script = buildUserscript(latestTag());
+  // 直播加速 is off unless switched on; switch it on the way a viewer would, in this site's
+  // settings copy (no script manager here).
+  await browser.addInitScript(() => {
+    try {
+      if (location.hostname === "live.bilibili.com" && !localStorage.getItem("BTR_Userscript.sync")) localStorage.setItem("BTR_Userscript.sync", JSON.stringify({ liveEnabled: true }));
+    } catch (_error) {}
+  });
   await browser.addInitScript({ content: script });
   // addInitScript does not reach the live.bilibili.com/blanc player iframe, where a script
   // manager does run the script. Those frames get it as soon as they have navigated, which

@@ -1257,7 +1257,8 @@
       return;
     }
     const identity = routeIdentity();
-    if (!settings.enabled || !identity) {
+    // 剧集加速 switched off leaves episode pages to Bilibili, like the master switch does.
+    if (!settings.enabled || !identity || (identity.epId && settings.episodeEnabled === false)) {
       pendingPodSwitch = null;
       clearTakeoverFailure();
       stats.lastError = "";
@@ -1285,7 +1286,10 @@
     const container = findContainer();
     // Bilibili's playback core appears a moment after its player. The compatibility mode
     // needs it, so each video waits briefly for it instead of falling back at once.
-    const rangeTransport = settings.takeover === "compat" ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
+    // Episodes are only ever sped up in the compatibility mode: Bilibili's own player keeps
+    // playing them, whatever the takeover setting says.
+    const compat = settings.takeover === "compat" || Boolean(identity.epId);
+    const rangeTransport = compat ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
     if (container && rangeTransport && !rangeTransport.supports(container)) {
       if (nativeCoreWait?.route !== route) nativeCoreWait = { route, at: Date.now() };
       if (Date.now() - nativeCoreWait.at < 3000) {
@@ -1299,6 +1303,16 @@
       stats.playerState = stats.takeoverError?.route === route ? "error" : "waiting";
       schedulePublish();
       restartTimer = setTimeout(startPlayer, 350);
+      return;
+    }
+    // Where the compatibility mode cannot hold Bilibili's core, an episode is left to
+    // Bilibili rather than taken over in full.
+    if (identity.epId && !rangeTransport?.supports(container)) {
+      failedRoute = route;
+      notices?.log("没有接管这一集", "剧集只用兼容模式加速，但现在接不上 B 站的播放器，这一集交给 B 站自己播放。", "info", "", route, "takeover");
+      if (player) stopPlayer(true);
+      stats.playerState = "native-fallback";
+      publish();
       return;
     }
     const generation = routeGeneration;
@@ -1351,10 +1365,9 @@
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
-      // The compatibility mode needs Bilibili's own playback core; without it the video is
-      // taken over as usual.
-      const transport = settings.takeover === "compat" ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
-      const factory = transport?.supports(container) ? transport : playerFactory;
+      // The compatibility mode needs Bilibili's own playback core; without it an ordinary
+      // video is taken over as usual (an episode never gets this far without it).
+      const factory = rangeTransport?.supports(container) ? rangeTransport : playerFactory;
       const nextPlayer = factory.createNativePlayer({
         container,
         identity,
@@ -1491,12 +1504,14 @@
       stats.autoThreads = settings.autoConcurrency ? autoThreads?.threads() || 0 : 0;
       stats.mode = settings.mode;
       syncSettingsMenu();
-      if (!settings.enabled) {
+      // 剧集加速 only matters on an episode page; elsewhere the video playing is left alone.
+      const episodeSwitched = previous.episodeEnabled !== settings.episodeEnabled && Boolean(routeIdentity()?.epId);
+      if (!settings.enabled || (episodeSwitched && settings.episodeEnabled === false)) {
         clearTakeoverFailure();
         stats.lastError = "";
         stopPlayer(true);
       }
-      else if (!previous.enabled || previous.takeover !== settings.takeover) {
+      else if (!previous.enabled || previous.takeover !== settings.takeover || episodeSwitched) {
         restartPlayer(true);
       }
       else {

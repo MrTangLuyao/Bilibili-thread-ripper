@@ -158,6 +158,17 @@ async function chooseTheme(page, panel, value) {
     await page.screenshot({ path: "dist/theme-light.png" });
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
     assert.equal(await panel.locator("#enabled").isChecked(), true);
+    // 剧集加速 and 直播加速 sit in a block of their own, each with a line of explanation:
+    // episodes are sped up by default, live rooms only once switched on.
+    assert.deepEqual(await panel.locator(".accel-controls input").evaluateAll(nodes => nodes.map(node => [node.id, node.checked])), [["episode-enabled", true], ["live-enabled", false]]);
+    assert.equal(await panel.locator(".accel-controls .accel-row small").count(), 2);
+    assert.equal(await panel.locator(".notice-controls #live-enabled").count(), 0);
+    // The panel shows the script's own icon.
+    assert.equal(await panel.locator("img.logo").getAttribute("src"), `data:image/png;base64,${fs.readFileSync(path.join(root, "icons/icon-128.png")).toString("base64")}`);
+    await panel.locator("#episode-enabled").setChecked(false, { force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().episodeEnabled === false);
+    await panel.locator("#episode-enabled").setChecked(true, { force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().episodeEnabled === true);
     assert.equal(await panel.locator('input[name="mode"][value="mainland"]').isChecked(), true);
     assert.equal(await panel.locator('input[name="mode"]').count(), 3);
     assert.equal(await panel.locator("#custom-hosts").isVisible(), false);

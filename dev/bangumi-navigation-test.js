@@ -26,18 +26,21 @@
       return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32 };
     }
   };
-  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = {
-    createNativePlayer(options) {
-      const record = { marker: options.playinfo?.data?.marker || "", identity: options.identity || null, destroyed: false };
-      calls.push(record);
-      return {
-        applySettings() {},
-        async updatePlayinfo(playinfo) { record.marker = playinfo?.data?.marker || record.marker; },
-        destroy() { record.destroyed = true; },
-        video: { isConnected: true, paused: false }
-      };
-    }
+  // Episodes are only sped up in the compatibility mode (剧集加速), so every player here must
+  // come from the range transport, never from the full takeover.
+  const player = (kind) => (options) => {
+    const record = { kind, marker: options.playinfo?.data?.marker || "", identity: options.identity || null, destroyed: false };
+    calls.push(record);
+    return {
+      nativeTransport: kind === "compat",
+      applySettings() {},
+      async updatePlayinfo(playinfo) { record.marker = playinfo?.data?.marker || record.marker; },
+      destroy() { record.destroyed = true; },
+      video: { isConnected: true, paused: false }
+    };
   };
+  root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = { createNativePlayer: player("full") };
+  root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ = { supports: () => true, createNativePlayer: player("compat") };
 
   // The page asks playview for the next episode; the script's own requests go to the v2 playurl.
   root.fetch = async function fakeFetch(input, init) {
@@ -73,6 +76,7 @@
       staleEpisodeIgnored: markers.filter((marker) => marker.startsWith("ep101")).length === 1,
       switchedByPlayview: ep202.length === 1 && ep202[0].marker === "ep202" && ep202[0].identity?.epId === 202,
       previousReleased: calls.length > 1 && calls.slice(0, -1).every((item) => item.destroyed),
+      compatOnly: calls.length > 0 && calls.every((item) => item.kind === "compat"),
       drmLeftNative: drmSwitchedAt > 0 && Date.now() - drmSwitchedAt > 3000
         && !markers.some((marker) => marker.startsWith("ep303"))
         && apiRequests.filter((url) => url.includes("ep_id=303")).length === 1
@@ -83,6 +87,7 @@
       && output.staleEpisodeIgnored
       && output.switchedByPlayview
       && output.previousReleased
+      && output.compatOnly
       && output.drmLeftNative;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);

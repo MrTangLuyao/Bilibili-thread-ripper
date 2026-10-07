@@ -90,8 +90,12 @@
     return {
       enabled: source.enabled !== false,
       theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
-      // The live module on live.bilibili.com; the master switch above still rules.
-      liveEnabled: source.liveEnabled !== false,
+      // The live module on live.bilibili.com; the master switch above still rules. Off unless
+      // switched on: a viewer who never chose keeps Bilibili's own live player.
+      liveEnabled: source.liveEnabled === true,
+      // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
+      // sped up in the compatibility mode only.
+      episodeEnabled: source.episodeEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
