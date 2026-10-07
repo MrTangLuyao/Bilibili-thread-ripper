@@ -60,6 +60,15 @@ function checkFile() {
 const settingsHost = "#__bilibili_thread_ripper_settings__";
 const openSettings = page => page.evaluate(() => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
 const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettings());
+const themeOf = panel => panel.locator("#theme").getAttribute("data-value");
+// The theme button goes round its three choices: click it until the wanted one shows.
+async function chooseTheme(page, panel, value) {
+  for (let i = 0; i < 3 && await themeOf(panel) !== value; i += 1) {
+    await panel.locator("#theme").click();
+    await page.waitForFunction(chosen => __biliThreadRipperDebug.getSettings().theme === chosen, await themeOf(panel));
+  }
+  assert.equal(await themeOf(panel), value);
+}
 
 (async () => {
   checkPublished();
@@ -89,6 +98,8 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     // The button in the page corner opens the panel, and closes it again.
     const launcherButton = page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher");
     await launcherButton.waitFor();
+    // Nothing BTR draws on the page can be selected as text, apart from fields to type in.
+    assert.equal(await launcherButton.evaluate(node => getComputedStyle(node).userSelect), "none");
     await launcherButton.click();
     await page.locator(`${settingsHost} .btr-popup`).waitFor();
     assert.equal(await launcherButton.count(), 0, "悬浮按钮 steps aside while the panel is open");
@@ -101,6 +112,7 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await menu.waitFor({ state: "attached" });
     assert.deepEqual(await menu.locator(".btr-native-setting-title").allTextContents(), ["线程撕裂者 CDN", "并发线程"]);
     assert.deepEqual(await menu.locator('input[name="btr-native-mode"]').evaluateAll(nodes => nodes.map(node => node.value)), ["mainland", "overseas", "custom"]);
+    assert.equal(await menu.evaluate(node => getComputedStyle(node).userSelect), "none");
     console.log("PASS 不再弹欢迎设置；页面角落的悬浮按钮能打开设置；播放器菜单里的设置项齐全");
 
     // The menu command opens the settings panel inside the bilibili page, the same one the
@@ -109,23 +121,40 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     const panel = page.locator(`${settingsHost} .btr-popup`);
     await panel.waitFor();
     const palette = () => panel.evaluate(node => ({ theme: node.dataset.theme, background: getComputedStyle(node).backgroundColor, scheme: getComputedStyle(node).colorScheme }));
-    assert.equal(await panel.locator("#theme").inputValue(), "auto");
+    assert.deepEqual(await panel.evaluate(node => [getComputedStyle(node).userSelect, getComputedStyle(node.querySelector("#host-form input")).userSelect]), ["none", "text"]);
+    assert.equal(await themeOf(panel), "auto");
     await page.emulateMedia({ colorScheme: "light" });
     await page.waitForFunction(() => document.getElementById("__bilibili_thread_ripper_settings__").shadowRoot.querySelector(".btr-popup").dataset.theme === "light");
     assert.deepEqual(await palette(), { theme: "light", background: "rgb(255, 255, 255)", scheme: "light" });
     await page.emulateMedia({ colorScheme: "dark" });
     await page.waitForFunction(() => document.getElementById("__bilibili_thread_ripper_settings__").shadowRoot.querySelector(".btr-popup").dataset.theme === "dark");
     assert.deepEqual(await palette(), { theme: "dark", background: "rgb(23, 25, 31)", scheme: "dark" });
-    await panel.locator("#theme").selectOption("light");
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "light");
+    // The theme button, right of the GitHub icon, shows the choice in use. A click goes from
+    // 自动 to the colors the system is not showing, then to its own colors kept by hand, then
+    // back to 自动.
+    const shownTheme = async () => [await themeOf(panel), await panel.locator("#theme svg:visible").getAttribute("class"), (await palette()).theme];
+    const goRound = async () => {
+      const seen = [];
+      for (let i = 0; i < 3; i += 1) {
+        await panel.locator("#theme").click();
+        await page.waitForFunction(chosen => __biliThreadRipperDebug.getSettings().theme === chosen, await themeOf(panel));
+        seen.push(await shownTheme());
+      }
+      return seen;
+    };
+    assert.deepEqual(await shownTheme(), ["auto", "icon-auto", "dark"]);
+    assert.equal(await panel.locator("#theme").getAttribute("aria-label"), "面板主题：自动（跟随系统）。点击切换");
+    assert.deepEqual(await goRound(), [["light", "icon-light", "light"], ["dark", "icon-dark", "dark"], ["auto", "icon-auto", "dark"]]);
+    await page.emulateMedia({ colorScheme: "light" });
+    assert.deepEqual(await goRound(), [["dark", "icon-dark", "dark"], ["light", "icon-light", "light"], ["auto", "icon-auto", "light"]]);
+    await chooseTheme(page, panel, "light");
+    await page.emulateMedia({ colorScheme: "dark" });
     assert.equal((await palette()).theme, "light", "explicit light ignores a dark system");
-    await panel.locator("#theme").selectOption("dark");
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "dark");
+    await chooseTheme(page, panel, "dark");
     await page.emulateMedia({ colorScheme: "light" });
     assert.equal((await palette()).theme, "dark", "explicit dark ignores a light system");
     await page.screenshot({ path: "dist/theme-dark.png" });
-    await panel.locator("#theme").selectOption("light");
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "light");
+    await chooseTheme(page, panel, "light");
     await page.screenshot({ path: "dist/theme-light.png" });
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
     assert.equal(await panel.locator("#enabled").isChecked(), true);
@@ -243,8 +272,8 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await openSettings(second);
     const secondPanel = second.locator(`${settingsHost} .btr-popup`);
     await secondPanel.waitFor();
-    assert.equal(await secondPanel.locator("#theme").inputValue(), "light");
-    await secondPanel.locator("#theme").selectOption("dark");
+    assert.equal(await themeOf(secondPanel), "light");
+    await chooseTheme(second, secondPanel, "dark");
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "dark");
     await secondPanel.locator('input[name="mode"][value="overseas"]').check({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().mode === "overseas");
@@ -346,11 +375,11 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await openSettings(video);
     await video.emulateMedia({ colorScheme: "dark" });
     const videoPanel = video.locator(`${settingsHost} .btr-popup`);
-    await spacePanel.locator("#theme").selectOption("light");
+    await chooseTheme(space, spacePanel, "light");
     await video.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "light");
     assert.equal(await videoPanel.getAttribute("data-theme"), "light", "GM changes update an open panel on another subdomain");
     assert.equal(JSON.parse(gmStore.get("sync")).theme, "light");
-    await spacePanel.locator("#theme").selectOption("auto");
+    await chooseTheme(space, spacePanel, "auto");
     await video.waitForFunction(() => __biliThreadRipperDebug.getSettings().theme === "auto");
     assert.equal(await videoPanel.getAttribute("data-theme"), "dark", "auto resolves against each tab's own system preference");
     await video.keyboard.press("Escape");

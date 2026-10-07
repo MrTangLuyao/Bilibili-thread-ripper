@@ -20,6 +20,12 @@
   const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
   // GitHub's mark.
   const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
+  // The theme button shows the choice in use: a sun for 浅色, a moon for 深色, and for 自动 a
+  // half sun, half moon with a small A in the corner.
+  const THEME_ICONS = `<svg class="icon-light" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"></path></svg>`
+    + `<svg class="icon-dark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.5 13.8A8.5 8.5 0 1 1 10.2 3.5a6.6 6.6 0 0 0 10.3 10.3z"></path></svg>`
+    + `<svg class="icon-auto" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="4"></circle><path d="M10 6a4 4 0 0 1 0 8z" fill="currentColor" stroke="none"></path><path d="M10 1.7v1.8M10 16.5v1.8M1.7 10h1.8M16.5 10h1.8M4.1 4.1l1.3 1.3M15.9 4.1l-1.3 1.3M4.1 15.9l1.3-1.3"></path><path d="M14.6 22.8l4.1-9 4.1 9M16 19.6h5.4"></path></svg>`;
+  const THEME_LABELS = { auto: "自动（跟随系统）", light: "浅色", dark: "深色" };
   const KNOWN_HOSTS = HOST_GROUPS.flatMap(([, hosts]) => hosts);
 
   const PANEL_HTML = `
@@ -29,21 +35,13 @@
         <div class="title">
           <h1>线程撕裂者</h1>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
+          <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
         </div>
         <label class="switch" title="启用或停用">
           <input id="enabled" type="checkbox">
           <span></span>
         </label>
       </header>
-
-      <section class="theme-control">
-        <label for="theme">面板主题</label>
-        <select id="theme">
-          <option value="auto">自动（跟随系统）</option>
-          <option value="light">浅色</option>
-          <option value="dark">深色</option>
-        </select>
-      </section>
 
       <section class="mode-select" aria-label="CDN 模式">
         <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
@@ -137,21 +135,22 @@
       --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
       --error: #b42318; --success: #227536; --focus: #244e9b;
     }
-    .theme-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; color: var(--label); font-size: 13px; }
-    .theme-control select { max-width: 180px; padding: 6px 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
-    .theme-control select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     * { box-sizing: border-box; }
     .btr-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); }
-    .btr-popup { position: fixed; top: 72px; right: 24px; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; }
+    .btr-popup { position: fixed; top: 72px; right: 24px; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; user-select: none; -webkit-user-select: none; }
+    input, textarea { user-select: text; -webkit-user-select: text; }
     main { padding: 18px 16px; }
     header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
     .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px; color: #fff; font-size: 23px; font-weight: 800; background: #fb7299; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .github-link { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
-    .github-link:hover { color: var(--text); background: var(--hover); }
-    .github-link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .github-link svg { width: 18px; height: 18px; }
+    .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
+    .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
+    .github-link:focus-visible, .theme-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .github-link svg, .theme-toggle svg { width: 18px; height: 18px; }
+    .theme-toggle { margin-left: -6px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+    .theme-toggle svg { display: none; }
+    .theme-toggle[data-value="auto"] .icon-auto, .theme-toggle[data-value="light"] .icon-light, .theme-toggle[data-value="dark"] .icon-dark { display: block; }
     .switch { position: relative; width: 42px; height: 24px; }
     .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
     .switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--switch); cursor: pointer; transition: 160ms ease; }
@@ -239,7 +238,7 @@
   `;
 
   const LAUNCHER_CSS = `
-    .btr-launcher { position: fixed; right: 76px; bottom: 116px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #fb7299; color: #fff; font: 700 13px/1 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; letter-spacing: .3px; cursor: grab; opacity: .6; touch-action: none; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: opacity 160ms ease, transform 160ms ease, left 180ms ease, right 180ms ease; }
+    .btr-launcher { position: fixed; right: 76px; bottom: 116px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #fb7299; color: #fff; font: 700 13px/1 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; letter-spacing: .3px; cursor: grab; opacity: .6; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: opacity 160ms ease, transform 160ms ease, left 180ms ease, right 180ms ease; }
     .btr-launcher:hover, .btr-launcher:focus-visible { opacity: 1; transform: scale(1.06); }
     .btr-launcher:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .btr-launcher.dragging { cursor: grabbing; opacity: 1; transform: scale(1.1); transition: opacity 160ms ease, transform 160ms ease; }
@@ -326,8 +325,15 @@
     const autoConcurrency = $("auto-concurrency");
     const theme = $("theme");
     const systemTheme = root.matchMedia("(prefers-color-scheme: dark)");
+    const systemColors = () => (systemTheme.matches ? "dark" : "light");
     const applyTheme = () => {
-      panel.dataset.theme = theme.value === "auto" ? (systemTheme.matches ? "dark" : "light") : theme.value;
+      panel.dataset.theme = theme.dataset.value === "auto" ? systemColors() : theme.dataset.value;
+    };
+    const showTheme = (value) => {
+      theme.dataset.value = value;
+      theme.title = `面板主题：${THEME_LABELS[value]}。点击切换`;
+      theme.setAttribute("aria-label", theme.title);
+      applyTheme();
     };
     systemTheme.addEventListener("change", applyTheme);
     const threadValue = $("thread-value");
@@ -406,8 +412,7 @@
     }
 
     function render(settings) {
-      theme.value = settings.theme;
-      applyTheme();
+      showTheme(settings.theme);
       enabled.checked = settings.enabled;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
@@ -427,7 +432,16 @@
 
     const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
-    theme.addEventListener("change", () => { applyTheme(); save({ theme: theme.value }); });
+    // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
+    // then to the ones it is (now kept by hand), then back to 自动.
+    theme.addEventListener("click", () => {
+      const system = systemColors();
+      const other = system === "dark" ? "light" : "dark";
+      const current = theme.dataset.value;
+      const next = current === "auto" ? other : current === other ? system : "auto";
+      showTheme(next);
+      save({ theme: next });
+    });
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {

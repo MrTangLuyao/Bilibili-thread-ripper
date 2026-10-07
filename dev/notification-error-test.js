@@ -76,6 +76,7 @@ function mockChrome() {
     assert(delivered.some(item => item.title === "需要保留的错误"));
     assert(!JSON.stringify(delivered).includes("PRIVATE"));
     assert((await page.locator(red).count()) >= 1);
+    assert.equal(await page.locator("#__btr_notification_stack__ .stack").evaluate(node => getComputedStyle(node).userSelect), "none");
     assert((await page.locator(red + " .heading").allTextContents()).every(title => title === "BTR 提示"));
     assert.equal(await page.locator(".mode").count(), 0);
     console.log("PASS 打开显示错误后，Debug 关闭时仍捕获真实媒体错误与 Range 下载错误，仅显示红色");
@@ -111,6 +112,8 @@ function mockChrome() {
     assert.equal(await takeoverNotice.getAttribute("data-expanded"), "true");
     assert.match(await takeoverNotice.locator(".btr-error-log").textContent(), /失败测试/);
     assert.match(await takeoverNotice.locator(".btr-error-log").textContent(), /playinfo/);
+    // The box cannot be selected as text, only its log, which is there to be copied.
+    assert.deepEqual(await takeoverNotice.evaluate(node => [getComputedStyle(node).userSelect, getComputedStyle(node.querySelector(".btr-error-log")).userSelect]), ["none", "text"]);
     await home.evaluate(() => {
       window.__retryObserved = false;
       addEventListener("message", event => {

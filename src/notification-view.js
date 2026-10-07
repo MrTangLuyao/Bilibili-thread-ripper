@@ -102,7 +102,7 @@
       const style = document.createElement("style");
       style.textContent = `
         :host{color-scheme:dark}
-        .stack{position:absolute;inset:0;overflow:hidden}
+        .stack{position:absolute;inset:0;overflow:hidden;user-select:none;-webkit-user-select:none}
         .layer{position:absolute;inset:0}
         .errors{z-index:1}
         .entry{position:absolute;top:0;left:2px;right:2px;min-width:0}

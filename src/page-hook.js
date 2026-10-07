@@ -749,7 +749,7 @@
     const style = document.createElement("style");
     style.id = SETTINGS_STYLE_ID;
     style.textContent = `
-      #${SETTINGS_ID}{margin:0 0 20px;color:#fff;font-size:12px}
+      #${SETTINGS_ID}{margin:0 0 20px;color:#fff;font-size:12px;user-select:none;-webkit-user-select:none}
       #${SETTINGS_ID} .btr-native-setting-group{margin:0 0 16px}
       #${SETTINGS_ID} .btr-native-setting-title{margin:0 0 8px;color:#fff}
       #${SETTINGS_ID} .bui-radio-group{display:flex!important;flex-wrap:wrap!important;gap:8px!important;margin:0!important}
