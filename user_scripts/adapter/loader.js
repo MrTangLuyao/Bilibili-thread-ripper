@@ -23,8 +23,8 @@ function describeManager() {
 // The settings live in the manager's storage, which every bilibili subdomain shares; this
 // site's localStorage is separate on each one, so a setting changed on space.bilibili.com
 // never reached the video pages. Only this side of the script can use the manager's storage:
-// the page code (storage-shim.js) asks for it with events carrying JSON text. The first time,
-// what this subdomain's localStorage held is taken over; it stays there too.
+// the page code (storage-shim.js) asks for it with events carrying JSON text. An empty
+// manager starts with defaults; localStorage is only a fallback, never a migration source.
 const STORAGE_MARK = "data-btr-userscript-storage";
 const manager = typeof GM !== "undefined" && typeof GM?.getValue === "function" && typeof GM?.setValue === "function" ? GM : null;
 const managerReportsChanges = typeof GM_addValueChangeListener === "function";
@@ -36,11 +36,7 @@ function answerPage(type, message) {
 function serveStorage() {
   const read = async (area) => {
     const stored = await manager.getValue(area);
-    if (typeof stored === "string") return stored;
-    let earlier = null;
-    try { earlier = localStorage.getItem(`BTR_Userscript.${area}`); } catch (_error) {}
-    if (earlier) await manager.setValue(area, earlier);
-    return earlier || "{}";
+    return typeof stored === "string" ? stored : "{}";
   };
   // One request at a time: a change reads what is stored and writes it back.
   let queue = Promise.resolve();

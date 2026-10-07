@@ -8,10 +8,9 @@
 // subdomain. Changes made in another tab arrive from the manager, or, where the manager does
 // not report them, are read again when this tab comes back into view.
 //
-// What the manager holds is also copied to this site's localStorage. Each manager keeps its
-// own storage, so a viewer who moves to another one (say from Tampermonkey to
-// Violentmonkey) would otherwise start over: the new one takes the settings over from that
-// copy the first time it runs.
+// What the manager holds is also copied to this site's localStorage for fallback when the
+// manager is unavailable. Each manager keeps its own settings; an empty manager never
+// imports this copy.
 const chrome = (() => {
   const PREFIX = "BTR_Userscript.";
   const AREAS = ["sync", "local"];

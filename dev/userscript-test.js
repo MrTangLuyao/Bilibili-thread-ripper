@@ -298,8 +298,14 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
       return tab;
     };
     const modeOf = (target, mode) => target.waitForFunction(value => window.__biliThreadRipperDebug?.getSettings().mode === value, mode);
-    // What an earlier subdomain kept is taken over the first time, and stays where it was.
+    // An empty manager ignores a previous manager's local copy and starts with defaults.
     const space = await managerTab({ mode: "overseas", autoConcurrency: false, concurrency: 16 });
+    await space.goto(`${origin}?gm=live`);
+    await modeOf(space, "mainland");
+    await space.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "mainland");
+    assert.equal(JSON.parse(gmStore.get("sync")).mode, "mainland");
+    // Existing settings in this manager still win over a stale local copy.
+    gmStores.get("1").set("sync", JSON.stringify({ mode: "overseas", autoConcurrency: false, concurrency: 16 }));
     await space.goto(`${origin}?gm=live`);
     await modeOf(space, "overseas");
     assert.equal(JSON.parse(gmStore.get("sync")).mode, "overseas");
@@ -339,13 +345,16 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     // The diagnostic report names the manager (here one that describes itself like
     // Violentmonkey in its "content" mode), its version and injection mode.
     assert.equal(JSON.parse(await injectedTab.evaluate(() => __biliThreadRipperDebug.report())).scriptManager, "Violentmonkey 2.49.0 content");
-    // Moving to another manager (its storage empty): it takes the latest settings over from
-    // this subdomain's copy, not the old ones from before settings moved to the manager.
+    // Moving to another manager starts independently, even with a current local copy.
     await spacePanel.locator('input[name="mode"][value="custom"]').check({ force: true });
     await modeOf(video, "custom");
     await video.goto(`${origin}?gm=live&gmstore=2`);
+    await modeOf(video, "mainland");
+    await video.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "mainland");
+    assert.equal(JSON.parse(gmStores.get("2").get("sync")).mode, "mainland");
+    await video.goto(`${origin}?gm=live`);
     await modeOf(video, "custom");
-    assert.equal(JSON.parse(gmStores.get("2").get("sync")).mode, "custom");
+    assert.equal(JSON.parse(gmStores.get("1").get("sync")).mode, "custom");
     // A manager whose storage never answers must not keep the settings, and so the takeover,
     // from loading: after three seconds this site's localStorage is used as before.
     const silentContext = await browser.newContext();
@@ -356,7 +365,7 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
     await silent.goto(`${origin}?gm=silent`);
     await silent.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas", null, { timeout: 8000 });
     assert.ok(Date.now() - silentStarted < 6000);
-    console.log("PASS 设置存在脚本管理器里：各子域共用一份，第一次会导入这个子域原来的设置，其他标签页马上同步（不报告变化的管理器在切回标签页时同步），换到另一个管理器（比如暴力猴）时带上最新的设置，诊断报告写明是哪个管理器，管理器的存储不回应时退回本站 localStorage");
+    console.log("PASS 管理器设置独立：不导入 localStorage，切回原管理器保留设置；跨子域与标签页同步、诊断和 localStorage 故障回退正常");
 
     assert.deepEqual(errors, []);
     console.log("PASS 没有脚本错误");
