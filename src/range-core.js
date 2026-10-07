@@ -89,6 +89,7 @@
     const requested = Math.trunc(Number(source.concurrency));
     return {
       enabled: source.enabled !== false,
+      theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
       // The live module on live.bilibili.com; the master switch above still rules.
       liveEnabled: source.liveEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only

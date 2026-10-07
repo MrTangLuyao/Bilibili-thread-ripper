@@ -22,6 +22,9 @@ test("new defaults: mainland CDN, 8 threads, error notices off",()=>{
   const chosen=core.normalizeSettings({mode:"overseas",concurrency:32,errorNotices:true});
   assert.equal(chosen.mode,"overseas");assert.equal(chosen.concurrency,32);assert.equal(chosen.errorNotices,true);
   assert.equal(core.normalizeSettings({concurrency:7}).concurrency,8);
+  assert.equal(defaults.theme,"auto");
+  for(const theme of ["auto","light","dark"]) assert.equal(core.normalizeSettings({theme}).theme,theme);
+  for(const theme of ["invalid",null,{},1]) assert.equal(core.normalizeSettings({theme}).theme,"auto");
 });
 
 test("a node is banned after two failures that delivered 0 bytes, and only for the current video",()=>{
