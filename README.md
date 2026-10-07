@@ -234,7 +234,7 @@ BTR的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 ## 开发与构建
 
-项目没有任何依赖，装了 Node.js 就能构建和测试。
+项目运行和构建没有任何依赖。单元测试只需要 Node.js，浏览器测试还需要 Playwright 和浏览器。
 
 ```text
 src/          原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
@@ -245,7 +245,7 @@ icons/        脚本图标
 ```
 
 - 构建：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag。想在自己浏览器里试，就在 Tampermonkey 里新建一个脚本，把这个文件的内容整个贴进去保存。
-- 测试：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（`NODE_PATH` 指向它所在的 node_modules）和 Chrome（默认路径不对时设 `BTR_CHROME_PATH`）。
+- 测试：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。
 - 发版：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]`，然后在 main 上运行 `node scripts/release.mjs`（或 `npm run release`）。它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令。推送要自己来，推到 main 就等于发给所有用户。
 
 源码里的版本号都写成 `__BTR_VERSION__`，构建时才换成真实版本，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices 这 5 个文件桌面版也在用，改了要同步过去。

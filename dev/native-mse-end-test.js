@@ -17,7 +17,7 @@ const cases = [
 ];
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true });
   let failed = false;
   try {
     for (let offset = 0; offset < cases.length; offset += 3) {

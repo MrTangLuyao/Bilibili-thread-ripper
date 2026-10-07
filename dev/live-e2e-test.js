@@ -3,7 +3,7 @@
 // as a script manager would), opens a real live room on live.bilibili.com and checks that
 // the live module takes over inside the player frame (many rooms embed the player in a
 // live.bilibili.com/blanc iframe). Needs network; not part of the default regression run.
-//   BTR_CHROME_PATH  browser executable (default: Chrome)
+//   BTR_CHROME_PATH  browser executable (default: Playwright Chromium)
 //   BTR_E2E_ROOM     room id (default: picked from the recommend API)
 //   BTR_E2E_SECONDS  observation window (default 25)
 const assert = require("node:assert/strict");
@@ -28,7 +28,7 @@ async function pickRoom() {
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "btr-e2e-"));
   const { buildUserscript, latestTag } = await import(pathToFileURL(path.join(root, "scripts/build.mjs")).href);
   const browser = await chromium.launchPersistentContext(userDataDir, {
-    executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    executablePath: process.env.BTR_CHROME_PATH || undefined,
     headless: true,
     viewport: { width: 1280, height: 800 },
     args: ["--autoplay-policy=no-user-gesture-required", "--mute-audio"]

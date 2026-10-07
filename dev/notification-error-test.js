@@ -24,7 +24,7 @@ function mockChrome() {
 }
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true, args: ["--disable-background-timer-throttling"] });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true, args: ["--disable-background-timer-throttling"] });
   const errors = [];
   const origin = "http://127.0.0.1:18763";
   // The settings panel opens inside a bilibili page; this tab is one without a video.

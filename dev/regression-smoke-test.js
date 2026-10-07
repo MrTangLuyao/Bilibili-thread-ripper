@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true });
   const tests = [
     ["navigation-test.html", "navigation-result"],
     ["multipart-navigation-test.html", "multipart-navigation-result"],

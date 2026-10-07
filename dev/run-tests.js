@@ -1,7 +1,8 @@
 "use strict";
 // Runs the tests one after another: `node dev/run-tests.js` (or `npm test`).
 // The browser tests need dev/server.js; it is started here unless one is already running.
-// Playwright comes from NODE_PATH, Chrome from BTR_CHROME_PATH (see the tests).
+// Playwright comes from node_modules or NODE_PATH. Its bundled Chromium is used by
+// default; BTR_CHROME_PATH can select an installed Chrome instead.
 // The tests that play real videos from Bilibili only run when BTR_TEST_BVID and
 // BTR_TEST_CID name one.
 const { spawn, spawnSync } = require("node:child_process");

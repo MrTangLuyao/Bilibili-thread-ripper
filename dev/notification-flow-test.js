@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true, args: ["--disable-background-timer-throttling"] });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true, args: ["--disable-background-timer-throttling"] });
   const errors = [];
   try {
     const page = await browser.newPage({ viewport: { width: 640, height: 900 } });

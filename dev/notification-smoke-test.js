@@ -31,7 +31,7 @@ function mockChrome() {
 }
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling"] });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true, args: ["--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling"] });
   const passed = [], errors = [];
   const mark = name => { passed.push(name); console.log("PASS " + name); };
   const origin = "http://127.0.0.1:18763";

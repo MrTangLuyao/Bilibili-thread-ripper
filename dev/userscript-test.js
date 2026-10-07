@@ -68,7 +68,7 @@ const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettin
   fs.mkdirSync(path.join(root, "dist"), { recursive: true });
   fs.writeFileSync(path.join(root, "dist/userscript-test.user.js"), script);
   checkFile();
-  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", headless: true });
+  const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true });
   const origin = "http://127.0.0.1:18763/dev/userscript-test.html";
   const errors = [];
   const red = '.bubble[data-level="error"]:not(.leaving)';
