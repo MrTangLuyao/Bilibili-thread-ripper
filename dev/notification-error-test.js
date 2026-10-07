@@ -103,6 +103,27 @@ function mockChrome() {
     assert.equal(await home.locator("#__bilibili_thread_ripper_error_notice__").count(), 0);
     await popup.locator("#error-notices").check();
     await home.locator("#__bilibili_thread_ripper_error_notice__").waitFor({ state: "visible" });
+    // Keep the former error-notice fixture's unique assertions here, using the same
+    // storage and cross-tab setup as the error switch checks.
+    const takeoverNotice = home.locator("#__bilibili_thread_ripper_error_notice__");
+    assert.equal(await takeoverNotice.locator(".btr-error-title").innerText(), "BTR 提示");
+    await takeoverNotice.locator(".btr-error-toggle").click();
+    assert.equal(await takeoverNotice.getAttribute("data-expanded"), "true");
+    assert.match(await takeoverNotice.locator(".btr-error-log").textContent(), /失败测试/);
+    assert.match(await takeoverNotice.locator(".btr-error-log").textContent(), /playinfo/);
+    await home.evaluate(() => {
+      window.__retryObserved = false;
+      addEventListener("message", event => {
+        if (event.source === window && event.data?.channel === "__BILI_RANGE_ACCELERATOR_V1__" && event.data.type === "retry-takeover") window.__retryObserved = true;
+      });
+    });
+    await takeoverNotice.locator(".btr-error-retry").click();
+    await home.waitForFunction(() => window.__retryObserved);
+    await home.evaluate(() => window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "stats", payload: { playerState: "ready", takeoverError: null } }, "*"));
+    await takeoverNotice.waitFor({ state: "detached" });
+    // Recreate the error so switching the setting off still checks removal independently.
+    await home.evaluate(() => window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "stats", payload: { playerState: "error", takeoverError: { id: "test-error-again", at: Date.now(), message: "失败测试", stage: "playinfo", retryCount: 1 } } }, "*"));
+    await takeoverNotice.waitFor({ state: "visible" });
     await popup.locator("#error-notices").uncheck();
     await home.locator("#__bilibili_thread_ripper_error_notice__").waitFor({ state: "detached" });
     await page.goto(origin + "/dev/notification-test.html");
