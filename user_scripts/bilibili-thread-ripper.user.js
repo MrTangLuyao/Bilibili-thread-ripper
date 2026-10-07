@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.7.1
+// @version      2026.10.7.2
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -43,10 +43,9 @@ document.documentElement?.setAttribute("data-btr-userscript", "");
 // subdomain. Changes made in another tab arrive from the manager, or, where the manager does
 // not report them, are read again when this tab comes back into view.
 //
-// What the manager holds is also copied to this site's localStorage. Each manager keeps its
-// own storage, so a viewer who moves to another one (say from Tampermonkey to
-// Violentmonkey) would otherwise start over: the new one takes the settings over from that
-// copy the first time it runs.
+// What the manager holds is also copied to this site's localStorage for fallback when the
+// manager is unavailable. Each manager keeps its own settings; an empty manager never
+// imports this copy.
 const chrome = (() => {
   const PREFIX = "BTR_Userscript.";
   const AREAS = ["sync", "local"];
@@ -302,6 +301,7 @@ const chrome = (() => {
     const requested = Math.trunc(Number(source.concurrency));
     return {
       enabled: source.enabled !== false,
+      theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
       // The live module on live.bilibili.com; the master switch above still rules.
       liveEnabled: source.liveEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
@@ -3360,7 +3360,7 @@ const chrome = (() => {
       urlDeadlineSeconds,
       video,
       getDebug: () => ({
-        version: "2026.10.7.1",
+        version: "2026.10.7.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4165,6 +4165,12 @@ const chrome = (() => {
   const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
   // GitHub's mark.
   const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
+  // The theme button shows the choice in use: a sun for 浅色, a moon for 深色, and for 自动 a
+  // half sun, half moon with a small A in the corner.
+  const THEME_ICONS = `<svg class="icon-light" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"></path></svg>`
+    + `<svg class="icon-dark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20.5 13.8A8.5 8.5 0 1 1 10.2 3.5a6.6 6.6 0 0 0 10.3 10.3z"></path></svg>`
+    + `<svg class="icon-auto" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="4"></circle><path d="M10 6a4 4 0 0 1 0 8z" fill="currentColor" stroke="none"></path><path d="M10 1.7v1.8M10 16.5v1.8M1.7 10h1.8M16.5 10h1.8M4.1 4.1l1.3 1.3M15.9 4.1l-1.3 1.3M4.1 15.9l1.3-1.3"></path><path d="M14.6 22.8l4.1-9 4.1 9M16 19.6h5.4"></path></svg>`;
+  const THEME_LABELS = { auto: "自动（跟随系统）", light: "浅色", dark: "深色" };
   const KNOWN_HOSTS = HOST_GROUPS.flatMap(([, hosts]) => hosts);
 
   const PANEL_HTML = `
@@ -4174,6 +4180,7 @@ const chrome = (() => {
         <div class="title">
           <h1>线程撕裂者</h1>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
+          <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
         </div>
         <label class="switch" title="启用或停用">
           <input id="enabled" type="checkbox">
@@ -4259,106 +4266,124 @@ const chrome = (() => {
     </main>`;
 
   const PANEL_CSS = `
+    .btr-popup {
+      --scheme: dark; --bg: #17191f; --surface: #20232a; --hover: #292d35;
+      --border: #30343d; --divider: #343943; --control-border: #444b57;
+      --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
+      --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
+      --error: #f28b85; --success: #9fd9a8; --focus: #fff;
+    }
+    .btr-popup[data-theme="light"] {
+      --scheme: light; --bg: #fff; --surface: #f4f5f8; --hover: #e8ebf0;
+      --border: #d6dae2; --divider: #d6dae2; --control-border: #aeb6c4;
+      --text: #202532; --label: #363f50; --button-text: #363f50;
+      --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
+      --error: #b42318; --success: #227536; --focus: #244e9b;
+    }
     * { box-sizing: border-box; }
     .btr-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); }
-    .btr-popup { position: fixed; top: 72px; right: 24px; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 1px solid #30343d; border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); color-scheme: dark; font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: #17191f; color: #f5f7fb; font-size: 14px; line-height: normal; text-align: left; }
+    .btr-popup { position: fixed; top: 72px; right: 24px; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; user-select: none; -webkit-user-select: none; }
+    input, textarea { user-select: text; -webkit-user-select: text; }
     main { padding: 18px 16px; }
     header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
     .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px; color: #fff; font-size: 23px; font-weight: 800; background: #fb7299; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .github-link { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: #949baa; transition: color 160ms ease, background 160ms ease; }
-    .github-link:hover { color: #fff; background: #292d35; }
-    .github-link:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-    .github-link svg { width: 18px; height: 18px; }
+    .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
+    .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
+    .github-link:focus-visible, .theme-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .github-link svg, .theme-toggle svg { width: 18px; height: 18px; }
+    .theme-toggle { margin-left: -6px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+    .theme-toggle svg { display: none; }
+    .theme-toggle[data-value="auto"] .icon-auto, .theme-toggle[data-value="light"] .icon-light, .theme-toggle[data-value="dark"] .icon-dark { display: block; }
     .switch { position: relative; width: 42px; height: 24px; }
     .switch input { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-    .switch span { position: absolute; inset: 0; border-radius: 999px; background: #313a4c; cursor: pointer; transition: 160ms ease; }
+    .switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--switch); cursor: pointer; transition: 160ms ease; }
     .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: 160ms ease; }
     .switch input:checked + span { background: #fb7299; }
     .switch input:checked + span::after { transform: translateX(18px); }
-    .switch input:focus-visible + span { outline: 2px solid #fff; outline-offset: 3px; }
-    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid #30343d; border-radius: 8px; background: #30343d; }
+    .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--border); }
     .mode-select label { position: relative; }
     .mode-select input { position: absolute; opacity: 0; }
-    .mode-select span { display: block; padding: 10px 6px; color: #949baa; background: #20232a; font-size: 12px; text-align: center; cursor: pointer; }
+    .mode-select span { display: block; padding: 10px 6px; color: var(--muted); background: var(--surface); font-size: 12px; text-align: center; cursor: pointer; }
     .mode-select input:checked + span { color: #fff; background: #fb7299; }
-    .mode-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }
-    .takeover-select { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; margin-bottom: 8px; overflow: hidden; border: 1px solid #30343d; border-radius: 8px; background: #30343d; }
+    .mode-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
+    .takeover-select { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; margin-bottom: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--border); }
     .takeover-select label { position: relative; }
     .takeover-select input { position: absolute; opacity: 0; }
-    .takeover-select span { display: block; padding: 10px 6px; color: #949baa; background: #20232a; font-size: 12px; text-align: center; cursor: pointer; }
+    .takeover-select span { display: block; padding: 10px 6px; color: var(--muted); background: var(--surface); font-size: 12px; text-align: center; cursor: pointer; }
     .takeover-select input:checked + span { color: #fff; background: #fb7299; }
-    .takeover-select input:focus-visible + span { outline: 2px solid #fff; outline-offset: -3px; }
-    .takeover-note { margin: 0 0 12px; padding: 0 2px; color: #7f8797; font-size: 11px; line-height: 1.6; }
-    .custom-hosts { margin-bottom: 12px; padding: 14px 16px; border: 1px solid #30343d; border-radius: 8px; background: #20232a; }
+    .takeover-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
+    .takeover-note { margin: 0 0 12px; padding: 0 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .custom-hosts { margin-bottom: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .custom-hosts[hidden] { display: none; }
-    .custom-head { display: flex; align-items: center; justify-content: space-between; color: #c9ced9; font-size: 13px; }
+    .custom-head { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
     .custom-head b { min-width: 28px; padding: 2px 8px; border-radius: 5px; background: #fb7299; color: #fff; font-size: 12px; text-align: center; }
-    .custom-note { margin: 8px 0 0; color: #7f8797; font-size: 11px; line-height: 1.6; }
+    .custom-note { margin: 8px 0 0; color: var(--subtle); font-size: 11px; line-height: 1.6; }
     .custom-note[hidden] { display: none; }
-    .host-group { min-width: 0; margin: 12px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid #343943; }
-    .host-group legend { padding: 0 0 4px; color: #c9ced9; font-size: 12px; }
-    .host-option { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: #c9ced9; font-size: 11px; overflow-wrap: anywhere; cursor: pointer; }
+    .host-group { min-width: 0; margin: 12px 0 0; padding: 10px 0 0; border: 0; border-top: 1px solid var(--divider); }
+    .host-group legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
+    .host-option { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; cursor: pointer; }
     .host-option input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: #fb7299; cursor: pointer; }
-    .manual-host { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: #c9ced9; font-size: 11px; overflow-wrap: anywhere; }
-    .manual-host button { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid #444b57; border-radius: 4px; background: #292d35; color: #d9dee8; font: inherit; line-height: 20px; cursor: pointer; }
+    .manual-host { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; }
+    .manual-host button { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; line-height: 20px; cursor: pointer; }
     .host-form { display: flex; gap: 6px; margin-top: 10px; }
-    .host-form input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #444b57; border-radius: 5px; background: #17191f; color: #f5f7fb; font: inherit; font-size: 12px; }
+    .host-form input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
     .host-form button { flex: none; padding: 6px 10px; border: 0; border-radius: 5px; background: #fb7299; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
-    .host-error { min-height: 0; margin: 6px 0 0; color: #f28b85; font-size: 11px; }
+    .host-error { min-height: 0; margin: 6px 0 0; color: var(--error); font-size: 11px; }
     .host-error:empty { display: none; }
-    .host-form input:focus-visible, .host-form button:focus-visible, .manual-host button:focus-visible, .host-option input:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
-    .controls { padding: 16px; border: 1px solid #30343d; border-radius: 8px; background: #20232a; }
+    .host-form input:focus-visible, .host-form button:focus-visible, .manual-host button:focus-visible, .host-option input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .controls { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-    .control-title label { color: #c9ced9; font-size: 13px; }
+    .control-title label { color: var(--label); font-size: 13px; }
     .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-    .auto-row > label:first-child { display: flex; flex-direction: column; gap: 2px; color: #c9ced9; font-size: 13px; }
-    .auto-row small { color: #8a93a6; font-size: 11px; }
+    .auto-row > label:first-child { display: flex; flex-direction: column; gap: 2px; color: var(--label); font-size: 13px; }
+    .auto-row small { color: var(--subtle); font-size: 11px; }
     .controls.auto .slider, .controls.auto .scale { opacity: 0.4; pointer-events: none; }
     output { min-width: 42px; padding: 4px 8px; border-radius: 5px; color: #fff; background: #fb7299; font-size: 13px; font-weight: 700; text-align: center; }
-    .slider { position: relative; width: 100%; height: 18px; border-radius: 9px; background: #3a3e47; }
+    .slider { position: relative; width: 100%; height: 18px; border-radius: 9px; background: var(--track); }
     .slider-fill { position: absolute; top: 0; bottom: 0; left: 0; width: 60%; border-radius: 9px; background: #fb7299; pointer-events: none; }
     input[type="range"] { position: absolute; inset: 0; width: 100%; height: 18px; margin: 0; appearance: none; -webkit-appearance: none; border: 0; outline: 0; background: transparent; cursor: pointer; }
     input[type="range"]::-webkit-slider-runnable-track { height: 18px; background: transparent; }
     input[type="range"]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -3px; appearance: none; -webkit-appearance: none; border: 2px solid #fff; border-radius: 50%; background: #fff; }
     input[type="range"]:focus-visible::-webkit-slider-thumb { border-color: #fb7299; }
-    .scale { display: flex; justify-content: space-between; margin-top: 5px; color: #7f8797; font-size: 10px; }
+    .scale { display: flex; justify-content: space-between; margin-top: 5px; color: var(--subtle); font-size: 10px; }
     .scale span { width: 24px; text-align: center; }
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
-    .notice-controls { margin-top: 12px; padding: 14px 16px; border: 1px solid #30343d; border-radius: 8px; background: #20232a; }
-    .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #c9ced9; font-size: 13px; }
+    .notice-controls { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--label); font-size: 13px; }
     .notice-row .switch { flex: none; }
     .notice-row + .notice-row { margin-top: 14px; }
-    .debug-filters { min-width: 0; margin: 16px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid #343943; }
+    .debug-filters { min-width: 0; margin: 16px 0 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
     .debug-filters[hidden] { display: none; }
-    .debug-filters legend { padding: 0 0 4px; color: #c9ced9; font-size: 12px; }
+    .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
     .debug-filter-actions { display: flex; gap: 8px; margin-bottom: 12px; }
-    .debug-filter-actions button { padding: 4px 8px; border: 1px solid #444b57; border-radius: 4px; background: #292d35; color: #d9dee8; font: inherit; font-size: 11px; cursor: pointer; }
+    .debug-filter-actions button { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 11px; cursor: pointer; }
     .debug-filter-actions button:hover, .manual-host button:hover { border-color: #fb7299; }
     .debug-filter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
-    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: #c9ced9; font-size: 12px; cursor: pointer; }
+    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: var(--label); font-size: 12px; cursor: pointer; }
     .debug-filter-options input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #fb7299; cursor: pointer; }
-    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
     .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
-    .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: #292d35; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+    .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
     .debug-copy button:hover { background: #fb7299; }
-    .debug-copy button:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
-    .debug-copy-status { color: #9fd9a8; font-size: 12px; }
-    .debug-copy-status.failed { color: #f28b85; }
-    .debug-copy-note { margin: 8px 0 0; color: #949baa; font-size: 11px; line-height: 1.5; }
-    .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid #444b57; border-radius: 6px; background: #20232a; color: #d9dee8; font: 11px/1.4 Consolas, monospace; resize: vertical; }
+    .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .debug-copy-status { color: var(--success); font-size: 12px; }
+    .debug-copy-status.failed { color: var(--error); }
+    .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .current-threads { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 16px; border: 1px solid #30343d; border-radius: 8px; background: #20232a; color: #c9ced9; font-size: 13px; }
-    .current-threads b { color: #fff; font-size: 20px; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 32px); margin: 0 16px 16px; padding: 8px; border: 1px solid #444b57; border-radius: 6px; background: #292d35; color: #d9dee8; font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 -6px 12px #17191f; }
+    .current-threads { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--label); font-size: 13px; }
+    .current-threads b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
+    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 32px); margin: 0 16px 16px; padding: 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
     .btr-close:hover { border-color: #fb7299; }
-    .btr-close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+    .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   `;
 
   const LAUNCHER_CSS = `
-    .btr-launcher { position: fixed; right: 76px; bottom: 116px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #fb7299; color: #fff; font: 700 13px/1 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; letter-spacing: .3px; cursor: grab; opacity: .6; touch-action: none; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: opacity 160ms ease, transform 160ms ease, left 180ms ease, right 180ms ease; }
+    .btr-launcher { position: fixed; right: 76px; bottom: 116px; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%; background: #fb7299; color: #fff; font: 700 13px/1 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; letter-spacing: .3px; cursor: grab; opacity: .6; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); transition: opacity 160ms ease, transform 160ms ease, left 180ms ease, right 180ms ease; }
     .btr-launcher:hover, .btr-launcher:focus-visible { opacity: 1; transform: scale(1.06); }
     .btr-launcher:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     .btr-launcher.dragging { cursor: grabbing; opacity: 1; transform: scale(1.1); transition: opacity 160ms ease, transform 160ms ease; }
@@ -4379,7 +4404,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.7.1",
+        BTR: "2026.10.7.2",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -4443,6 +4468,19 @@ const chrome = (() => {
     const enabled = $("enabled");
     const concurrency = $("concurrency");
     const autoConcurrency = $("auto-concurrency");
+    const theme = $("theme");
+    const systemTheme = root.matchMedia("(prefers-color-scheme: dark)");
+    const systemColors = () => (systemTheme.matches ? "dark" : "light");
+    const applyTheme = () => {
+      panel.dataset.theme = theme.dataset.value === "auto" ? systemColors() : theme.dataset.value;
+    };
+    const showTheme = (value) => {
+      theme.dataset.value = value;
+      theme.title = `面板主题：${THEME_LABELS[value]}。点击切换`;
+      theme.setAttribute("aria-label", theme.title);
+      applyTheme();
+    };
+    systemTheme.addEventListener("change", applyTheme);
     const threadValue = $("thread-value");
     const sliderFill = $("slider-fill");
     const errorNotices = $("error-notices");
@@ -4519,6 +4557,7 @@ const chrome = (() => {
     }
 
     function render(settings) {
+      showTheme(settings.theme);
       enabled.checked = settings.enabled;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
@@ -4538,6 +4577,16 @@ const chrome = (() => {
 
     const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
+    // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
+    // then to the ones it is (now kept by hand), then back to 自动.
+    theme.addEventListener("click", () => {
+      const system = systemColors();
+      const other = system === "dark" ? "light" : "dark";
+      const current = theme.dataset.value;
+      const next = current === "auto" ? other : current === other ? system : "auto";
+      showTheme(next);
+      save({ theme: next });
+    });
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {
@@ -4628,6 +4677,7 @@ const chrome = (() => {
       if (current?.host !== host) return;
       current = null;
       clearInterval(timer);
+      systemTheme.removeEventListener("change", applyTheme);
       launcher?.apply();
       document.removeEventListener("keydown", onKey, true);
       dialog.remove();
@@ -4935,7 +4985,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.7.1",
+    version: "2026.10.7.2",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5608,7 +5658,7 @@ const chrome = (() => {
     const style = document.createElement("style");
     style.id = SETTINGS_STYLE_ID;
     style.textContent = `
-      #${SETTINGS_ID}{margin:0 0 20px;color:#fff;font-size:12px}
+      #${SETTINGS_ID}{margin:0 0 20px;color:#fff;font-size:12px;user-select:none;-webkit-user-select:none}
       #${SETTINGS_ID} .btr-native-setting-group{margin:0 0 16px}
       #${SETTINGS_ID} .btr-native-setting-title{margin:0 0 8px;color:#fff}
       #${SETTINGS_ID} .bui-radio-group{display:flex!important;flex-wrap:wrap!important;gap:8px!important;margin:0!important}
@@ -6344,7 +6394,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.7.1"
+      version: "2026.10.7.2"
     })
   });
   publish();
@@ -6598,7 +6648,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.7.1",
+    version: "2026.10.7.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7062,7 +7112,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.7.1"
+      version: "2026.10.7.2"
     })
   });
   publish();
@@ -7173,7 +7223,7 @@ const chrome = (() => {
       const style = document.createElement("style");
       style.textContent = `
         :host{color-scheme:dark}
-        .stack{position:absolute;inset:0;overflow:hidden}
+        .stack{position:absolute;inset:0;overflow:hidden;user-select:none;-webkit-user-select:none}
         .layer{position:absolute;inset:0}
         .errors{z-index:1}
         .entry{position:absolute;top:0;left:2px;right:2px;min-width:0}
@@ -7379,12 +7429,12 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.7.1";
+  const VERSION = "2026.10.7.2";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: true, concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: true, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
   // of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -7400,6 +7450,7 @@ const chrome = (() => {
     return {
       enabled: input?.enabled !== false,
       liveEnabled: input?.liveEnabled !== false,
+      theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
       takeover: input?.takeover === "compat" ? "compat" : "full",
@@ -7481,7 +7532,7 @@ const chrome = (() => {
       const style = document.createElement("style");
       style.id = ERROR_NOTICE_STYLE_ID;
       style.textContent = `
-        #${ERROR_NOTICE_ID}{position:fixed!important;left:14px!important;bottom:14px!important;z-index:2147483646!important;width:min(280px,calc(100vw - 28px))!important;max-height:65vh!important;overflow:auto!important;box-sizing:border-box!important;border:1px solid #a44949!important;border-radius:5px!important;background:rgba(8,8,10,.78)!important;color:#f2f2ee!important;font-family:Tahoma,"Microsoft YaHei",sans-serif!important;text-shadow:1px 1px 0 #0009!important;box-shadow:inset 0 1px 0 #ffffff12,1px 1px 2px #0007!important}
+        #${ERROR_NOTICE_ID}{position:fixed!important;left:14px!important;bottom:14px!important;z-index:2147483646!important;width:min(280px,calc(100vw - 28px))!important;max-height:65vh!important;overflow:auto!important;box-sizing:border-box!important;border:1px solid #a44949!important;border-radius:5px!important;background:rgba(8,8,10,.78)!important;color:#f2f2ee!important;font-family:Tahoma,"Microsoft YaHei",sans-serif!important;text-shadow:1px 1px 0 #0009!important;box-shadow:inset 0 1px 0 #ffffff12,1px 1px 2px #0007!important;user-select:none!important;-webkit-user-select:none!important}
         #${ERROR_NOTICE_ID} *{box-sizing:border-box!important}
         #${ERROR_NOTICE_ID} .btr-error-summary{padding:7px 9px!important}
         #${ERROR_NOTICE_ID} .btr-error-title{margin:0!important;color:#f28b85!important;font-size:13px!important;font-weight:700!important;line-height:18px!important}
@@ -7491,7 +7542,7 @@ const chrome = (() => {
         #${ERROR_NOTICE_ID} .btr-error-toggle:focus-visible,#${ERROR_NOTICE_ID} .btr-error-retry:focus-visible{outline:2px solid #00aeec!important;outline-offset:2px!important}
         #${ERROR_NOTICE_ID} .btr-error-details{display:none!important;padding:0 15px 14px!important;border-top:1px solid #2f3136!important}
         #${ERROR_NOTICE_ID}[data-expanded="true"] .btr-error-details{display:block!important}
-        #${ERROR_NOTICE_ID} .btr-error-log{margin:11px 0 12px!important;padding:10px!important;border:0!important;border-radius:4px!important;background:#222328!important;color:#c9ccd0!important;font:12px/1.6 Consolas,"Microsoft YaHei",monospace!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;user-select:text!important}
+        #${ERROR_NOTICE_ID} .btr-error-log{margin:11px 0 12px!important;padding:10px!important;border:0!important;border-radius:4px!important;background:#222328!important;color:#c9ccd0!important;font:12px/1.6 Consolas,"Microsoft YaHei",monospace!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;user-select:text!important;-webkit-user-select:text!important}
         #${ERROR_NOTICE_ID} .btr-error-retry{height:30px!important;margin:0!important;padding:0 13px!important;border:1px solid #a44949!important;border-radius:3px!important;background:#713b3b!important;color:#fff!important;font:700 12px/28px Tahoma,"Microsoft YaHei",sans-serif!important;cursor:pointer!important}
         #${ERROR_NOTICE_ID} .btr-error-retry:hover{background:#8a4545!important}
         #${ERROR_NOTICE_ID} .btr-error-retry:disabled{background:#6b4b55!important;color:#d8c5cb!important;cursor:default!important}
@@ -7688,8 +7739,8 @@ function describeManager() {
 // The settings live in the manager's storage, which every bilibili subdomain shares; this
 // site's localStorage is separate on each one, so a setting changed on space.bilibili.com
 // never reached the video pages. Only this side of the script can use the manager's storage:
-// the page code (storage-shim.js) asks for it with events carrying JSON text. The first time,
-// what this subdomain's localStorage held is taken over; it stays there too.
+// the page code (storage-shim.js) asks for it with events carrying JSON text. An empty
+// manager starts with defaults; localStorage is only a fallback, never a migration source.
 const STORAGE_MARK = "data-btr-userscript-storage";
 const manager = typeof GM !== "undefined" && typeof GM?.getValue === "function" && typeof GM?.setValue === "function" ? GM : null;
 const managerReportsChanges = typeof GM_addValueChangeListener === "function";
@@ -7701,11 +7752,7 @@ function answerPage(type, message) {
 function serveStorage() {
   const read = async (area) => {
     const stored = await manager.getValue(area);
-    if (typeof stored === "string") return stored;
-    let earlier = null;
-    try { earlier = localStorage.getItem(`BTR_Userscript.${area}`); } catch (_error) {}
-    if (earlier) await manager.setValue(area, earlier);
-    return earlier || "{}";
+    return typeof stored === "string" ? stored : "{}";
   };
   // One request at a time: a change reads what is stored and writes it back.
   let queue = Promise.resolve();
