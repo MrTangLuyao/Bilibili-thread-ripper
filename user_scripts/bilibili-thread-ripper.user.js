@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.7.2
+// @version      2026.10.8.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -302,8 +302,12 @@ const chrome = (() => {
     return {
       enabled: source.enabled !== false,
       theme: ["light", "dark"].includes(source.theme) ? source.theme : "auto",
-      // The live module on live.bilibili.com; the master switch above still rules.
-      liveEnabled: source.liveEnabled !== false,
+      // The live module on live.bilibili.com; the master switch above still rules. Off unless
+      // switched on: a viewer who never chose keeps Bilibili's own live player.
+      liveEnabled: source.liveEnabled === true,
+      // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
+      // sped up in the compatibility mode only.
+      episodeEnabled: source.episodeEnabled !== false,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -3360,7 +3364,7 @@ const chrome = (() => {
       urlDeadlineSeconds,
       video,
       getDebug: () => ({
-        version: "2026.10.7.2",
+        version: "2026.10.8.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4165,6 +4169,8 @@ const chrome = (() => {
   const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
   // GitHub's mark.
   const GITHUB_ICON = `<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>`;
+  // The script's own icon, icons/icon-128.png (dev/userscript-test.js checks the two stay the same).
+  const ICON_URI = "data:image/png;base64,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";
   // The theme button shows the choice in use: a sun for 浅色, a moon for 深色, and for 自动 a
   // half sun, half moon with a small A in the corner.
   const THEME_ICONS = `<svg class="icon-light" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"></path></svg>`
@@ -4176,7 +4182,7 @@ const chrome = (() => {
   const PANEL_HTML = `
     <main>
       <header>
-        <div class="logo" aria-hidden="true">B</div>
+        <img class="logo" src="${ICON_URI}" alt="" width="42" height="42">
         <div class="title">
           <h1>线程撕裂者</h1>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
@@ -4234,8 +4240,18 @@ const chrome = (() => {
         </div>
       </section>
 
+      <section class="accel-controls" aria-label="加速范围">
+        <div class="accel-row">
+          <label for="episode-enabled">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></label>
+          <label class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></label>
+        </div>
+        <div class="accel-row">
+          <label for="live-enabled">直播加速（实验性）</label>
+          <label class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></label>
+        </div>
+      </section>
+
       <section class="notice-controls" aria-label="提示设置">
-        <div class="notice-row"><label for="live-enabled">直播加速（实验性）</label><label class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></label></div>
         <div class="notice-row"><label for="error-notices">显示错误</label><label class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></label></div>
         <div class="notice-row"><label for="debug-notices">Debug 模式</label><label class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></label></div>
         <div class="notice-row"><label for="floating-button">悬浮按钮</label><label class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></label></div>
@@ -4286,7 +4302,7 @@ const chrome = (() => {
     input, textarea { user-select: text; -webkit-user-select: text; }
     main { padding: 18px 16px; }
     header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
-    .logo { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px; color: #fff; font-size: 23px; font-weight: 800; background: #fb7299; }
+    .logo { display: block; width: 42px; height: 42px; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
@@ -4338,8 +4354,8 @@ const chrome = (() => {
     .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
     .control-title label { color: var(--label); font-size: 13px; }
     .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-    .auto-row > label:first-child { display: flex; flex-direction: column; gap: 2px; color: var(--label); font-size: 13px; }
-    .auto-row small { color: var(--subtle); font-size: 11px; }
+    .auto-row > label:first-child, .accel-row > label:first-child { display: flex; flex-direction: column; gap: 2px; color: var(--label); font-size: 13px; }
+    .auto-row small, .accel-row small { color: var(--subtle); font-size: 11px; }
     .controls.auto .slider, .controls.auto .scale { opacity: 0.4; pointer-events: none; }
     output { min-width: 42px; padding: 4px 8px; border-radius: 5px; color: #fff; background: #fb7299; font-size: 13px; font-weight: 700; text-align: center; }
     .slider { position: relative; width: 100%; height: 18px; border-radius: 9px; background: var(--track); }
@@ -4352,7 +4368,10 @@ const chrome = (() => {
     .scale span { width: 24px; text-align: center; }
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
-    .notice-controls { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .accel-controls, .notice-controls { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .accel-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .accel-row .switch { flex: none; }
+    .accel-row + .accel-row { margin-top: 14px; }
     .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--label); font-size: 13px; }
     .notice-row .switch { flex: none; }
     .notice-row + .notice-row { margin-top: 14px; }
@@ -4404,7 +4423,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.7.2",
+        BTR: "2026.10.8.1",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -4486,6 +4505,7 @@ const chrome = (() => {
     const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
+    const episodeEnabled = $("episode-enabled");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
@@ -4567,7 +4587,8 @@ const chrome = (() => {
       setMode(settings.mode);
       customHosts = settings.customHosts;
       renderHosts();
-      liveEnabled.checked = settings.liveEnabled !== false;
+      liveEnabled.checked = settings.liveEnabled === true;
+      episodeEnabled.checked = settings.episodeEnabled !== false;
       floatingButton.checked = settings.floatingButton !== false;
       errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
@@ -4588,6 +4609,7 @@ const chrome = (() => {
       save({ theme: next });
     });
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
+    episodeEnabled.addEventListener("change", () => save({ episodeEnabled: episodeEnabled.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {
       const threads = THREAD_OPTIONS[Number(concurrency.value)];
@@ -4985,7 +5007,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.7.2",
+    version: "2026.10.8.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5239,6 +5261,9 @@ const chrome = (() => {
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
     if (match) return match[1];
 
+    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(location.pathname);
+    if (episode) return episode[1];
+
     if (/^\/list\//i.test(location.pathname)) {
       const bvid = new URLSearchParams(location.search).get("bvid") || "";
       if (/^BV[0-9A-Za-z]+$/i.test(bvid)) return bvid;
@@ -5250,6 +5275,14 @@ const chrome = (() => {
   function routeIdentity() {
     const pathId = urlPathId();
     if (!pathId) return null;
+    if (/^(ep|ss)/i.test(pathId)) {
+      // A season address plays the episode its embedded playinfo names.
+      const embedded = normalizePlayinfo(root.__playinfo__);
+      const epId = /^ep/i.test(pathId) ? Number(pathId.slice(2)) || 0
+        : embedded?.season === Number(pathId.slice(2)) ? embedded.episode : 0;
+      if (!epId) return null;
+      return { aid: 0, bvid: "", epId, part: 1, key: `ep${epId}:p1`, videoKey: `ep${epId}` };
+    }
     const podBvid = activePodBvid();
     const pathVideoKey = /^BV/i.test(pathId) ? pathId.toLowerCase() : `av${Number(pathId.slice(2)) || 0}`;
     const podVideoKey = podBvid ? podBvid.toLowerCase() : "";
@@ -5315,6 +5348,30 @@ const chrome = (() => {
     return Boolean((playinfo?.data || playinfo)?.dash);
   }
 
+  const PLAYURL_PATTERN = /\/x\/player\/(?:wbi\/)?playurl/i;
+  const EPISODE_PLAYURL_PATTERN = /\/ogv\/player\/playview|\/pgc\/player\/web\/(?:v2\/)?playurl/i;
+  const isPlayurl = (url) => PLAYURL_PATTERN.test(String(url)) || EPISODE_PLAYURL_PATTERN.test(String(url));
+
+  // Bangumi answers put the stream in video_info, next to the episode's arc (aid, cid, bvid)
+  // and, in the playinfo embedded in the page, the episode and season it belongs to.
+  function normalizePlayinfo(payload) {
+    const body = payload?.data || payload?.result;
+    if (!body?.video_info) return payload;
+    return {
+      code: payload.code,
+      data: body.video_info,
+      arc: body.arc || null,
+      episode: Number(body.supplement?.ogv_episode_info?.episode_id) || 0,
+      season: Number(body.supplement?.ogv_season_info?.season_id) || 0
+    };
+  }
+
+  function unsupportedEpisode(playinfo) {
+    if (playinfo?.data?.is_drm) return "这一集有数字版权保护，交给 B 站自己的播放器。";
+    if (playinfo?.data?.is_preview) return "这一集只能试看，交给 B 站自己的播放器。";
+    return "";
+  }
+
   const routePlayinfo = new Map();
   const routeCids = new Map();
   const bootRouteKey = routeIdentity()?.key || "";
@@ -5358,6 +5415,12 @@ const chrome = (() => {
   function currentPlayinfo(identity) {
     const cached = routePlayinfo.get(identity?.key);
     if (isDashPlayinfo(cached)) return cached;
+    if (identity?.epId) {
+      const embedded = normalizePlayinfo(root.__playinfo__);
+      const playinfo = embedded?.episode === identity.epId ? embedded : null;
+      if (unsupportedEpisode(playinfo)) return playinfo;
+      return cachePlayinfo(identity, playinfo, playinfo?.arc?.cid) ? playinfo : null;
+    }
     try {
       const initialIdentity = stateIdentity(root.__INITIAL_STATE__);
       if (identity?.key === bootRouteKey && initialIdentity?.videoKey === identity?.videoKey && isDashPlayinfo(root.__playinfo__)) {
@@ -5396,8 +5459,25 @@ const chrome = (() => {
     catch (_error) { return 0; }
   }
 
-  function capturePlayinfoRequest(url) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return null;
+  // playview names the episode in its JSON body, the older playurl in its query.
+  function requestedEpisode(url, body) {
+    try {
+      const fromQuery = Number(new URL(String(url), location.href).searchParams.get("ep_id")) || 0;
+      if (fromQuery) return fromQuery;
+      return typeof body === "string" ? Number(JSON.parse(body)?.video_index?.ogv_episode_id) || 0 : 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function capturePlayinfoRequest(url, body) {
+    if (EPISODE_PLAYURL_PATTERN.test(String(url))) {
+      const identity = routeIdentity();
+      const epId = requestedEpisode(url, body);
+      if (!identity?.epId || epId !== identity.epId) return null;
+      return { routeKey: identity.key, videoKey: identity.videoKey, epId, cid: 0 };
+    }
+    if (!PLAYURL_PATTERN.test(String(url))) return null;
     const identity = routeIdentity();
     const videoKey = requestedVideoKey(url);
     const cid = requestedCid(url);
@@ -5409,7 +5489,9 @@ const chrome = (() => {
   }
 
   function observePlayinfo(url, payload, requestContext = null) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url)) || !isDashPlayinfo(payload)) return;
+    if (!isPlayurl(url)) return;
+    payload = normalizePlayinfo(payload);
+    if (!isDashPlayinfo(payload)) return;
     const context = requestContext || capturePlayinfoRequest(url);
     const identity = routeIdentity();
     if (!context || !identity || context.videoKey !== identity.videoKey) return;
@@ -5419,6 +5501,13 @@ const chrome = (() => {
       return;
     }
     if (context.routeKey !== identity.key) return;
+    // The episode ID in the route already tells episodes apart, so no CID check is needed.
+    if (identity.epId) {
+      if (unsupportedEpisode(payload)) return;
+      cachePlayinfo(identity, payload, payload.arc?.cid);
+      usePlayinfo(identity, payload);
+      return;
+    }
     const cid = Number(context.cid) || 0;
     const expectedCid = routeCids.get(identity.key) || 0;
     // The same BVID can contain many parts. A late response from the previous
@@ -5428,6 +5517,10 @@ const chrome = (() => {
     if (!cid || (expectedCid && cid !== expectedCid)) return;
     if (!expectedCid) routeCids.set(identity.key, cid);
     cachePlayinfo(identity, payload, cid);
+    usePlayinfo(identity, payload);
+  }
+
+  function usePlayinfo(identity, payload) {
     if (player && playerRoute === identity.key) {
       const observedLifecycle = playerLifecycle;
       player.updatePlayinfo?.(payload).catch((error) => {
@@ -5449,13 +5542,13 @@ const chrome = (() => {
   }
 
   function observeFetchResponse(url, response, requestContext) {
-    if (!/\/x\/player\/(?:wbi\/)?playurl/i.test(String(url))) return;
+    if (!isPlayurl(url)) return;
     response.clone().json().then((payload) => observePlayinfo(url, payload, requestContext)).catch(() => {});
   }
 
   root.fetch = function (...args) {
     const url = typeof args[0] === "string" || args[0] instanceof URL ? String(args[0]) : String(args[0]?.url || "");
-    const requestContext = capturePlayinfoRequest(url);
+    const requestContext = capturePlayinfoRequest(url, args[1]?.body);
     const pending = nativeFetch(...args);
     pending.then((response) => observeFetchResponse(response.url || url, response, requestContext)).catch(() => {});
     return pending;
@@ -5475,11 +5568,12 @@ const chrome = (() => {
     };
     xhrPrototype.send = function (...args) {
       const url = xhrUrls.get(this) || "";
-      if (/\/x\/player\/(?:wbi\/)?playurl/i.test(url)) {
+      if (isPlayurl(url)) {
+        const requestContext = xhrContexts.get(this) || capturePlayinfoRequest(url, args[0]);
         this.addEventListener("load", () => {
           try {
             const payload = this.responseType === "json" ? this.response : JSON.parse(this.responseText);
-            observePlayinfo(this.responseURL || url, payload, xhrContexts.get(this));
+            observePlayinfo(this.responseURL || url, payload, requestContext);
           } catch (_error) {}
         }, { once: true });
       }
@@ -5540,6 +5634,7 @@ const chrome = (() => {
   // refresh: new addresses for the video that is already playing. Its CID is known by then,
   // so the video information is not asked for again, and the takeover notices stay quiet.
   async function fetchRoutePlayinfo(identity, signal, refresh = false) {
+    if (identity.epId) return fetchEpisodePlayinfo(identity, signal, refresh);
     // A branch of an interactive video carries its own CID; the video information only
     // names the first branch.
     let cid = Number(identity.cid) || (refresh ? Number(routeCids.get(identity.key)) || 0 : 0);
@@ -5575,6 +5670,23 @@ const chrome = (() => {
     if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
     if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
     cachePlayinfo(identity, playinfo, cid);
+    if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+    return playinfo;
+  }
+
+  async function fetchEpisodePlayinfo(identity, signal, refresh) {
+    const response = await nativeFetch(`${BILIBILI_API_ORIGIN}/pgc/player/web/v2/playurl?ep_id=${identity.epId}&qn=127&fnval=4048&fnver=0&fourk=1`, {
+      credentials: "include",
+      signal
+    });
+    if (!response.ok) throw new Error(`读取播放清单失败（HTTP ${response.status}）`);
+    const payload = await response.json();
+    const playinfo = normalizePlayinfo(payload);
+    if (Number(payload?.code) !== 0 || !playinfo?.data) throw new Error(payload?.message || "读取播放清单失败");
+    if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
+    if (unsupportedEpisode(playinfo)) return playinfo;
+    if (!isDashPlayinfo(playinfo)) throw new Error("这一集没有 DASH 播放清单");
+    cachePlayinfo(identity, playinfo);
     if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
     return playinfo;
   }
@@ -6076,7 +6188,8 @@ const chrome = (() => {
       return;
     }
     const identity = routeIdentity();
-    if (!settings.enabled || !identity) {
+    // 剧集加速 switched off leaves episode pages to Bilibili, like the master switch does.
+    if (!settings.enabled || !identity || (identity.epId && settings.episodeEnabled === false)) {
       pendingPodSwitch = null;
       clearTakeoverFailure();
       stats.lastError = "";
@@ -6104,7 +6217,10 @@ const chrome = (() => {
     const container = findContainer();
     // Bilibili's playback core appears a moment after its player. The compatibility mode
     // needs it, so each video waits briefly for it instead of falling back at once.
-    const rangeTransport = settings.takeover === "compat" ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
+    // Episodes are only ever sped up in the compatibility mode: Bilibili's own player keeps
+    // playing them, whatever the takeover setting says.
+    const compat = settings.takeover === "compat" || Boolean(identity.epId);
+    const rangeTransport = compat ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
     if (container && rangeTransport && !rangeTransport.supports(container)) {
       if (nativeCoreWait?.route !== route) nativeCoreWait = { route, at: Date.now() };
       if (Date.now() - nativeCoreWait.at < 3000) {
@@ -6118,6 +6234,16 @@ const chrome = (() => {
       stats.playerState = stats.takeoverError?.route === route ? "error" : "waiting";
       schedulePublish();
       restartTimer = setTimeout(startPlayer, 350);
+      return;
+    }
+    // Where the compatibility mode cannot hold Bilibili's core, an episode is left to
+    // Bilibili rather than taken over in full.
+    if (identity.epId && !rangeTransport?.supports(container)) {
+      failedRoute = route;
+      notices?.log("没有接管这一集", "剧集只用兼容模式加速，但现在接不上 B 站的播放器，这一集交给 B 站自己播放。", "info", "", route, "takeover");
+      if (player) stopPlayer(true);
+      stats.playerState = "native-fallback";
+      publish();
       return;
     }
     const generation = routeGeneration;
@@ -6144,6 +6270,15 @@ const chrome = (() => {
       }
       if (generation !== routeGeneration || routeIdentity()?.key !== route) return;
     }
+    const unsupported = identity.epId ? unsupportedEpisode(playinfo) : "";
+    if (unsupported) {
+      failedRoute = route;
+      notices?.log("没有接管这一集", unsupported, "info", "", route, "takeover");
+      if (player) stopPlayer(true);
+      stats.playerState = "native-fallback";
+      publish();
+      return;
+    }
     if (player) stopPlayer(false);
     stats.playerState = "loading";
     stats.lastError = "";
@@ -6161,10 +6296,9 @@ const chrome = (() => {
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
-      // The compatibility mode needs Bilibili's own playback core; without it the video is
-      // taken over as usual.
-      const transport = settings.takeover === "compat" ? root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__ : null;
-      const factory = transport?.supports(container) ? transport : playerFactory;
+      // The compatibility mode needs Bilibili's own playback core; without it an ordinary
+      // video is taken over as usual (an episode never gets this far without it).
+      const factory = rangeTransport?.supports(container) ? rangeTransport : playerFactory;
       const nextPlayer = factory.createNativePlayer({
         container,
         identity,
@@ -6301,12 +6435,14 @@ const chrome = (() => {
       stats.autoThreads = settings.autoConcurrency ? autoThreads?.threads() || 0 : 0;
       stats.mode = settings.mode;
       syncSettingsMenu();
-      if (!settings.enabled) {
+      // 剧集加速 only matters on an episode page; elsewhere the video playing is left alone.
+      const episodeSwitched = previous.episodeEnabled !== settings.episodeEnabled && Boolean(routeIdentity()?.epId);
+      if (!settings.enabled || (episodeSwitched && settings.episodeEnabled === false)) {
         clearTakeoverFailure();
         stats.lastError = "";
         stopPlayer(true);
       }
-      else if (!previous.enabled || previous.takeover !== settings.takeover) {
+      else if (!previous.enabled || previous.takeover !== settings.takeover || episodeSwitched) {
         restartPlayer(true);
       }
       else {
@@ -6394,7 +6530,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.7.2"
+      version: "2026.10.8.1"
     })
   });
   publish();
@@ -6648,7 +6784,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.7.2",
+    version: "2026.10.8.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7112,7 +7248,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.7.2"
+      version: "2026.10.8.1"
     })
   });
   publish();
@@ -7429,12 +7565,12 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.7.2";
+  const VERSION = "2026.10.8.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: true, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
   // of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -7449,7 +7585,8 @@ const chrome = (() => {
     const threads = Math.trunc(Number(input?.concurrency));
     return {
       enabled: input?.enabled !== false,
-      liveEnabled: input?.liveEnabled !== false,
+      liveEnabled: input?.liveEnabled === true,
+      episodeEnabled: input?.episodeEnabled !== false,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
