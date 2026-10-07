@@ -97,7 +97,7 @@
           <label class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></label>
         </div>
         <div class="accel-row">
-          <label for="live-enabled">直播加速（实验性）<small>加速 B 站直播间，效果还在探索中。</small></label>
+          <label for="live-enabled">直播加速（实验性）</label>
           <label class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></label>
         </div>
       </section>
