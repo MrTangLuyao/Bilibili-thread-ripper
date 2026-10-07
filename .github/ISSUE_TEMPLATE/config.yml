@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🖥️ 桌面版问题
+    url: https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop/issues
+    about: 官方哔哩哔哩 Windows 客户端版（BTR Desktop）的问题，请到桌面版仓库反馈

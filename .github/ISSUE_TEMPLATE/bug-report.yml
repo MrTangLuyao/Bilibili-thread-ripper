@@ -1,0 +1,39 @@
+name: 🐞 卡顿 / 播放问题
+description: 视频卡顿、加载慢，或者播放不正常
+title: "[问题] "
+labels: ["bug反馈"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢你愿意反馈！为了更快找到原因，麻烦附上 BTR 的诊断信息：
+
+        1. 打开 BTR 设置，开启 **Debug 模式**
+        2. 播放出问题的视频，让它播一会儿
+        3. 回到设置面板，点 **复制诊断信息**，粘贴到下面
+
+        诊断信息里没有 Cookie、账号信息和视频下载地址，可以放心贴。
+
+  - type: textarea
+    id: report
+    attributes:
+      label: 诊断信息
+      placeholder: 按上面的步骤复制后，粘贴到这里
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: network
+    attributes:
+      label: 所在地区和网络运营商
+      placeholder: 比如：美国，Verizon
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 补充信息
+      description: 遇到的情况、截图，想说的都可以写在这里。
+      placeholder: 比如：打开 4K 视频后一直转圈，播一会儿又卡住

@@ -1,0 +1,12 @@
+name: 💡 功能建议
+description: 想要的新功能，或者觉得哪里可以做得更好
+title: "[建议] "
+labels: ["新功能建议"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你的想法
+      description: 想要什么功能，或者现在哪里用着不方便，都可以写。
+    validations:
+      required: true
