@@ -39,12 +39,12 @@
 - **直播加速**：实验性，默认关闭
 - **不上传任何数据**：没有遥测
 
-### 速度对比
+### 速度对比：原生、[bilibili-accelerator](https://github.com/realzza/bilibili-accelerator) 以及 bilibili CDN 加速插件
 
 <div align="center">
-<img src="pics/speed-comparison.png" alt="不同版本的下载速度对比" width="760">
+<img src="pics/speed-comparison.png" alt="对比原生以及其他优化插件的下载速度" width="760">
 </div>
-<sub>墨尔本，运营商 Superloop 实测。测试视频是一个仅自己可见、几乎无播放的杜比视界 4K60 视频（BV1Aou3zjEh1），5 次测试取平均，仅供参考。</sub>
+<sub>对比原生以及其他优化插件，墨尔本，运营商 Superloop 实测。测试视频是一个仅自己可见、几乎无播放的 4K60 视频（BV1Aou3zjEh1），3 次测试取平均，线程撕裂者版本 2026.10.8.1，仅供参考。</sub>
 
 ## 📦 安装
 
