@@ -8,9 +8,9 @@
 
 通过多线程并发以及调度器优化实现海外 B 站 8K、杜比视界流畅播放
 
-[![版本](https://img.shields.io/github/v/tag/MrTangLuyao/Bilibili-thread-ripper?sort=date&label=%E7%89%88%E6%9C%AC&style=flat-square&color=fb7299)](CHANGELOG.md) [![测试](https://img.shields.io/github/actions/workflow/status/MrTangLuyao/Bilibili-thread-ripper/tests.yml?branch=main&label=%E6%B5%8B%E8%AF%95&style=flat-square)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/actions/workflows/tests.yml) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/stargazers) [![许可证](https://img.shields.io/github/license/MrTangLuyao/Bilibili-thread-ripper?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat-square&color=3b82f6)](LICENSE)
+[![版本](https://img.shields.io/github/v/tag/MrTangLuyao/Bilibili-thread-ripper?sort=date&label=%E7%89%88%E6%9C%AC&style=flat-square&color=fb7299)](CHANGELOG.md) [![测试](https://img.shields.io/github/actions/workflow/status/MrTangLuyao/Bilibili-thread-ripper/tests.yml?branch=main&label=%E6%B5%8B%E8%AF%95&style=flat-square)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/actions/workflows/tests.yml) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/stargazers) [![许可证](https://img.shields.io/github/license/MrTangLuyao/Bilibili-thread-ripper?label=%E8%AE%B8%E5%8F%AF%E8%AF%81&style=flat-square&color=3b82f6)](LICENSE) [![安装视频教程](https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1Teec6BE3s?p=2) [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 
-[**安装**](#-安装) · [建议设置](#%EF%B8%8F-建议设置) · [原理](#-原理解释) · [常见问题](#-常见问题) · [反馈问题](#-反馈问题) · [更新日志](CHANGELOG.md)
+[**安装**](#-安装) · [建议设置](#建议设置) · [原理](#原理解释) · [常见问题](#常见问题) · [反馈问题](#反馈问题) · [更新日志](CHANGELOG.md)
 
 <img src="docs/demo.gif" alt="线程撕裂者效果演示" width="58%"> <img src="pics/image-20260828033742780.png" alt="播放器设置里的线程撕裂者选项" width="39%">
 
@@ -25,14 +25,14 @@
 > [!TIP]
 > 想在手机或平板上用？可以试试把 BTR 移植进 PiliPlus 客户端的第三方项目：[nishuodedui1145-del/PiliPlus](https://github.com/nishuodedui1145-del/PiliPlus)、[lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus)。它们由社区独立维护，效果不做保证。
 
-## ✨ 为什么需要它
+## 为什么需要它
 
-海外宽带明明很快，B 站的冷门视频、4K、高码率却总是卡：单条连接太慢，换个 CDN 节点也没用。线程撕裂者把视频拆成很多小块，从多个节点同时下载，再按顺序交给播放器。
+海外宽带明明很快，B 站的冷门视频、4K、高码率却总是卡，本插件具有以下特点：
 
 - **多线程下载**：多条连接、多个节点一起下
-- **大陆 CDN 直连**：冷门视频不在海外节点上干等
-- **智能调度**：自动决定线程数，快要播的先下
-- **原生播放器不变**：清晰度、弹幕、字幕都还是 B 站自己的
+- **智能选择 CDN**：智能优选大陆/海外 CDN
+- **智能调度**：自动决定线程数，并合理分配资源
+- **优化 B 站播放底层**：在全接管模式下，优化 B 站底层加载模式
 - **剧集加速**：番剧、电影、纪录片也能加速
 - **直播加速**：实验性，默认关闭
 - **不上传任何数据**：没有遥测
@@ -42,12 +42,11 @@
 <div align="center">
 <img src="pics/speed-comparison.png" alt="不同版本的下载速度对比" width="760">
 </div>
-
 <sub>墨尔本，运营商 Superloop 实测。测试视频是一个仅自己可见、几乎无播放的杜比视界 4K60 视频（BV1Aou3zjEh1），5 次测试取平均，仅供参考。</sub>
 
 ## 📦 安装
 
-> 📺 不会装？看 [视频安装步骤](https://www.bilibili.com/video/BV1Teec6BE3s)（参考 2P，通过油猴脚本安装）
+[![安装视频教程](https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1Teec6BE3s?p=2) [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 
 1. 安装脚本管理器：[暴力猴 Violentmonkey](https://violentmonkey.github.io/)（推荐）或 [Tampermonkey](https://www.tampermonkey.net/)。部分用户反馈 Tampermonkey 正式版有时接管不稳定，换 beta 版可以解决。
 2. **Chrome、Edge 等 Chromium 内核浏览器必做**：扩展管理 → 暴力猴（或 Tampermonkey）→ 详情 → 打开 **允许运行用户脚本**（老版本是打开“开发者模式”）。
@@ -69,7 +68,7 @@
 > [!WARNING]
 > 如果你是早期通过视频了解到这个插件的：针对 Chrome 的独立插件版已经停止更新。请先在扩展管理里移除插件版，再按上面的步骤安装油猴脚本版，不要同时开启两个版本。
 
-## ⚙️ 建议设置
+## 建议设置
 
 下面只是参考，每个人的网络差别很大，最后以你自己看着顺不顺为准：
 
@@ -98,13 +97,13 @@
 
 **面板主题**：设置面板标题右边、GitHub 图标旁的按钮切换主题：☀️ 浅色、🌙 深色，右下角带个小 A 的是自动（跟随系统配色，默认）。每点一下换一种：自动 → 跟系统相反的颜色 → 跟系统相同的颜色 → 自动。选择会保存，并通过同一个脚本管理器在 B 站各个页面和标签页之间同步。
 
-## 🔍 怎么知道它在工作
+## 怎么知道它在工作
 
 - 设置面板会显示**目前总线程**。偶尔显示 `0` 是正常的，说明当前已经缓冲了足够的内容。
 - 播放器右键 **视频统计信息** 里的节点、速度和分段是插件实际的下载数据，Player Type 一行会写 `BTR Native`。
 - 播放器前方的缓存持续增长，说明下载的数据正在正常交给播放器。
 
-## 🧠 原理解释
+## 原理解释
 
 ### 多线程思想
 
@@ -162,7 +161,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 </details>
 
-## 🎬 和 B 站播放器的分工
+## 和 B 站播放器的分工
 
 `0.9.x` 起使用 B 站原生播放器界面，不再自己重复造一套播放器。播放器功能归播放器，加速功能归线程撕裂者，少互相干扰：
 
@@ -175,7 +174,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 | 合集、分 P、自动连播和站内切换 | 失败重试 |
 | B 站自己的快捷键与播放器设置 | |
 
-## ❓ 常见问题
+## 常见问题
 
 **效果明不明显，主要看你属于哪种情况：**
 
@@ -254,7 +253,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 </details>
 
-## 🐞 反馈问题
+## 反馈问题
 
 只说一句“没效果”，基本没办法判断到底是节点、带宽、编码、权限还是插件出错。如果你要反馈“还是卡”，最好一起提供这些信息：
 
@@ -268,7 +267,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 > [!CAUTION]
 > 请不要公开 Cookie、访问令牌或者完整的媒体签名地址。
 
-## 🛠️ 开发与构建
+## 开发与构建
 
 项目运行和构建没有任何依赖。单元测试只需要 Node.js，浏览器测试还需要 Playwright 和浏览器。
 
@@ -291,7 +290,7 @@ icons/        脚本图标
 
 </details>
 
-## 🤝 参与贡献
+## 参与贡献
 
 我个人能力有限，由衷希望各路大佬都来贡献代码、提提意见，我都会看的。希望有朝一日 B 站能优化好海外的 CDN，我们也不用搞这么多复杂的玩意了。
 
@@ -299,6 +298,6 @@ icons/        脚本图标
   <img src="https://contrib.rocks/image?repo=MrTangLuyao/Bilibili-thread-ripper" alt="贡献者">
 </a>
 
-## 📄 开源协议
+## 开源协议
 
 项目采用 [MIT 开源协议](LICENSE)。你可以使用、复制、修改和分发，也可以用于商业项目，但必须保留原始版权声明和许可证文本。
