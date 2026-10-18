@@ -1637,6 +1637,13 @@
         stopPlayer(true);
       }
       else if (!previous.enabled || previous.takeover !== settings.takeover || episodeSwitched) {
+        // The compatibility mode speeds up Bilibili's own player, so when it can take that
+        // player over now, the full takeover hands the video back to it first. Stopped without
+        // that, it left the element empty: the video went black at zero until the page was
+        // reloaded. Without Bilibili's core the video is taken over in full again, from where
+        // it was.
+        if (settings.takeover === "compat" && player && !player.nativeTransport
+          && root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__?.supports(playerContainer)) stopPlayer(true);
         restartPlayer(true);
       }
       else {

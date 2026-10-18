@@ -1300,8 +1300,18 @@
         video.playbackRate = original.playbackRate;
         video.load();
         try { video.currentTime = state.time || original.currentTime; } catch (_error) {}
-        if (!state.resume && original.wasPaused) return;
-        video.play().catch(() => {});
+        // A video the viewer paused stays paused. One that was playing goes on once there is
+        // something to play: Bilibili's core replaces this old source with a new one, and a
+        // play() on the old one held the video back for seconds after the new one was ready
+        // (seen on a real page).
+        if (!state.resume) return;
+        const play = () => {
+          clearTimeout(giveUp);
+          video.removeEventListener("canplay", play);
+          video.play().catch(() => {});
+        };
+        const giveUp = setTimeout(() => video.removeEventListener("canplay", play), 15000);
+        video.addEventListener("canplay", play);
       } else if (resumeNative && original.srcAttribute !== null) {
         video.setAttribute("src", original.srcAttribute);
         video.load();
