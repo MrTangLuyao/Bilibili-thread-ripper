@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.19.1
+// @version      2026.10.19.2
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3295,6 +3295,25 @@ const chrome = (() => {
       return earliest;
     }
 
+    // Whether an address names one of this video's own files, on any node and with any
+    // signature: Bilibili's own core asks its nodes for the very files BTR is playing (#49).
+    let ownedPaths = { dash: null, paths: new Set() };
+    function ownsMediaUrl(url) {
+      const dash = selection?.dash;
+      if (ownedPaths.dash !== dash) {
+        const paths = new Set();
+        for (const representation of [].concat(dash?.video || [], dash?.audio || [], dash?.dolby?.audio || [], dash?.flac?.audio || [])) {
+          const addresses = [representationUrl(representation)].concat(representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || []);
+          for (const address of addresses) {
+            try { if (address) paths.add(new URL(String(address)).pathname); } catch (_error) {}
+          }
+        }
+        ownedPaths = { dash, paths };
+      }
+      try { return ownedPaths.paths.has(new URL(String(url), root.location?.href).pathname); }
+      catch (_error) { return false; }
+    }
+
     async function updatePlayinfo(playinfo) {
       if (destroyed) return;
       const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio);
@@ -3366,7 +3385,9 @@ const chrome = (() => {
       style.id = "__btr_native_mse_style__";
       style.textContent = `
         [data-btr-mse-active="true"] .bpx-player-error-wrap,
-        [data-btr-mse-active="true"] .bpx-player-error-panel{display:none!important}
+        [data-btr-mse-active="true"] .bpx-player-error-panel,
+        [data-btr-retaking="true"] .bpx-player-error-wrap,
+        [data-btr-retaking="true"] .bpx-player-error-panel{display:none!important}
       `;
       (document.head || document.documentElement).append(style);
     }
@@ -3400,9 +3421,10 @@ const chrome = (() => {
       setQuality,
       updatePlayinfo,
       urlDeadlineSeconds,
+      ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.19.1",
+        version: "2026.10.19.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4266,7 +4288,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.19.1</span>
+            <span class="version">v2026.10.19.2</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4522,7 +4544,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.19.1",
+        BTR: "2026.10.19.2",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -5124,7 +5146,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.19.1",
+    version: "2026.10.19.2",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5689,8 +5711,22 @@ const chrome = (() => {
     response.clone().json().then((payload) => observePlayinfo(url, payload, requestContext)).catch(() => {});
   }
 
+  // Requests for this video's own files that reach the network while the takeover plays
+  // can only come from Bilibili's own core, which lockNativeBuffers keeps from downloading
+  // (#49). They are let through and only counted for the diagnostic report: holding them
+  // back instead made its core cancel and retry them every few seconds, and soon reload the
+  // video. BTR's own downloads use the fetch saved at start-up and never pass through here.
+  const nativeMedia = { requests: 0 };
+  function countNativeMedia(url) {
+    try {
+      if (player && !player.nativeTransport && playerContainer?.dataset.btrMseActive === "true"
+        && typeof player.ownsMediaUrl === "function" && player.ownsMediaUrl(url)) nativeMedia.requests += 1;
+    } catch (_error) {}
+  }
+
   root.fetch = function (...args) {
     const url = typeof args[0] === "string" || args[0] instanceof URL ? String(args[0]) : String(args[0]?.url || "");
+    countNativeMedia(url);
     const requestContext = capturePlayinfoRequest(url, args[1]?.body);
     const pending = nativeFetch(...args);
     pending.then((response) => observeFetchResponse(response.url || url, response, requestContext)).catch(() => {});
@@ -5711,6 +5747,7 @@ const chrome = (() => {
     };
     xhrPrototype.send = function (...args) {
       const url = xhrUrls.get(this) || "";
+      countNativeMedia(url);
       if (isPlayurl(url)) {
         const requestContext = xhrContexts.get(this) || capturePlayinfoRequest(url, args[0]);
         this.addEventListener("load", () => {
@@ -6015,8 +6052,12 @@ const chrome = (() => {
     playerRoute = "";
     playerContainer = null;
     current?.destroy({ resumeNative });
+    // Bilibili's core may download again: for its next source, or for the video it plays.
+    unlockNativeBuffers();
     // The suppressed native schedulers must run again once Bilibili owns playback.
     if (resumeNative && current && !current.nativeTransport) resumeNativeSchedulers();
+    // Bilibili plays the video itself now, so its error panel may show again.
+    if (resumeNative) uncoverNativeErrors();
     if (settings.enabled) stats.playerState = "waiting";
     else stats.playerState = "disabled";
     publish();
@@ -6055,6 +6096,25 @@ const chrome = (() => {
     restartTimer = setTimeout(startPlayer, 650);
   }
 
+  // When Bilibili reloads the video after an error of its own core, its error panel can
+  // come up in the moment before BTR takes the video over again, where the takeover no
+  // longer hides it. The panel stays hidden across that gap, five seconds at most: a
+  // takeover that does not come back leaves the panel to Bilibili.
+  let retakingCover = null;
+  function uncoverNativeErrors() {
+    if (!retakingCover) return;
+    clearTimeout(retakingCover.timer);
+    delete retakingCover.container.dataset.btrRetaking;
+    retakingCover = null;
+  }
+  function coverNativeErrorsWhileRetaking(container) {
+    uncoverNativeErrors();
+    if (!container?.isConnected) return;
+    container.dataset.btrRetaking = "true";
+    const cover = { container, timer: setTimeout(() => { if (retakingCover === cover) uncoverNativeErrors(); }, 5000) };
+    retakingCover = cover;
+  }
+
   function handleNativeSourceChange(route, lifecycle) {
     setTimeout(() => {
       if (lifecycle !== playerLifecycle || !player || playerRoute !== route) return;
@@ -6065,9 +6125,11 @@ const chrome = (() => {
       startingRoute = "";
       failedRoute = "";
       clearTimeout(restartTimer);
+      const container = playerContainer;
       // The native player already installed its next source. Do not restore or
       // overwrite it; wait briefly for the transition to settle, then retake it.
       stopPlayer(false);
+      coverNativeErrorsWhileRetaking(container);
       restartTimer = setTimeout(startPlayer, 650);
     }, 0);
   }
@@ -6157,8 +6219,41 @@ const chrome = (() => {
   }
 
   const stoppedSchedulers = new WeakSet();
+
+  // Stopping the controllers once a second still let them download: every seek or play woke
+  // them before the next stop, each time for several megabytes at 4K under their own ten
+  // seconds. Those downloads failed often enough for the core to show 错误码 6006 and reload
+  // the video (#49), and in a background tab the stop came only once a minute. Bilibili's
+  // dash core asks one question before it downloads anything: its schedule controller
+  // refuses to start, and stops scheduling, once the buffer controller says buffering is
+  // completed. While BTR plays the video, every native buffer controller says so, and the
+  // core asks its nodes for nothing; the original answer comes back with the video. A core
+  // without this method keeps the stop above.
+  const lockedBuffers = new Map();
+  function lockNativeBuffers() {
+    for (const processor of nativeStreamProcessors()) {
+      try {
+        const buffer = processor?.getBufferController?.();
+        if (!buffer || lockedBuffers.has(buffer) || typeof buffer.getIsBufferingCompleted !== "function") continue;
+        lockedBuffers.set(buffer, buffer.getIsBufferingCompleted);
+        buffer.getIsBufferingCompleted = function () { return true; };
+        // Its own wake-ups are refused from now on, so it is started again with the video.
+        const scheduler = processor.getScheduleController?.();
+        if (scheduler) stoppedSchedulers.add(scheduler);
+        remember("native buffer locked", String(processor.getType?.() || ""));
+      } catch (_error) {}
+    }
+  }
+  function unlockNativeBuffers() {
+    for (const [buffer, original] of lockedBuffers) {
+      try { buffer.getIsBufferingCompleted = original; } catch (_error) {}
+    }
+    lockedBuffers.clear();
+  }
+
   function suppressNativeSchedulers() {
     if (!player || player.nativeTransport || playerContainer?.dataset.btrMseActive !== "true") return;
+    lockNativeBuffers();
     for (const processor of nativeStreamProcessors()) {
       try {
         const scheduler = processor?.getScheduleController?.();
@@ -6682,6 +6777,7 @@ const chrome = (() => {
         return JSON.stringify({
           version: stats.version, scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
           actualTakeover: !player ? "native" : player.nativeTransport ? "compat" : "full",
+          nativeCore: { buffersLocked: lockedBuffers.size, mediaRequests: nativeMedia.requests },
           playback: video ? { currentTime: video.currentTime, duration: video.duration, ended: video.ended,
             paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
             width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
@@ -6689,7 +6785,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.19.1"
+      version: "2026.10.19.2"
     })
   });
   publish();
@@ -6943,7 +7039,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.19.1",
+    version: "2026.10.19.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7407,7 +7503,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.19.1"
+      version: "2026.10.19.2"
     })
   });
   publish();
@@ -7724,7 +7820,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.19.1";
+  const VERSION = "2026.10.19.2";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";

@@ -189,18 +189,25 @@
     const seekDeadline = performance.now() + 4000;
     while (performance.now() < seekDeadline && !player.getDebug().lastSeekMs) await sleep(25);
     const seek = { headersBeforeSeek, headersAfterSeek: headerDownloads, sessions: player.getDebug().sessionStarts, lastSeekMs: player.getDebug().lastSeekMs, startedAtTarget: Boolean(started[firstAfterSeek]) };
+    // The video's own files are recognised on any node and with any signature (#49); other
+    // files, and addresses that are not addresses at all, are not.
+    const ownsFiles = player.ownsMediaUrl("https://upos-hz-mirrorakam.akamaized.net/80.m4s?deadline=9&upsig=x")
+      && player.ownsMediaUrl("https://upos-sz-mirrorcos.bilivideo.com/30280.m4s")
+      && !player.ownsMediaUrl("https://upos-sz-mirrorali.bilivideo.com/81.m4s")
+      && !player.ownsMediaUrl("http://[");
     player.destroy({ resumeNative: false });
 
     const output = { errors, filledAhead, lateStarts, removalsAfterJump, removalsAfterSmallStep, removalsAfterLargeStep, seek };
     output.seekKeptHeaders = seek.headersBeforeSeek === 4 && seek.headersAfterSeek === 4 && seek.sessions === 1 && seek.lastSeekMs > 0 && seek.startedAtTarget;
     output.pausedBeforeUnderflow = pausedBeforeUnderflow;
     output.resumedAfterRefill = resumedAfterRefill;
+    output.ownsFiles = ownsFiles;
     output.filled = filledAhead >= 44;
     output.keptWindowFull = lateStarts.length === 0;
     output.prunedOncePerStep = removalsAfterJump.video === 1 && removalsAfterJump.audio === 1
       && removalsAfterSmallStep.video === 1 && removalsAfterSmallStep.audio === 1
       && removalsAfterLargeStep.video === 2 && removalsAfterLargeStep.audio === 2;
-    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill;
+    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill && ownsFiles;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };
