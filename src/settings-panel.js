@@ -76,7 +76,10 @@
       <header>
         <img class="logo" src="${ICON_URI}" alt="" width="42" height="42">
         <div class="title">
-          <h1>线程撕裂者</h1>
+          <div class="name">
+            <h1>线程撕裂者</h1>
+            <span class="version">v__BTR_VERSION__</span>
+          </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
         </div>
@@ -90,7 +93,7 @@
         <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
         <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
       </section>
-      <p class="takeover-note">Safari 用户建议使用兼容模式。<br>全接管：视频由插件自己来放，下载和缓冲都由插件安排，速度最快。<br>兼容模式：当遇到播放问题或设置不生效时，尝试使用兼容模式。</p>
+      <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
 
       <details id="advanced" class="advanced">
         <summary>
@@ -195,6 +198,8 @@
     header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
     .logo { display: block; width: 42px; height: 42px; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
+    .name { display: grid; gap: 2px; min-width: 0; }
+    .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
     .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }

@@ -176,6 +176,8 @@ async function unfold(panel) {
     await chooseTheme(page, panel, "light");
     await page.screenshot({ path: "dist/theme-light.png" });
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
+    // The version sits under the title in small print.
+    assert.equal(await panel.locator(".name .version").textContent(), `v${version}`);
     assert.equal(await panel.locator("#enabled").isChecked(), true);
     // 剧集加速 and 直播加速 sit in a block of their own, 剧集加速 with a line of explanation:
     // episodes are sped up by default, live rooms only once switched on.
