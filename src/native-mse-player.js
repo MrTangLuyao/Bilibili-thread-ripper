@@ -839,6 +839,23 @@
       const current = Number(video.currentTime) || candidate.startTime;
       const ready = candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current));
       const ahead = ready ? Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current) : 0;
+      // Chromium may advance the audio clock for several seconds after video runs out,
+      // before it emits "waiting". That leaves a frozen picture with sound still playing
+      // (#45). Protect steady playback too, not only the first twenty seconds of a session.
+      const lowWater = Math.max(0.5, Math.abs(Number(video.playbackRate) || 1));
+      const remaining = Number(candidate.mediaSource.duration) - current;
+      if (candidate.playbackActivated && !candidate.recovering && !video.paused && !video.seeking && !video.ended
+        && candidate.tracks.some((track) => !track.complete) && remaining > lowWater + 0.25 && ahead < lowWater) {
+        candidate.recovering = true;
+        candidate.resumeWanted = true;
+        candidate.playAttempted = false;
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.underflowRebuffers += 1;
+        note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
+        options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
+        video.pause();
+        if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
+      }
       if (candidate.recovering && ready) {
         const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + candidate.recoveryTargetSeconds) - current);
         if (ahead >= Math.min(reachableSeconds(candidate, candidate.recoveryTargetSeconds), remaining)) {
@@ -930,7 +947,7 @@
         playAttempted: false, playbackActivated: false, playbackActivatedAt: 0,
         recovering: false, recoveryTargetSeconds: STARTUP_RECOVERY_SECONDS, bufferAheadLimit: 0, quotaWaits: 0,
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
-        progressiveAppends: 0,
+        progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
@@ -1335,6 +1352,7 @@
         nativeLeftoversSuppressed: nativeLeftovers.suppressed,
         lastNativeLeftover: nativeLeftovers.last,
         progressiveAppends: session?.progressiveAppends || 0,
+        underflowRebuffers: session?.underflowRebuffers || 0,
         seekReloads,
         nativeRestoresUndone,
         lastSeekMs: Math.round(lastSeekMs),

@@ -108,6 +108,32 @@
     if (pageEvents.length > 60) pageEvents.shift();
   }
 
+  // A media clock alone cannot show a stale picture (#45). Keep the most recently
+  // presented frame's timestamp only while Debug is enabled; no canvas/readback involved.
+  let frameWatch = null;
+  function stopFrameWatch() {
+    const previous = frameWatch;
+    frameWatch = null;
+    if (previous?.id != null) previous.video.cancelVideoFrameCallback?.(previous.id);
+  }
+  function syncFrameWatch(video = player?.video) {
+    if (!settings.enabled || !settings.debugNotices || typeof video?.requestVideoFrameCallback !== "function") {
+      stopFrameWatch();
+      return;
+    }
+    if (frameWatch?.video === video) return;
+    stopFrameWatch();
+    const watch = frameWatch = { video, id: null, last: null };
+    const sample = (_now, metadata) => {
+      if (frameWatch !== watch) return;
+      watch.last = { mediaTime: metadata.mediaTime, mediaClock: video.currentTime,
+        observedAtMs: performance.now(), expectedDisplayTimeMs: metadata.expectedDisplayTime,
+        presentedFrames: metadata.presentedFrames };
+      watch.id = video.requestVideoFrameCallback(sample);
+    };
+    watch.id = video.requestVideoFrameCallback(sample);
+  }
+
   function clearTakeoverFailure() {
     takeoverFailureRoute = "";
     takeoverFailureCount = 0;
@@ -928,6 +954,7 @@
 
   function stopPlayer(resumeNative = true) {
     nativeCoreWait = null;
+    stopFrameWatch();
     const current = player;
     if (current) remember(resumeNative ? "handed back to Bilibili" : "player stopped", stats.playerState);
     // While a session loads or has failed the element is paused whatever the viewer wants;
@@ -1461,6 +1488,7 @@
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));
+      syncFrameWatch(nextPlayer.video);
       if (isPodSwitch) {
         trustedPodVideoKey = identity.videoKey;
         pendingPodSwitch = null;
@@ -1493,6 +1521,7 @@
       settings = core.normalizeSettings(event.data.payload);
       settingsLoaded = true;
       notices?.configure(settings);
+      syncFrameWatch();
       const serversChanged = settings.mode === "custom" && previous.customHosts.join(",") !== settings.customHosts.join(",");
       if (!hadLoadedSettings || previous.enabled !== settings.enabled || previous.takeover !== settings.takeover || previous.mode !== settings.mode || previous.concurrency !== settings.concurrency || previous.autoConcurrency !== settings.autoConcurrency || serversChanged) {
         const cdn = settings.mode === "overseas" ? "海外 CDN"
@@ -1593,9 +1622,22 @@
       report: () => {
         const debug = player?.getDebug?.() || {};
         const { timeline = [], ...rest } = debug;
-        // Node names and states only: no download address or account data.
+        const video = player?.video || findContainer()?.querySelector("video");
+        syncFrameWatch(video);
+        const frame = frameWatch && frameWatch.video === video ? frameWatch.last : null;
+        let frames = null;
+        try {
+          const quality = video?.getVideoPlaybackQuality?.();
+          if (quality) frames = { total: quality.totalVideoFrames, dropped: quality.droppedVideoFrames };
+        } catch (_error) {}
+        // Playback state and node names only: no download address or account data.
         return JSON.stringify({
           version: stats.version, scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
+          actualTakeover: !player ? "native" : player.nativeTransport ? "compat" : "full",
+          playback: video ? { currentTime: video.currentTime, duration: video.duration, ended: video.ended,
+            paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
+            width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
+            lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null } : null,
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },

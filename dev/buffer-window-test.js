@@ -13,8 +13,14 @@
   let clock = 0;
   let objectUrls = 0;
   let headerDownloads = 0;
+  let autoStalls = 0;
+  let paused = false;
 
   Object.defineProperty(video, "currentTime", { configurable: true, get: () => clock, set(value) { clock = Number(value) || 0; } });
+  Object.defineProperty(video, "paused", { configurable: true, get: () => paused });
+  video.pause = () => { paused = true; };
+  video.play = () => { paused = false; return Promise.resolve(); };
+  video.load = () => {};
   URL.createObjectURL = () => `${location.origin}/fake-media-source-${++objectUrls}`;
   URL.revokeObjectURL = () => {};
 
@@ -96,6 +102,7 @@
   // Every third segment is slow, so a batch that waits for all of its segments leaves a gap
   // that a sliding window does not.
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = {
+    autoConcurrency: { newSession() {}, buffer() {}, stall() { autoStalls += 1; } },
     createDownloader: () => ({
       async downloadRange(range, _resolver, options) {
         const bytes = new Uint8Array(8);
@@ -129,7 +136,7 @@
       playinfo: { data: { dash: { duration: SEGMENT_COUNT * SEGMENT_SECONDS, video: [representation(80, "video/mp4", "avc1.640028", 2000000)], audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000)] } } },
       initialTime: 0,
       initialResume: false,
-      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 32 }),
+      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 32, autoConcurrency: true }),
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState(next) { state = next; },
       onFatal(error) { errors.push(String(error?.message || error)); }
@@ -146,6 +153,17 @@
     for (let index = 3; index + 3 <= 15; index += 1) {
       if (!(started[index + 3] < appended[index + 1])) lateStarts.push(index + 3);
     }
+
+    // The browser has not emitted "waiting" yet. A low video/audio buffer must stop
+    // the common media clock before audio can run past the last displayed video frame.
+    paused = false;
+    clock = 45.5;
+    video.dispatchEvent(new Event("timeupdate"));
+    const pausedBeforeUnderflow = paused && player.wantsToPlay() && autoStalls === 1;
+    const recoveryDeadline = performance.now() + 2000;
+    while (performance.now() < recoveryDeadline && paused) await sleep(25);
+    const resumedAfterRefill = !paused && player.getDebug().underflowRebuffers === 1;
+    video.pause();
 
     // Nothing is removed before 75 seconds, so the buffer first grows well past that point.
     clock = 40;
@@ -175,12 +193,14 @@
 
     const output = { errors, filledAhead, lateStarts, removalsAfterJump, removalsAfterSmallStep, removalsAfterLargeStep, seek };
     output.seekKeptHeaders = seek.headersBeforeSeek === 4 && seek.headersAfterSeek === 4 && seek.sessions === 1 && seek.lastSeekMs > 0 && seek.startedAtTarget;
+    output.pausedBeforeUnderflow = pausedBeforeUnderflow;
+    output.resumedAfterRefill = resumedAfterRefill;
     output.filled = filledAhead >= 44;
     output.keptWindowFull = lateStarts.length === 0;
     output.prunedOncePerStep = removalsAfterJump.video === 1 && removalsAfterJump.audio === 1
       && removalsAfterSmallStep.video === 1 && removalsAfterSmallStep.audio === 1
       && removalsAfterLargeStep.video === 2 && removalsAfterLargeStep.audio === 2;
-    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders;
+    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };
