@@ -21,6 +21,7 @@ const { chromium } = require("playwright");
     ["codec-choice-test.html", "codec-choice-result"],
     ["takeover-mode-test.html", "takeover-mode-result"],
     ["playback-diagnostics-test.html", "playback-diagnostics-result"],
+    ["native-core-lock-test.html", "native-core-lock-result", 30000],
     // Several scenarios that wait for buffer checks and rebuffering, hence the longer limit.
     ["quota-refresh-test.html", "quota-refresh-result", 90000],
     ["address-refresh-test.html", "address-refresh-result", 40000],
