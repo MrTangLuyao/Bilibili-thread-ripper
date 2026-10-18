@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.17.1
+// @version      2026.10.19.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2919,6 +2919,23 @@ const chrome = (() => {
       const current = Number(video.currentTime) || candidate.startTime;
       const ready = candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current));
       const ahead = ready ? Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current) : 0;
+      // Chromium may advance the audio clock for several seconds after video runs out,
+      // before it emits "waiting". That leaves a frozen picture with sound still playing
+      // (#45). Protect steady playback too, not only the first twenty seconds of a session.
+      const lowWater = Math.max(0.5, Math.abs(Number(video.playbackRate) || 1));
+      const remaining = Number(candidate.mediaSource.duration) - current;
+      if (candidate.playbackActivated && !candidate.recovering && !video.paused && !video.seeking && !video.ended
+        && candidate.tracks.some((track) => !track.complete) && remaining > lowWater + 0.25 && ahead < lowWater) {
+        candidate.recovering = true;
+        candidate.resumeWanted = true;
+        candidate.playAttempted = false;
+        candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
+        candidate.underflowRebuffers += 1;
+        note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
+        options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
+        video.pause();
+        if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
+      }
       if (candidate.recovering && ready) {
         const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + candidate.recoveryTargetSeconds) - current);
         if (ahead >= Math.min(reachableSeconds(candidate, candidate.recoveryTargetSeconds), remaining)) {
@@ -3010,7 +3027,7 @@ const chrome = (() => {
         playAttempted: false, playbackActivated: false, playbackActivatedAt: 0,
         recovering: false, recoveryTargetSeconds: STARTUP_RECOVERY_SECONDS, bufferAheadLimit: 0, quotaWaits: 0,
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
-        progressiveAppends: 0,
+        progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
@@ -3385,7 +3402,7 @@ const chrome = (() => {
       urlDeadlineSeconds,
       video,
       getDebug: () => ({
-        version: "2026.10.17.1",
+        version: "2026.10.19.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3415,6 +3432,7 @@ const chrome = (() => {
         nativeLeftoversSuppressed: nativeLeftovers.suppressed,
         lastNativeLeftover: nativeLeftovers.last,
         progressiveAppends: session?.progressiveAppends || 0,
+        underflowRebuffers: session?.underflowRebuffers || 0,
         seekReloads,
         nativeRestoresUndone,
         lastSeekMs: Math.round(lastSeekMs),
@@ -4246,7 +4264,10 @@ const chrome = (() => {
       <header>
         <img class="logo" src="${ICON_URI}" alt="" width="42" height="42">
         <div class="title">
-          <h1>线程撕裂者</h1>
+          <div class="name">
+            <h1>线程撕裂者</h1>
+            <span class="version">v2026.10.19.1</span>
+          </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
         </div>
@@ -4260,7 +4281,7 @@ const chrome = (() => {
         <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
         <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
       </section>
-      <p class="takeover-note">Safari 用户建议使用兼容模式。<br>全接管：视频由插件自己来放，下载和缓冲都由插件安排，速度最快。<br>兼容模式：当遇到播放问题或设置不生效时，尝试使用兼容模式。</p>
+      <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
 
       <details id="advanced" class="advanced">
         <summary>
@@ -4365,6 +4386,8 @@ const chrome = (() => {
     header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
     .logo { display: block; width: 42px; height: 42px; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
+    .name { display: grid; gap: 2px; min-width: 0; }
+    .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
     .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
@@ -4499,7 +4522,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.17.1",
+        BTR: "2026.10.19.1",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -5101,7 +5124,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.17.1",
+    version: "2026.10.19.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5131,6 +5154,32 @@ const chrome = (() => {
     const video = player?.video || document.querySelector("#bilibili-player video, .bpx-player-container video");
     pageEvents.push({ at: Math.round(performance.now()), time: Math.round((Number(video?.currentTime) || 0) * 10) / 10, what, detail: String(detail).slice(0, 120) });
     if (pageEvents.length > 60) pageEvents.shift();
+  }
+
+  // A media clock alone cannot show a stale picture (#45). Keep the most recently
+  // presented frame's timestamp only while Debug is enabled; no canvas/readback involved.
+  let frameWatch = null;
+  function stopFrameWatch() {
+    const previous = frameWatch;
+    frameWatch = null;
+    if (previous?.id != null) previous.video.cancelVideoFrameCallback?.(previous.id);
+  }
+  function syncFrameWatch(video = player?.video) {
+    if (!settings.enabled || !settings.debugNotices || typeof video?.requestVideoFrameCallback !== "function") {
+      stopFrameWatch();
+      return;
+    }
+    if (frameWatch?.video === video) return;
+    stopFrameWatch();
+    const watch = frameWatch = { video, id: null, last: null };
+    const sample = (_now, metadata) => {
+      if (frameWatch !== watch) return;
+      watch.last = { mediaTime: metadata.mediaTime, mediaClock: video.currentTime,
+        observedAtMs: performance.now(), expectedDisplayTimeMs: metadata.expectedDisplayTime,
+        presentedFrames: metadata.presentedFrames };
+      watch.id = video.requestVideoFrameCallback(sample);
+    };
+    watch.id = video.requestVideoFrameCallback(sample);
   }
 
   function clearTakeoverFailure() {
@@ -5953,6 +6002,7 @@ const chrome = (() => {
 
   function stopPlayer(resumeNative = true) {
     nativeCoreWait = null;
+    stopFrameWatch();
     const current = player;
     if (current) remember(resumeNative ? "handed back to Bilibili" : "player stopped", stats.playerState);
     // While a session loads or has failed the element is paused whatever the viewer wants;
@@ -6486,6 +6536,7 @@ const chrome = (() => {
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));
+      syncFrameWatch(nextPlayer.video);
       if (isPodSwitch) {
         trustedPodVideoKey = identity.videoKey;
         pendingPodSwitch = null;
@@ -6518,6 +6569,7 @@ const chrome = (() => {
       settings = core.normalizeSettings(event.data.payload);
       settingsLoaded = true;
       notices?.configure(settings);
+      syncFrameWatch();
       const serversChanged = settings.mode === "custom" && previous.customHosts.join(",") !== settings.customHosts.join(",");
       if (!hadLoadedSettings || previous.enabled !== settings.enabled || previous.takeover !== settings.takeover || previous.mode !== settings.mode || previous.concurrency !== settings.concurrency || previous.autoConcurrency !== settings.autoConcurrency || serversChanged) {
         const cdn = settings.mode === "overseas" ? "海外 CDN"
@@ -6618,13 +6670,26 @@ const chrome = (() => {
       report: () => {
         const debug = player?.getDebug?.() || {};
         const { timeline = [], ...rest } = debug;
-        // Node names and states only: no download address or account data.
+        const video = player?.video || findContainer()?.querySelector("video");
+        syncFrameWatch(video);
+        const frame = frameWatch && frameWatch.video === video ? frameWatch.last : null;
+        let frames = null;
+        try {
+          const quality = video?.getVideoPlaybackQuality?.();
+          if (quality) frames = { total: quality.totalVideoFrames, dropped: quality.droppedVideoFrames };
+        } catch (_error) {}
+        // Playback state and node names only: no download address or account data.
         return JSON.stringify({
           version: stats.version, scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
+          actualTakeover: !player ? "native" : player.nativeTransport ? "compat" : "full",
+          playback: video ? { currentTime: video.currentTime, duration: video.duration, ended: video.ended,
+            paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
+            width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
+            lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null } : null,
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.17.1"
+      version: "2026.10.19.1"
     })
   });
   publish();
@@ -6878,7 +6943,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.17.1",
+    version: "2026.10.19.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7342,7 +7407,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.17.1"
+      version: "2026.10.19.1"
     })
   });
   publish();
@@ -7659,7 +7724,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.17.1";
+  const VERSION = "2026.10.19.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
