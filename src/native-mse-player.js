@@ -1223,6 +1223,25 @@
       return earliest;
     }
 
+    // Whether an address names one of this video's own files, on any node and with any
+    // signature: Bilibili's own core asks its nodes for the very files BTR is playing (#49).
+    let ownedPaths = { dash: null, paths: new Set() };
+    function ownsMediaUrl(url) {
+      const dash = selection?.dash;
+      if (ownedPaths.dash !== dash) {
+        const paths = new Set();
+        for (const representation of [].concat(dash?.video || [], dash?.audio || [], dash?.dolby?.audio || [], dash?.flac?.audio || [])) {
+          const addresses = [representationUrl(representation)].concat(representation?.backupUrl || representation?.backup_url || representation?.backup_url_list || []);
+          for (const address of addresses) {
+            try { if (address) paths.add(new URL(String(address)).pathname); } catch (_error) {}
+          }
+        }
+        ownedPaths = { dash, paths };
+      }
+      try { return ownedPaths.paths.has(new URL(String(url), root.location?.href).pathname); }
+      catch (_error) { return false; }
+    }
+
     async function updatePlayinfo(playinfo) {
       if (destroyed) return;
       const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio);
@@ -1294,7 +1313,9 @@
       style.id = "__btr_native_mse_style__";
       style.textContent = `
         [data-btr-mse-active="true"] .bpx-player-error-wrap,
-        [data-btr-mse-active="true"] .bpx-player-error-panel{display:none!important}
+        [data-btr-mse-active="true"] .bpx-player-error-panel,
+        [data-btr-retaking="true"] .bpx-player-error-wrap,
+        [data-btr-retaking="true"] .bpx-player-error-panel{display:none!important}
       `;
       (document.head || document.documentElement).append(style);
     }
@@ -1329,6 +1350,7 @@
       setQuality,
       updatePlayinfo,
       urlDeadlineSeconds,
+      ownsMediaUrl,
       video,
       getDebug: () => ({
         version: "__BTR_VERSION__",
