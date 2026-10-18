@@ -1163,6 +1163,14 @@
       return !video.paused;
     }
 
+    // Where the viewer is in the video. A session that is still starting has just given the
+    // element its source, which reads zero until the session has moved it to its start.
+    function playbackPosition() {
+      const candidate = session;
+      const current = Number(video.currentTime) || 0;
+      return current === 0 && candidate && sessionIsCurrent(candidate) && !candidate.playbackActivated ? candidate.startTime : current;
+    }
+
     function playbackState() {
       return {
         time: Number(video.currentTime) || 0,
@@ -1315,6 +1323,7 @@
     return Object.freeze({
       applySettings() { ensureBuffer(); },
       wantsToPlay,
+      playbackPosition,
       destroy,
       setCodec,
       setQuality,

@@ -946,6 +946,18 @@
     return hint.handedBack ? afterFailure && Date.now() - hint.at < 45000 : Date.now() - hint.at < 15000;
   }
 
+  // Stopping the full takeover without handing the video back takes our MediaSource off the
+  // element, which then reads zero. A full takeover of the same video right after (重新接管,
+  // the debug restart, a switch of the takeover mode) started it over from there. It goes on
+  // where the viewer was instead, on the same element. Not when Bilibili installed its next
+  // source (its own position counts), and not on another video.
+  let retakePosition = null;
+  function takeRetakePosition(route, video) {
+    const kept = retakePosition;
+    retakePosition = null;
+    return kept && kept.route === route && kept.video === video ? kept.time : undefined;
+  }
+
   // The player's own "自动开播" switch. Unknown counts as on, as before.
   function nativeAutoplay() {
     try { return JSON.parse(root.localStorage.getItem("bpx_player_profile") || "{}")?.media?.autoplay !== false; }
@@ -960,6 +972,12 @@
     // While a session loads or has failed the element is paused whatever the viewer wants;
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
+    // The compatibility mode leaves the element as it is.
+    if (current) retakePosition = resumeNative || current.nativeTransport ? null : {
+      route: playerRoute,
+      video: current.video,
+      time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
+    };
     notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
     playerLifecycle += 1;
     cancelDeadlineRefresh();
@@ -1020,6 +1038,8 @@
       // The native player already installed its next source. Do not restore or
       // overwrite it; wait briefly for the transition to settle, then retake it.
       stopPlayer(false);
+      // That source starts where Bilibili puts it.
+      retakePosition = null;
       restartTimer = setTimeout(startPlayer, 650);
     }, 0);
   }
@@ -1390,6 +1410,7 @@
     const preferredCodec = nativeCodec();
     const preferredAudio = nativeAudio();
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
+    const retakeTime = takeRetakePosition(route, container.querySelector("video"));
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
@@ -1405,8 +1426,10 @@
         // can still expose the previous item's currentTime until new metadata
         // arrives, so carrying that value across would clamp short videos to
         // their final frame and make the switch look frozen.
-        initialTime: isPodSwitch ? 0 : undefined,
-        initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : undefined,
+        initialTime: isPodSwitch ? 0 : retakeTime,
+        // The emptied element reads zero, which counts as a video that has not started yet:
+        // a paused one would then start by itself.
+        initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : retakeTime !== undefined ? false : undefined,
         autoplay: nativeAutoplay(),
         getSettings: () => settings,
         nativeFetch,
