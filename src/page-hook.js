@@ -979,6 +979,22 @@
     catch (_error) { return true; }
   }
 
+  // Bilibili's player takes the video back through its own source switch, at the viewer's
+  // position, playing or paused. Putting its old source back instead only came back through
+  // its error recovery: at once the first time on a page, then after eleven seconds and more
+  // (its retry interval grows with every retry), and from the fifth time on it gives up and
+  // shows its error screen.
+  function switchNativeSource(video, time, play) {
+    try {
+      const core = root.player?.__core?.();
+      if (typeof core?.switchSource !== "function" || !core.state?.mpd || core.getCorePlayer?.()?.getVideoElement?.() !== video) return false;
+      Promise.resolve(core.switchSource(core.state.mpd, undefined, undefined, { playAt: time, autoPlay: play })).catch(() => {});
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function stopPlayer(resumeNative = true) {
     nativeCoreWait = null;
     stopFrameWatch();
@@ -999,7 +1015,7 @@
     player = null;
     playerRoute = "";
     playerContainer = null;
-    current?.destroy({ resumeNative });
+    current?.destroy({ resumeNative, handBack: switchNativeSource });
     // Bilibili's core may download again: for its next source, or for the video it plays.
     unlockNativeBuffers();
     // The suppressed native schedulers must run again once Bilibili owns playback.

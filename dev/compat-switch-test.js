@@ -22,6 +22,13 @@
 
   // The page as Bilibili left it: its own source on the element.
   video.setAttribute("src", bilibiliSource);
+  // Every source BTR assigns. Bilibili's own player (the fake core below) sets the attribute.
+  const assigned = [];
+  Object.defineProperty(video, "src", {
+    configurable: true,
+    get() { const value = this.getAttribute("src"); return value ? new URL(value, location.href).href : ""; },
+    set(value) { assigned.push(String(value)); this.setAttribute("src", value); }
+  });
   Object.defineProperty(video, "currentTime", { configurable: true, get: () => clock, set(value) { clock = Number(value) || 0; } });
   Object.defineProperty(video, "paused", { configurable: true, get: () => paused });
   video.pause = () => { paused = true; };
@@ -231,8 +238,61 @@
     await sleep(100);
     const pausedSwitch = { compat: pausedCompat, ...pausedHandedBack, paused, plays: playCalls - pausedPlaysBefore };
 
+    // Bilibili's core is reachable now: it takes the video back through its own source switch,
+    // which puts a new source on the element, at the position asked for, and plays it if asked.
+    const switches = [];
+    const nativeCore = {
+      state: { mpd: root.__playinfo__.data.dash },
+      getCorePlayer: () => ({ getVideoElement: () => video }),
+      switchSource(manifest, _preload, _unused, { playAt, autoPlay } = {}) {
+        switches.push({ manifest: manifest === nativeCore.state.mpd, playAt, autoPlay, srcAtSwitch: video.getAttribute("src") });
+        setTimeout(() => {
+          video.setAttribute("src", `${location.origin}/bilibili-switched-source-${switches.length}`);
+          clock = playAt;
+          if (autoPlay) video.play();
+        }, 30);
+        return Promise.resolve();
+      }
+    };
+    root.player = { __core: () => nativeCore };
+    const assignedBefore = assigned.length;
+    const handBack = async (payload) => {
+      const count = switches.length;
+      settings(payload);
+      await until(() => switches.length > count);
+      await sleep(120);
+      return { ...switches.at(-1), time: clock, paused, src: video.getAttribute("src") };
+    };
+    const fullAgain = async (payload) => {
+      settings(payload);
+      await until(() => player() && !player().nativeTransport && player().getDebug().playbackActivated);
+    };
+
+    // Playing at 250 seconds, to the compatibility mode.
+    await fullAgain({ takeover: "full" });
+    video.play();
+    await seekTo(250);
+    await until(() => !paused);
+    const switchedPlaying = await handBack({ takeover: "compat" });
+    // Paused at 150 seconds, acceleration switched off.
+    await fullAgain({ takeover: "full" });
+    video.pause();
+    await seekTo(150);
+    const switchedPaused = await handBack({ takeover: "full", enabled: false });
+    // Again and again: Bilibili's own retries slow down and stop after four, its switch does not.
+    const repeated = [];
+    for (let round = 0; round < 3; round += 1) {
+      await fullAgain({ takeover: "full", enabled: true });
+      video.play();
+      await until(() => !paused);
+      repeated.push(await handBack({ takeover: "full", enabled: false }));
+    }
+    // Without the core (above) BTR put Bilibili's old source back twice; with it, never.
+    const putBack = (list) => list.filter((value) => !value.includes("fake-media-source"));
+    const nativeSwitch = { switchedPlaying, switchedPaused, repeated, switches: switches.length, putBackWithoutCore: putBack(assigned.slice(0, assignedBefore)), putBackWithCore: putBack(assigned.slice(assignedBefore)) };
+
     const output = {
-      created, playing, backToFull, pausedSwitch,
+      created, playing, backToFull, pausedSwitch, nativeSwitch,
       checks: {
         handsBackBilibiliSource: playing.compat?.src === bilibiliSource && playing.src === bilibiliSource,
         keepsPosition: near(playing.compat?.time, 300) && near(playing.time, 300),
@@ -240,7 +300,15 @@
         playsOnOnce: playing.playsAfterReady === 1 && playing.playsAfterSecondReady === 1 && playing.paused === false,
         backToFullKeepsPosition: backToFull.asked?.engine === "full" && near(backToFull.asked?.time, 300) && near(backToFull.start, 300),
         pausedHandsBack: pausedSwitch.compat?.src === bilibiliSource && near(pausedSwitch.compat?.time, 200) && near(pausedSwitch.time, 200),
-        pausedStaysPaused: pausedSwitch.paused === true && pausedSwitch.plays === 0
+        pausedStaysPaused: pausedSwitch.paused === true && pausedSwitch.plays === 0,
+        // With Bilibili's core: its switch, the manifest it has, nothing put back or started by BTR.
+        nativeSwitchWhilePlaying: Boolean(switchedPlaying.manifest && near(switchedPlaying.playAt, 250) && switchedPlaying.autoPlay === true
+          && switchedPlaying.srcAtSwitch === null && switchedPlaying.src?.includes("bilibili-switched-source")
+          && near(switchedPlaying.time, 250) && switchedPlaying.paused === false),
+        nativeSwitchWhilePaused: Boolean(switchedPaused.manifest && near(switchedPaused.playAt, 150) && switchedPaused.autoPlay === false
+          && switchedPaused.src?.includes("bilibili-switched-source") && switchedPaused.paused === true),
+        nativeSwitchEveryTime: nativeSwitch.switches === 5 && repeated.every((item) => item.autoPlay === true && Boolean(item.src?.includes("bilibili-switched-source")) && item.paused === false),
+        oldSourceOnlyWithoutCore: nativeSwitch.putBackWithoutCore.length === 2 && nativeSwitch.putBackWithCore.length === 0
       }
     };
     output.pass = Object.values(output.checks).every(Boolean) && debug()?.version === "__BTR_VERSION__";

@@ -1281,25 +1281,34 @@
       await updatePlayinfo(currentPlayinfo);
     }
 
-    function destroy({ resumeNative = true } = {}) {
+    // handBack(video, time, play) asks Bilibili's own player to take the video back; it says
+    // false when it cannot, and the old source is put back instead.
+    function destroy({ resumeNative = true, handBack = null } = {}) {
       if (destroyed) return;
+      // Read while the session still counts: one that is starting knows the viewer's intent.
+      const state = playbackState();
+      const time = playbackPosition() || original.currentTime;
       destroyed = true;
       clearTimeout(seekTimer);
       eventController.abort();
       sourceObserver.disconnect();
-      const state = playbackState();
       if (session) disposeSession(session, true);
       delete video.dataset.btrMediaEngine;
       delete options.container.dataset.btrMseActive;
+      if (resumeNative && typeof handBack === "function" && handBack(video, time, state.resume)) {
+        // Bilibili's core remembers this position (see nativeRestore).
+        rememberNativeRestore(restoreKey, time);
+        return;
+      }
       if (resumeNative && original.src) {
         // Bilibili's core reloads from here and remembers this position (see nativeRestore).
-        rememberNativeRestore(restoreKey, state.time || original.currentTime);
+        rememberNativeRestore(restoreKey, time);
         video.src = original.src;
         video.volume = original.volume;
         video.muted = original.muted;
         video.playbackRate = original.playbackRate;
         video.load();
-        try { video.currentTime = state.time || original.currentTime; } catch (_error) {}
+        try { video.currentTime = time; } catch (_error) {}
         // A video the viewer paused stays paused. One that was playing goes on once there is
         // something to play: Bilibili's core replaces this old source with a new one, and a
         // play() on the old one held the video back for seconds after the new one was ready
