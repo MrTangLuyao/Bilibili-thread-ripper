@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.23.1
+// @version      2026.10.24.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2090,6 +2090,8 @@ const chrome = (() => {
   const STARTUP_BUFFER_MIN_SECONDS = 2.5;
   const STARTUP_BUFFER_MAX_SECONDS = 10;
   const STARTUP_RECOVERY_SECONDS = 6;
+  const NATIVE_UI_BUFFER_SECONDS = 10;
+  const NATIVE_UI_WAIT_MS = 45000;
   const STARTUP_PROTECTION_MS = 20000;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
@@ -2467,6 +2469,9 @@ const chrome = (() => {
     let sessionRequests = 0;
     let session = null;
     let destroyed = false;
+    let nativeUiReady = typeof options.isNativeUiReady !== "function";
+    let uiBufferLimit = 0;
+    const uiWaitUntil = performance.now() + NATIVE_UI_WAIT_MS;
     let generationSequence = 0;
     let seekTimer = null;
     let seekReloads = 0;
@@ -2718,7 +2723,12 @@ const chrome = (() => {
     // How far ahead this session may buffer: the setting, brought down each time the
     // browser's own buffer quota was hit.
     function aheadTarget(candidate) {
-      return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity);
+      // Controls and thumbnails still need bandwidth while the native UI loads (#28).
+      // Keep enough media for startup without filling the whole forward window yet.
+      // Stop checking once ready; an upstream layout change cannot cap buffering forever.
+      if (!nativeUiReady) nativeUiReady = performance.now() >= uiWaitUntil || Boolean(options.isNativeUiReady());
+      uiBufferLimit = nativeUiReady ? 0 : NATIVE_UI_BUFFER_SECONDS;
+      return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity, uiBufferLimit || Infinity);
     }
 
     // The buffer a start or a recovery waits for must be one the tracks can still reach: with
@@ -3267,9 +3277,11 @@ const chrome = (() => {
     }
 
     function playbackState() {
+      // A pending source still reports zero and is paused by us. The session already knows
+      // its target and intent; the initial autoplay choice must not be made again here.
       return {
-        time: Number(video.currentTime) || 0,
-        resume: wantsToPlay() || Number(video.currentTime) < 1,
+        time: playbackPosition(),
+        resume: wantsToPlay(),
         volume: video.volume,
         muted: video.muted,
         playbackRate: video.playbackRate || 1
@@ -3469,7 +3481,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.23.1",
+        version: "2026.10.24.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3494,6 +3506,7 @@ const chrome = (() => {
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
+        uiBufferLimit,
         urlDeadline: urlDeadlineSeconds(),
         // Errors from Bilibili's idle core that were kept out of the page's console.
         nativeLeftoversSuppressed: nativeLeftovers.suppressed,
@@ -4333,7 +4346,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.23.1</span>
+            <span class="version">v2026.10.24.1</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4589,7 +4602,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.23.1",
+        BTR: "2026.10.24.1",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -5191,7 +5204,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.23.1",
+    version: "2026.10.24.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -6637,6 +6650,7 @@ const chrome = (() => {
         initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : retakeTime !== undefined ? false : undefined,
         autoplay: nativeAutoplay(),
         getSettings: () => settings,
+        isNativeUiReady: () => Boolean(container.querySelector(".bpx-player-ctrl-btn")),
         nativeFetch,
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
@@ -6877,7 +6891,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.23.1"
+      version: "2026.10.24.1"
     })
   });
   publish();
@@ -7131,7 +7145,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.23.1",
+    version: "2026.10.24.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7595,7 +7609,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.23.1"
+      version: "2026.10.24.1"
     })
   });
   publish();
@@ -7912,7 +7926,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.23.1";
+  const VERSION = "2026.10.24.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
