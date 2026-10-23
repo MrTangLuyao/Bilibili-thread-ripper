@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>BTR 播放状态切换测试</title></head>
+<body>
+  <div class="bpx-player-container"><video muted></video></div>
+  <pre id="playback-state-result">starting</pre>
+  <script src="/src/range-core.js"></script>
+  <script src="/src/cdn-resolver.js"></script>
+  <!-- Reuse its fake MediaSource, SIDX and downloader without running the buffer test. -->
+  <script src="/dev/buffer-window-test.js"></script>
+  <script src="/src/native-mse-player.js"></script>
+  <script src="/dev/playback-state-test.js"></script>
+</body>
+</html>

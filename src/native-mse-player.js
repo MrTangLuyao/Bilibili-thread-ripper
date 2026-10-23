@@ -1187,9 +1187,11 @@
     }
 
     function playbackState() {
+      // A pending source still reports zero and is paused by us. The session already knows
+      // its target and intent; the initial autoplay choice must not be made again here.
       return {
-        time: Number(video.currentTime) || 0,
-        resume: wantsToPlay() || Number(video.currentTime) < 1,
+        time: playbackPosition(),
+        resume: wantsToPlay(),
         volume: video.volume,
         muted: video.muted,
         playbackRate: video.playbackRate || 1
