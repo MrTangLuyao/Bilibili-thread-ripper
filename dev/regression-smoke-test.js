@@ -19,6 +19,7 @@ const { chromium } = require("playwright");
     ["buffer-window-test.html", "buffer-window-result"],
     ["buffer-window-test.html?ui-timeout", "buffer-window-result"],
     ["autoplay-choice-test.html", "autoplay-choice-result"],
+    ["playback-state-test.html", "playback-state-result"],
     ["retake-position-test.html", "retake-position-result"],
     ["codec-choice-test.html", "codec-choice-result"],
     ["takeover-mode-test.html", "takeover-mode-result"],
