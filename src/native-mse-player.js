@@ -10,6 +10,8 @@
   const STARTUP_BUFFER_MIN_SECONDS = 2.5;
   const STARTUP_BUFFER_MAX_SECONDS = 10;
   const STARTUP_RECOVERY_SECONDS = 6;
+  const NATIVE_UI_BUFFER_SECONDS = 10;
+  const NATIVE_UI_WAIT_MS = 45000;
   const STARTUP_PROTECTION_MS = 20000;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
@@ -387,6 +389,9 @@
     let sessionRequests = 0;
     let session = null;
     let destroyed = false;
+    let nativeUiReady = typeof options.isNativeUiReady !== "function";
+    let uiBufferLimit = 0;
+    const uiWaitUntil = performance.now() + NATIVE_UI_WAIT_MS;
     let generationSequence = 0;
     let seekTimer = null;
     let seekReloads = 0;
@@ -638,7 +643,12 @@
     // How far ahead this session may buffer: the setting, brought down each time the
     // browser's own buffer quota was hit.
     function aheadTarget(candidate) {
-      return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity);
+      // Controls and thumbnails still need bandwidth while the native UI loads (#28).
+      // Keep enough media for startup without filling the whole forward window yet.
+      // Stop checking once ready; an upstream layout change cannot cap buffering forever.
+      if (!nativeUiReady) nativeUiReady = performance.now() >= uiWaitUntil || Boolean(options.isNativeUiReady());
+      uiBufferLimit = nativeUiReady ? 0 : NATIVE_UI_BUFFER_SECONDS;
+      return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity, uiBufferLimit || Infinity);
     }
 
     // The buffer a start or a recovery waits for must be one the tracks can still reach: with
@@ -1414,6 +1424,7 @@
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
+        uiBufferLimit,
         urlDeadline: urlDeadlineSeconds(),
         // Errors from Bilibili's idle core that were kept out of the page's console.
         nativeLeftoversSuppressed: nativeLeftovers.suppressed,

@@ -17,6 +17,7 @@ const { chromium } = require("playwright");
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],
+    ["buffer-window-test.html?ui-timeout", "buffer-window-result"],
     ["autoplay-choice-test.html", "autoplay-choice-result"],
     ["retake-position-test.html", "retake-position-result"],
     ["codec-choice-test.html", "codec-choice-result"],
@@ -44,7 +45,13 @@ const { chromium } = require("playwright");
           await page.route("**/playinfo", route => route.fulfill({ json: { data: { dash: { duration: 10, video: [representation("video/mp4", "avc1.640028")], audio: [representation("audio/mp4", "mp4a.40.2")] } } } }));
         }
         try {
+          if (file.endsWith("?ui-timeout")) await page.clock.install();
           await page.goto(`http://127.0.0.1:18763/dev/${file}`);
+          if (file.endsWith("?ui-timeout")) {
+            await page.waitForFunction(() => window.__awaitingUiTimeout);
+            await page.clock.fastForward(45001);
+            await page.evaluate(() => window.__continueUiTimeoutTest());
+          }
           await page.waitForFunction(id => document.getElementById(id)?.dataset.pass === "true", id, { timeout });
           // The navigation fixtures emit early snapshots: wait past stale callbacks.
           await page.waitForTimeout(1200);

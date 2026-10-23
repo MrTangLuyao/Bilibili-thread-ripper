@@ -131,26 +131,41 @@
     const result = document.getElementById("buffer-window-result");
     const errors = [];
     let state = null;
+    let nativeUiReady = false;
     const player = root.__BILI_NATIVE_MSE_PLAYER_FACTORY__.createNativePlayer({
       container: document.querySelector(".bpx-player-container"),
       playinfo: { data: { dash: { duration: SEGMENT_COUNT * SEGMENT_SECONDS, video: [representation(80, "video/mp4", "avc1.640028", 2000000)], audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000)] } } },
       initialTime: 0,
       initialResume: false,
       getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 32, autoConcurrency: true }),
+      isNativeUiReady: () => nativeUiReady,
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState(next) { state = next; },
       onFatal(error) { errors.push(String(error?.message || error)); }
     });
 
-    // 45 seconds ahead of 0 is 23 segments.
+    // Do not fill the entire 45-second window while the page still loads its controls.
+    const uiDeadline = performance.now() + 4000;
+    while (performance.now() < uiDeadline && !(state?.bufferedAhead >= 10)) await sleep(25);
+    await sleep(250);
+    const limitedUntilUiReady = state?.bufferedAhead >= 10 && state.bufferedAhead <= 12
+      && started[10] === undefined && player.getDebug().uiBufferLimit === 10;
+    if (new URLSearchParams(location.search).has("ui-timeout")) {
+      root.__awaitingUiTimeout = true;
+      await new Promise(resolve => { root.__continueUiTimeoutTest = resolve; });
+    } else nativeUiReady = true;
+    video.dispatchEvent(new Event("timeupdate"));
+    // Once ready, 45 seconds ahead of 0 is 23 segments.
     const deadline = performance.now() + 8000;
     while (performance.now() < deadline && !(state?.bufferedAhead >= 44)) await sleep(25);
     const filledAhead = state?.bufferedAhead || 0;
+    // A control overlay disappearing later must not reapply the first-load budget.
+    nativeUiReady = false;
 
-    // Steady state only: the first segments are the startup ones, the last ones are cut
-    // short by the 45 second target.
+    // Steady state after the UI budget is released: skip its initial segments and the
+    // transition back to the full sliding window. The last ones stop at the 45-second target.
     const lateStarts = [];
-    for (let index = 3; index + 3 <= 15; index += 1) {
+    for (let index = 8; index + 3 <= 15; index += 1) {
       if (!(started[index + 3] < appended[index + 1])) lateStarts.push(index + 3);
     }
 
@@ -202,12 +217,14 @@
     output.pausedBeforeUnderflow = pausedBeforeUnderflow;
     output.resumedAfterRefill = resumedAfterRefill;
     output.ownsFiles = ownsFiles;
+    output.limitedUntilUiReady = limitedUntilUiReady;
+    output.uiBudgetReleased = player.getDebug().uiBufferLimit === 0;
     output.filled = filledAhead >= 44;
     output.keptWindowFull = lateStarts.length === 0;
     output.prunedOncePerStep = removalsAfterJump.video === 1 && removalsAfterJump.audio === 1
       && removalsAfterSmallStep.video === 1 && removalsAfterSmallStep.audio === 1
       && removalsAfterLargeStep.video === 2 && removalsAfterLargeStep.audio === 2;
-    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill && ownsFiles;
+    output.pass = !errors.length && output.filled && output.keptWindowFull && output.prunedOncePerStep && output.seekKeptHeaders && pausedBeforeUnderflow && resumedAfterRefill && ownsFiles && limitedUntilUiReady && output.uiBudgetReleased;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };

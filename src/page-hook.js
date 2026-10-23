@@ -1522,6 +1522,7 @@
         initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : retakeTime !== undefined ? false : undefined,
         autoplay: nativeAutoplay(),
         getSettings: () => settings,
+        isNativeUiReady: () => Boolean(container.querySelector(".bpx-player-ctrl-btn")),
         nativeFetch,
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
