@@ -409,12 +409,16 @@
       if (timeline.length > 120) timeline.shift();
     }
     const eventController = new AbortController();
+    // The viewer's position and intent, as last seen while our source was on the element.
+    // Bilibili's player can put its own source for the same video in place at any time, and
+    // the element then reads that source's zero and is paused, whatever the viewer had (#54).
+    const lastSeen = { time: 0, playing: false };
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
       if (destroyed || !candidate || candidate.disposed || video.src === candidate.objectUrl) return;
       if (candidate.externalSourceDetected) return;
       candidate.externalSourceDetected = true;
-      rememberNativeRestore(restoreKey, video.currentTime);
+      rememberNativeRestore(restoreKey, lastSeen.time);
       candidate.controller.abort(new DOMException("B站原生播放器正在切换媒体源", "AbortError"));
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
@@ -833,6 +837,7 @@
     }
 
     function ensureBuffer(candidate = session) {
+      noteViewer();
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || !candidate.tracks.length) return;
       for (const track of candidate.tracks) fillTrack(candidate, track);
       activateWhenReady(candidate);
@@ -1146,6 +1151,7 @@
         ensureBuffer(candidate);
       }
     }, { signal: eventController.signal });
+    for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
     video.addEventListener("playing", () => note("playing"), { signal: eventController.signal });
     video.addEventListener("ended", () => {
@@ -1159,6 +1165,7 @@
     // progress bar, or a quality change during loading, leave the video paused for good.
     function wantsToPlay() {
       const candidate = session;
+      if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
       return !video.paused;
     }
@@ -1167,8 +1174,16 @@
     // element its source, which reads zero until the session has moved it to its start.
     function playbackPosition() {
       const candidate = session;
+      if (candidate?.externalSourceDetected) return lastSeen.time;
       const current = Number(video.currentTime) || 0;
       return current === 0 && candidate && sessionIsCurrent(candidate) && !candidate.playbackActivated ? candidate.startTime : current;
+    }
+
+    function noteViewer() {
+      const candidate = session;
+      if (!candidate || !sessionIsCurrent(candidate) || video.src !== candidate.objectUrl) return;
+      lastSeen.time = playbackPosition();
+      lastSeen.playing = wantsToPlay();
     }
 
     function playbackState() {
@@ -1348,6 +1363,8 @@
     const initialResume = options.initialResume !== undefined
       ? Boolean(options.initialResume)
       : !original.wasPaused || (original.currentTime < 1 && options.autoplay !== false);
+    lastSeen.time = initialTime;
+    lastSeen.playing = initialResume;
     startSession(selectedVideo, {
       // The native player may already have rendered its first frames before the
       // accelerated MediaSource is ready. Preserve that exact position: forcing

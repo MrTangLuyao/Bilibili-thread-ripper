@@ -964,8 +964,10 @@
   // Stopping the full takeover without handing the video back takes our MediaSource off the
   // element, which then reads zero. A full takeover of the same video right after (重新接管,
   // the debug restart, a switch of the takeover mode) started it over from there. It goes on
-  // where the viewer was instead, on the same element. Not when Bilibili installed its next
-  // source (its own position counts), and not on another video.
+  // where the viewer was instead, on the same element, playing or paused as before. The same
+  // when Bilibili's player put a new source for the same video in place: that source reads
+  // zero and paused too, and taking it over from there played a paused video from its start
+  // (#54). Not on another video.
   let retakePosition = null;
   function takeRetakePosition(route, video) {
     const kept = retakePosition;
@@ -1082,7 +1084,8 @@
   function handleNativeSourceChange(route, lifecycle) {
     setTimeout(() => {
       if (lifecycle !== playerLifecycle || !player || playerRoute !== route) return;
-      remember("Bilibili replaced the video source");
+      const position = Number(player.playbackPosition?.()) || 0;
+      remember("Bilibili replaced the video source", `viewer at ${position.toFixed(1)}, ${player.wantsToPlay?.() ? "playing" : "paused"}`);
       routeGeneration += 1;
       routeRequestController?.abort();
       routeRequestController = null;
@@ -1093,8 +1096,6 @@
       // The native player already installed its next source. Do not restore or
       // overwrite it; wait briefly for the transition to settle, then retake it.
       stopPlayer(false);
-      // That source starts where Bilibili puts it.
-      retakePosition = null;
       coverNativeErrorsWhileRetaking(container);
       restartTimer = setTimeout(startPlayer, 650);
     }, 0);

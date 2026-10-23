@@ -1,8 +1,9 @@
 // Runs the real page-hook.js and native-mse-player.js against a fake MediaSource and a fake
 // downloader. Taking the same video over again stops BTR's player first, which takes its
 // MediaSource off the element; like a real one, this element then reads zero. The next
-// takeover has to go on where the viewer was, playing or paused as before. Bilibili's own
-// switch to its next source and a move to another video keep starting where they did.
+// takeover has to go on where the viewer was, playing or paused as before. The same when
+// Bilibili's player puts a new source for the same video in place (#54). A move to another
+// video keeps starting where it did.
 (function installRetakePositionTest(root) {
   "use strict";
 
@@ -233,23 +234,41 @@
     await sleep(300);
     const retry = { asked: created[4], start: fourth?.getDebug().sessionStartTime, time: clock, paused, plays: playCalls - playsBeforeRetry, resumeWanted: fourth?.getDebug().resumeWanted };
 
-    // Bilibili installs its next source (the element reads zero again) and then puts the
-    // video where it wants it. That position wins over the one BTR's player had.
-    beforeCreate = () => { clock = 120; };
-    clock = 0;
-    video.setAttribute("src", `${location.origin}/bilibili-next-source`);
-    const fifth = await nextPlayer(fourth);
-    const nativeSwitch = { asked: created[5], start: fifth?.getDebug().sessionStartTime };
+    // Still paused at 300 seconds, Bilibili's player puts a new source for the same video in
+    // place. Like a real element, it then reads zero and is paused. On a real page it still
+    // read zero when BTR took it over, and BTR played it from the start. The video has to
+    // stay paused where the viewer was.
+    const swap = async (previous, source, bilibiliTime) => {
+      beforeCreate = () => { clock = bilibiliTime; };
+      clock = 0;
+      paused = true;
+      video.setAttribute("src", `${location.origin}/${source}`);
+      return nextPlayer(previous);
+    };
+    const playsBeforeSwap = playCalls;
+    const fifth = await swap(fourth, "bilibili-next-source", 0);
+    await sleep(300);
+    const nativeSwitch = { asked: created[5], start: fifth?.getDebug().sessionStartTime, time: clock, paused, plays: playCalls - playsBeforeSwap };
+
+    // Playing at 450 seconds, the same again, and this time Bilibili has put an older position
+    // on its source by then: it goes on playing from where the viewer was.
+    video.play();
+    clock = 450;
+    video.dispatchEvent(new Event("seeking"));
+    await until(() => fifth.getDebug().lastSeekMs > 0 && !paused);
+    const sixth = await swap(fifth, "bilibili-next-source-2", 200);
+    await until(() => !paused, 3000);
+    const nativeSwitchPlaying = { asked: created[6], start: sixth?.getDebug().sessionStartTime, time: clock, paused };
 
     // A restart, and the page moves to another video before it is taken over again: that
     // video starts where Bilibili has it, not at the position of the one before.
     debug().restart();
     history.pushState(null, "", `/video/${OTHER_BVID}`);
-    const sixth = await nextPlayer(fifth);
-    const otherVideo = { asked: created[6], start: sixth?.getDebug().sessionStartTime, fetched: apiRequests.some((url) => url.includes(OTHER_BVID)) };
+    const seventh = await nextPlayer(sixth);
+    const otherVideo = { asked: created[7], start: seventh?.getDebug().sessionStartTime, fetched: apiRequests.some((url) => url.includes(OTHER_BVID)) };
 
     const output = {
-      created, watched, restart, modeSwitch, retry, nativeSwitch, otherVideo,
+      created, watched, restart, modeSwitch, retry, nativeSwitch, nativeSwitchPlaying, otherVideo,
       checks: {
         watchedAtPosition: near(watched.time, 638.7) && watched.paused === false,
         restartKeepsPosition: near(restart.asked?.initialTime, 638.7) && near(restart.start, 638.7) && near(restart.time, 638.7),
@@ -260,11 +279,14 @@
         restartWhileStartingKeepsPlaying: modeSwitch.restartAsked?.initialResume === true && modeSwitch.paused === false,
         retryKeepsPosition: near(retry.asked?.initialTime, 300) && near(retry.start, 300) && near(retry.time, 300),
         retryStaysPaused: retry.asked?.initialResume === false && retry.paused === true && retry.plays === 0 && retry.resumeWanted === false,
-        nativeSwitchKeepsBilibiliPosition: nativeSwitch.asked?.initialTime === undefined && near(nativeSwitch.start, 120),
+        nativeSwitchKeepsPausedPosition: near(nativeSwitch.asked?.initialTime, 300) && near(nativeSwitch.start, 300) && near(nativeSwitch.time, 300),
+        nativeSwitchStaysPaused: nativeSwitch.asked?.initialResume === false && nativeSwitch.paused === true && nativeSwitch.plays === 0,
+        nativeSwitchKeepsPlayingPosition: near(nativeSwitchPlaying.asked?.initialTime, 450) && near(nativeSwitchPlaying.start, 450) && near(nativeSwitchPlaying.time, 450),
+        nativeSwitchKeepsPlaying: nativeSwitchPlaying.asked?.initialResume === true && nativeSwitchPlaying.paused === false,
         otherVideoStartsOver: otherVideo.fetched && otherVideo.asked?.route === `/video/${OTHER_BVID}` && otherVideo.asked?.initialTime === undefined && otherVideo.start === 0
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && created.length === 7 && debug()?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean) && created.length === 8 && debug()?.version === "__BTR_VERSION__";
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })().catch((error) => {
