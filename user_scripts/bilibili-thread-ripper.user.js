@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.19.2
+// @version      2026.10.23.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2489,12 +2489,16 @@ const chrome = (() => {
       if (timeline.length > 120) timeline.shift();
     }
     const eventController = new AbortController();
+    // The viewer's position and intent, as last seen while our source was on the element.
+    // Bilibili's player can put its own source for the same video in place at any time, and
+    // the element then reads that source's zero and is paused, whatever the viewer had (#54).
+    const lastSeen = { time: 0, playing: false };
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
       if (destroyed || !candidate || candidate.disposed || video.src === candidate.objectUrl) return;
       if (candidate.externalSourceDetected) return;
       candidate.externalSourceDetected = true;
-      rememberNativeRestore(restoreKey, video.currentTime);
+      rememberNativeRestore(restoreKey, lastSeen.time);
       candidate.controller.abort(new DOMException("B站原生播放器正在切换媒体源", "AbortError"));
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
@@ -2913,6 +2917,7 @@ const chrome = (() => {
     }
 
     function ensureBuffer(candidate = session) {
+      noteViewer();
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || !candidate.tracks.length) return;
       for (const track of candidate.tracks) fillTrack(candidate, track);
       activateWhenReady(candidate);
@@ -3226,6 +3231,7 @@ const chrome = (() => {
         ensureBuffer(candidate);
       }
     }, { signal: eventController.signal });
+    for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
     video.addEventListener("playing", () => note("playing"), { signal: eventController.signal });
     video.addEventListener("ended", () => {
@@ -3239,8 +3245,25 @@ const chrome = (() => {
     // progress bar, or a quality change during loading, leave the video paused for good.
     function wantsToPlay() {
       const candidate = session;
+      if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
       return !video.paused;
+    }
+
+    // Where the viewer is in the video. A session that is still starting has just given the
+    // element its source, which reads zero until the session has moved it to its start.
+    function playbackPosition() {
+      const candidate = session;
+      if (candidate?.externalSourceDetected) return lastSeen.time;
+      const current = Number(video.currentTime) || 0;
+      return current === 0 && candidate && sessionIsCurrent(candidate) && !candidate.playbackActivated ? candidate.startTime : current;
+    }
+
+    function noteViewer() {
+      const candidate = session;
+      if (!candidate || !sessionIsCurrent(candidate) || video.src !== candidate.objectUrl) return;
+      lastSeen.time = playbackPosition();
+      lastSeen.playing = wantsToPlay();
     }
 
     function playbackState() {
@@ -3353,27 +3376,46 @@ const chrome = (() => {
       await updatePlayinfo(currentPlayinfo);
     }
 
-    function destroy({ resumeNative = true } = {}) {
+    // handBack(video, time, play) asks Bilibili's own player to take the video back; it says
+    // false when it cannot, and the old source is put back instead.
+    function destroy({ resumeNative = true, handBack = null } = {}) {
       if (destroyed) return;
+      // Read while the session still counts: one that is starting knows the viewer's intent.
+      const state = playbackState();
+      const time = playbackPosition() || original.currentTime;
       destroyed = true;
       clearTimeout(seekTimer);
       eventController.abort();
       sourceObserver.disconnect();
-      const state = playbackState();
       if (session) disposeSession(session, true);
       delete video.dataset.btrMediaEngine;
       delete options.container.dataset.btrMseActive;
+      if (resumeNative && typeof handBack === "function" && handBack(video, time, state.resume)) {
+        // Bilibili's core remembers this position (see nativeRestore).
+        rememberNativeRestore(restoreKey, time);
+        return;
+      }
       if (resumeNative && original.src) {
         // Bilibili's core reloads from here and remembers this position (see nativeRestore).
-        rememberNativeRestore(restoreKey, state.time || original.currentTime);
+        rememberNativeRestore(restoreKey, time);
         video.src = original.src;
         video.volume = original.volume;
         video.muted = original.muted;
         video.playbackRate = original.playbackRate;
         video.load();
-        try { video.currentTime = state.time || original.currentTime; } catch (_error) {}
-        if (!state.resume && original.wasPaused) return;
-        video.play().catch(() => {});
+        try { video.currentTime = time; } catch (_error) {}
+        // A video the viewer paused stays paused. One that was playing goes on once there is
+        // something to play: Bilibili's core replaces this old source with a new one, and a
+        // play() on the old one held the video back for seconds after the new one was ready
+        // (seen on a real page).
+        if (!state.resume) return;
+        const play = () => {
+          clearTimeout(giveUp);
+          video.removeEventListener("canplay", play);
+          video.play().catch(() => {});
+        };
+        const giveUp = setTimeout(() => video.removeEventListener("canplay", play), 15000);
+        video.addEventListener("canplay", play);
       } else if (resumeNative && original.srcAttribute !== null) {
         video.setAttribute("src", original.srcAttribute);
         video.load();
@@ -3401,6 +3443,8 @@ const chrome = (() => {
     const initialResume = options.initialResume !== undefined
       ? Boolean(options.initialResume)
       : !original.wasPaused || (original.currentTime < 1 && options.autoplay !== false);
+    lastSeen.time = initialTime;
+    lastSeen.playing = initialResume;
     startSession(selectedVideo, {
       // The native player may already have rendered its first frames before the
       // accelerated MediaSource is ready. Preserve that exact position: forcing
@@ -3416,6 +3460,7 @@ const chrome = (() => {
     return Object.freeze({
       applySettings() { ensureBuffer(); },
       wantsToPlay,
+      playbackPosition,
       destroy,
       setCodec,
       setQuality,
@@ -3424,7 +3469,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.19.2",
+        version: "2026.10.23.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4288,7 +4333,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.19.2</span>
+            <span class="version">v2026.10.23.1</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4544,7 +4589,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.19.2",
+        BTR: "2026.10.23.1",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -5146,7 +5191,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.19.2",
+    version: "2026.10.23.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -6031,10 +6076,40 @@ const chrome = (() => {
     return hint.handedBack ? afterFailure && Date.now() - hint.at < 45000 : Date.now() - hint.at < 15000;
   }
 
+  // Stopping the full takeover without handing the video back takes our MediaSource off the
+  // element, which then reads zero. A full takeover of the same video right after (重新接管,
+  // the debug restart, a switch of the takeover mode) started it over from there. It goes on
+  // where the viewer was instead, on the same element, playing or paused as before. The same
+  // when Bilibili's player put a new source for the same video in place: that source reads
+  // zero and paused too, and taking it over from there played a paused video from its start
+  // (#54). Not on another video.
+  let retakePosition = null;
+  function takeRetakePosition(route, video) {
+    const kept = retakePosition;
+    retakePosition = null;
+    return kept && kept.route === route && kept.video === video ? kept.time : undefined;
+  }
+
   // The player's own "自动开播" switch. Unknown counts as on, as before.
   function nativeAutoplay() {
     try { return JSON.parse(root.localStorage.getItem("bpx_player_profile") || "{}")?.media?.autoplay !== false; }
     catch (_error) { return true; }
+  }
+
+  // Bilibili's player takes the video back through its own source switch, at the viewer's
+  // position, playing or paused. Putting its old source back instead only came back through
+  // its error recovery: at once the first time on a page, then after eleven seconds and more
+  // (its retry interval grows with every retry), and from the fifth time on it gives up and
+  // shows its error screen.
+  function switchNativeSource(video, time, play) {
+    try {
+      const core = root.player?.__core?.();
+      if (typeof core?.switchSource !== "function" || !core.state?.mpd || core.getCorePlayer?.()?.getVideoElement?.() !== video) return false;
+      Promise.resolve(core.switchSource(core.state.mpd, undefined, undefined, { playAt: time, autoPlay: play })).catch(() => {});
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   function stopPlayer(resumeNative = true) {
@@ -6045,13 +6120,19 @@ const chrome = (() => {
     // While a session loads or has failed the element is paused whatever the viewer wants;
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
+    // The compatibility mode leaves the element as it is.
+    if (current) retakePosition = resumeNative || current.nativeTransport ? null : {
+      route: playerRoute,
+      video: current.video,
+      time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
+    };
     notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
     playerLifecycle += 1;
     cancelDeadlineRefresh();
     player = null;
     playerRoute = "";
     playerContainer = null;
-    current?.destroy({ resumeNative });
+    current?.destroy({ resumeNative, handBack: switchNativeSource });
     // Bilibili's core may download again: for its next source, or for the video it plays.
     unlockNativeBuffers();
     // The suppressed native schedulers must run again once Bilibili owns playback.
@@ -6118,7 +6199,8 @@ const chrome = (() => {
   function handleNativeSourceChange(route, lifecycle) {
     setTimeout(() => {
       if (lifecycle !== playerLifecycle || !player || playerRoute !== route) return;
-      remember("Bilibili replaced the video source");
+      const position = Number(player.playbackPosition?.()) || 0;
+      remember("Bilibili replaced the video source", `viewer at ${position.toFixed(1)}, ${player.wantsToPlay?.() ? "playing" : "paused"}`);
       routeGeneration += 1;
       routeRequestController?.abort();
       routeRequestController = null;
@@ -6533,6 +6615,7 @@ const chrome = (() => {
     const preferredCodec = nativeCodec();
     const preferredAudio = nativeAudio();
     const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
+    const retakeTime = takeRetakePosition(route, container.querySelector("video"));
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
@@ -6548,8 +6631,10 @@ const chrome = (() => {
         // can still expose the previous item's currentTime until new metadata
         // arrives, so carrying that value across would clamp short videos to
         // their final frame and make the switch look frozen.
-        initialTime: isPodSwitch ? 0 : undefined,
-        initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : undefined,
+        initialTime: isPodSwitch ? 0 : retakeTime,
+        // The emptied element reads zero, which counts as a video that has not started yet:
+        // a paused one would then start by itself.
+        initialResume: isPodSwitch ? pendingPodSwitch.resume : resumeAfterStop ? true : retakeTime !== undefined ? false : undefined,
         autoplay: nativeAutoplay(),
         getSettings: () => settings,
         nativeFetch,
@@ -6684,6 +6769,13 @@ const chrome = (() => {
         stopPlayer(true);
       }
       else if (!previous.enabled || previous.takeover !== settings.takeover || episodeSwitched) {
+        // The compatibility mode speeds up Bilibili's own player, so when it can take that
+        // player over now, the full takeover hands the video back to it first. Stopped without
+        // that, it left the element empty: the video went black at zero until the page was
+        // reloaded. Without Bilibili's core the video is taken over in full again, from where
+        // it was.
+        if (settings.takeover === "compat" && player && !player.nativeTransport
+          && root.__BILI_NATIVE_RANGE_PLAYER_FACTORY__?.supports(playerContainer)) stopPlayer(true);
         restartPlayer(true);
       }
       else {
@@ -6785,7 +6877,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.19.2"
+      version: "2026.10.23.1"
     })
   });
   publish();
@@ -7039,7 +7131,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.19.2",
+    version: "2026.10.23.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7503,7 +7595,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.19.2"
+      version: "2026.10.23.1"
     })
   });
   publish();
@@ -7820,7 +7912,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.19.2";
+  const VERSION = "2026.10.23.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
