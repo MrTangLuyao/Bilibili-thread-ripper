@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.25.1
+// @version      2026.10.25.2
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -308,6 +308,9 @@ const chrome = (() => {
       // 剧集加速: episode pages (/bangumi/play/ep… and ss…: anime, films, documentaries, …),
       // sped up in the compatibility mode only.
       episodeEnabled: source.episodeEnabled !== false,
+      // 阻止使用国际版: keeps the viewer on Bilibili's domestic site (bilibili-site.js). Off unless
+      // switched on.
+      blockInternational: source.blockInternational === true,
       // "full" replaces Bilibili's playback core; "compat" leaves it in charge and only
       // downloads its media requests.
       takeover: source.takeover === "compat" ? "compat" : "full",
@@ -3583,7 +3586,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.25.1",
+        version: "2026.10.25.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4453,7 +4456,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.25.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.25.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4464,12 +4467,13 @@ const chrome = (() => {
         </label>
       </header>
       <p id="also-running" class="also-running" role="alert" hidden></p>
+      <p id="disabled-note" class="disabled-note" role="status" hidden>线程撕裂者已关闭，打开右上角的开关即可启用。</p>
 
-      <section class="takeover-select" aria-label="接管方式">
+      <section class="takeover-select" data-needs-enabled aria-label="接管方式">
         <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
         <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
       </section>
-      <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+      <p class="takeover-note" data-needs-enabled>Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
 
       <details id="advanced" class="advanced">
         <summary>
@@ -4477,13 +4481,13 @@ const chrome = (() => {
           <small>默认设置在绝大多数场景就是表现最优的。如果你遇到了问题，修改这里的一些设置可能有帮助。</small>
         </summary>
         <div class="advanced-body">
-          <section class="mode-select" aria-label="CDN 模式">
+          <section class="mode-select" aria-label="CDN 模式" data-needs-enabled>
             <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
             <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
             <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
           </section>
 
-          <section id="custom-hosts" class="custom-hosts" aria-label="自定义服务器" hidden>
+          <section id="custom-hosts" class="custom-hosts" aria-label="自定义服务器" data-needs-enabled hidden>
             <div class="custom-head"><span>自定义服务器</span><b id="custom-count">0</b></div>
             <p id="custom-empty" class="custom-note">还没选服务器，暂时按大陆 CDN 下载。</p>
             <div id="known-hosts"></div>
@@ -4499,7 +4503,7 @@ const chrome = (() => {
             <p class="custom-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</p>
           </section>
 
-          <section class="controls">
+          <section class="controls" data-needs-enabled>
             <div class="control-title">
               <label for="concurrency">线程加载数</label>
               <output id="thread-value" for="concurrency">8</output>
@@ -4514,12 +4518,12 @@ const chrome = (() => {
             </div>
           </section>
 
-          <section class="accel-controls" aria-label="加速范围">
+          <section class="accel-controls" aria-label="加速范围" data-needs-enabled>
             <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
             <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
           </section>
 
-          <section class="site-controls" aria-label="网页版本">
+          <section class="site-controls" aria-label="网页版本" data-needs-enabled>
             <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
           </section>
 
@@ -4549,7 +4553,7 @@ const chrome = (() => {
         </div>
       </details>
 
-      <section class="current-threads" aria-live="polite">
+      <section class="current-threads" aria-live="polite" data-needs-enabled>
         <span>目前总线程</span>
         <b id="active-count">0</b>
       </section>
@@ -4581,7 +4585,12 @@ const chrome = (() => {
     .name { display: grid; gap: 2px; min-width: 0; }
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
-    .also-running { margin: -10px 0 14px; padding: 8px 10px; border: 1px solid rgba(245, 179, 1, .55); border-radius: 8px; background: rgba(245, 179, 1, .12); color: var(--text); font-size: 12px; line-height: 1.55; }
+    /* With the master switch off the panel says so, and what only works with BTR on fades out
+       and cannot be used: not the notices, the debug log or the floating button, which still apply. */
+    .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
+    [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
+    main.is-off [data-needs-enabled] { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
+    .also-running { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(245, 179, 1, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
     .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
@@ -4673,8 +4682,11 @@ const chrome = (() => {
     .debug-copy-text[hidden] { display: none; }
     .current-threads { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--label); font-size: 13px; }
     .current-threads b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 32px); margin: 0 16px 16px; padding: 8px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 13px; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
-    .btr-close:hover { border-color: #fb7299; }
+    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 32px); margin: 0 16px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    .btr-close:hover { background: #565e6c; }
+    /* Solid, for the content scrolling under it. */
+    .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
+    .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
     .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .advanced > summary { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); list-style: none; cursor: pointer; transition: background 160ms ease; }
     .advanced > summary::-webkit-details-marker { display: none; }
@@ -4716,7 +4728,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.25.1",
+        BTR: "2026.10.25.2",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -4801,6 +4813,9 @@ const chrome = (() => {
       ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
     });
     const enabled = $("enabled");
+    const disabledNote = $("disabled-note");
+    const main = panel.querySelector("main");
+    const needsEnabled = [...panel.querySelectorAll("[data-needs-enabled]")];
     const concurrency = $("concurrency");
     const autoConcurrency = $("auto-concurrency");
     const theme = $("theme");
@@ -4896,6 +4911,9 @@ const chrome = (() => {
     function render(settings) {
       showTheme(settings.theme);
       enabled.checked = settings.enabled;
+      disabledNote.hidden = settings.enabled !== false;
+      main.classList.toggle("is-off", settings.enabled === false);
+      for (const node of needsEnabled) node.inert = settings.enabled === false;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
       setSlider(settings.concurrency);
@@ -5330,7 +5348,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.25.1",
+    version: "2026.10.25.2",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -7020,7 +7038,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.25.1"
+      version: "2026.10.25.2"
     })
   });
   publish();
@@ -7274,7 +7292,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.25.1",
+    version: "2026.10.25.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7738,7 +7756,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.25.1"
+      version: "2026.10.25.2"
     })
   });
   publish();
@@ -8055,7 +8073,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.25.1";
+  const VERSION = "2026.10.25.2";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
