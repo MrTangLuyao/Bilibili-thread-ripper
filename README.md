@@ -290,7 +290,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 - **自动测试**（`.github/workflows/tests.yml`）
   - 每次推送和 PR：跑离线测试。按 `node dev/run-tests.js --list` 的分组同时跑：单元测试一组，每个浏览器测试各一组。
-  - 推送到 main 和手动运行：再用真实 B 站视频跑 `dev/native-mse-end-test.js`，起播、拖动、播到结尾和跟随清晰度都测。两个视频同时跑；不登录，B 站只给 480P 和 360P，AVC、HEVC、AV1 三种编码都有。跑之前先用 `dev/network-probe.mjs` 看这台机器能不能用 B 站。GitHub 的 Linux 机器没有显卡，放不了 HEVC，HEVC 的两项会显示“跳过”。
+  - PR、推送到 main 和手动运行：再用真实 B 站视频跑 `dev/native-mse-end-test.js`，起播、拖动、播到结尾和跟随清晰度都测。两个视频同时跑；不登录，B 站只给 480P 和 360P，AVC、HEVC、AV1 三种编码都有。跑之前先用 `dev/network-probe.mjs` 看这台机器能不能用 B 站。GitHub 的 Linux 机器没有显卡，放不了 HEVC，HEVC 的两项会显示“跳过”。
   - 手动运行（Actions → Tests → Run workflow）还可以勾选：在 Windows 和 macOS 的 Chrome 上试 HEVC；测试没通过也照样更新 Canary。
   - 每次运行的页面上都有一张汇总表。
 - **Canary**（`.github/workflows/canary.yml`）

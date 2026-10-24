@@ -1,7 +1,8 @@
 name: Tests
 
-# Every push and pull request runs the offline tests, each group in a job of its own. Pushes to
-# main, and runs started by hand, also play real Bilibili videos; once everything passed on
+# Every push and pull request runs the offline tests, each group in a job of its own. Pull
+# requests, pushes to main and runs started by hand also play real Bilibili videos, so a pull
+# request has been through everything before it is merged; once everything passed on
 # main, canary.yml updates the Canary. A run by hand can also try HEVC in Chrome on Windows and
 # macOS, and can update the Canary even though tests failed. release.yml runs these same
 # tests on a version tag before it publishes.
@@ -79,7 +80,7 @@ jobs:
           ' >> "$GITHUB_OUTPUT"
           online=false
           if [ -n "$CALLED_FOR" ] || [ "$EVENT" = workflow_dispatch ]; then online="$ONLINE"
-          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then online=true; fi
+          elif [ "$EVENT" = pull_request ] || { [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; }; then online=true; fi
           echo "online=$online" >> "$GITHUB_OUTPUT"
 
   offline:
