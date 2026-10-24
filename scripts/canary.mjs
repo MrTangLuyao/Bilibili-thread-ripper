@@ -33,10 +33,11 @@ export function nextCanaryVersion(previous, now = new Date()) {
   return `${y}.${m}.${d}` === today && Number.isSafeInteger(n) ? `${today}.${n + 1}` : `${today}.1`;
 }
 
-// Whether the code now builds to exactly the file already published, under its version.
+// Whether the code now builds to exactly the file already published, under its version. A
+// Windows checkout may have given that file CRLF line endings; the build writes LF.
 export function unchanged(previous, buildAt) {
   const version = versionOf(previous);
-  return Boolean(version) && buildAt(version) === previous;
+  return Boolean(version) && buildAt(version) === previous.replace(/\r\n/g, "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

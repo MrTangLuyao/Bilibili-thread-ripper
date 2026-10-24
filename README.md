@@ -60,11 +60,7 @@
 
 3. 点这里安装：
 
-   正式版（推荐）：[![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
-
-   测试版：[![点击测试 BTR Canary](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E6%B5%8B%E8%AF%95-BTR%20Canary-f5b301?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js)
-
-   <sub>测试版 BTR Canary 跟着开发中的最新代码自动构建，能抢先用上新改动，但可能不稳定，适合帮忙测试的人（[详细说明](#开发与构建)）。两个版本只启用一个。</sub>
+   [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
 
 4. 打开任意 B 站视频，页面上出现 BTR 悬浮球就装好了。以后有新版会自动更新，看到更新弹窗点“更新”即可。
 

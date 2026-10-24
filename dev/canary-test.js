@@ -24,6 +24,7 @@ const { pathToFileURL } = require("node:url");
   const published = buildAt("2026.10.24.3");
   assert.equal(canary.versionOf(published), "2026.10.24.3");
   assert.equal(canary.unchanged(published, buildAt), true, "the same code is not published again");
+  assert.equal(canary.unchanged(published.replace(/\n/g, "\r\n"), buildAt), true, "a Windows checkout's line endings are not a change");
   assert.equal(canary.unchanged(published.replace("pageCode", "pageCode "), buildAt), false, "changed code is published");
   assert.equal(canary.unchanged("", buildAt), false, "nothing published yet");
   // The released script never counts as the Canary's previous build.
