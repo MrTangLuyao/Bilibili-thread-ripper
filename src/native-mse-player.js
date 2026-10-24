@@ -806,6 +806,13 @@
       }
     }
 
+    // Pauses the element to wait for data. Its "pause" event comes later and only if it was
+    // playing; counting those keeps it from being read as the viewer's pause.
+    function pauseForData(candidate) {
+      if (!video.paused) candidate.ownPauses += 1;
+      video.pause();
+    }
+
     function attemptAutoplay(candidate) {
       if (candidate.playAttempted || !candidate.resumeWanted || !sessionIsCurrent(candidate)) return;
       candidate.playAttempted = true;
@@ -868,7 +875,7 @@
         candidate.underflowRebuffers += 1;
         note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
         options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
-        video.pause();
+        pauseForData(candidate);
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
       if (candidate.recovering && ready) {
@@ -964,7 +971,7 @@
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -1067,7 +1074,7 @@
         candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
         candidate.playAttempted = false;
         candidate.seekPending = true;
-        video.pause();
+        pauseForData(candidate);
       }
       ensureBuffer(candidate);
       publishState();
@@ -1156,10 +1163,24 @@
           candidate.resumeWanted = true;
           candidate.playAttempted = false;
           candidate.recoveryTargetSeconds = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
-          video.pause();
+          pauseForData(candidate);
         }
         ensureBuffer(candidate);
       }
+    }, { signal: eventController.signal });
+    // While a session waits for data after a seek or a stall, the element is paused and the
+    // session remembers whether the viewer means it to play. Play or pause pressed meanwhile
+    // changes that: a second drag used to read the intent from before and leave the video
+    // paused for good. The pauses that start such a wait are ours and do not count.
+    video.addEventListener("play", () => {
+      const candidate = session;
+      if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = true;
+    }, { signal: eventController.signal });
+    video.addEventListener("pause", () => {
+      const candidate = session;
+      if (!candidate || !sessionIsCurrent(candidate)) return;
+      if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
+      else if (candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = false;
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });

@@ -14,8 +14,11 @@ const meta = JSON.parse(fs.readFileSync(path.join(root, "user_scripts/adapter/me
 const version = fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8").match(/^## \[(\d+\.\d+\.\d+\.\d+)\]/m)[1];
 const published = fs.readFileSync(path.join(root, "user_scripts/bilibili-thread-ripper.user.js"), "utf8");
 let script = "";
+let canaryScript = "";
 const scriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js";
-const source = file => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd().split("__BTR_VERSION__").join(version);
+const canaryScriptUrl = "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js";
+const source = (file, channel = "stable") => fs.readFileSync(path.join(root, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").trimEnd()
+  .split("__BTR_VERSION__").join(version).split("__BTR_CHANNEL__").join(channel);
 
 function checkPublished() {
   const header = published.slice(0, published.indexOf("// ==/UserScript=="));
@@ -57,6 +60,29 @@ function checkFile() {
   console.log("PASS 油猴脚本头部、自动更新地址和打包内容正确");
 }
 
+// The Canary is a second script: its own name (a manager keeps both), its own file to update
+// from, and the same code with the channel filled in.
+function checkCanary() {
+  const header = canaryScript.slice(0, canaryScript.indexOf("// ==/UserScript=="));
+  const values = name => [...header.matchAll(new RegExp(`^// @${name}\\s+(.+)$`, "gm"))].map(match => match[1].trim());
+  assert.deepEqual(values("name"), ["Bilibili 线程撕裂者 Canary"]);
+  assert.deepEqual(values("namespace"), [meta.header.find(([key]) => key === "namespace")[1]]);
+  assert.deepEqual(values("version"), [version]);
+  assert.deepEqual(values("updateURL"), [canaryScriptUrl]);
+  assert.deepEqual(values("downloadURL"), [canaryScriptUrl]);
+  assert.match(values("description")[0], /^测试版/);
+  for (const placeholder of ["__BTR_VERSION__", "__BTR_CHANNEL__"]) assert.equal(canaryScript.includes(placeholder), false, `${placeholder} was left in the Canary`);
+  assert.equal(script.includes("__BTR_CHANNEL__"), false, "the channel placeholder was left in the released script");
+  new vm.Script(canaryScript, { filename: "bilibili-thread-ripper-canary.user.js" });
+  let position = 0;
+  for (const file of [...meta.pageFiles, meta.loader]) {
+    const at = canaryScript.indexOf(`/* ${file} */\n${source(file, "canary")}\n`, position);
+    assert.ok(at >= position, `${file} missing, changed or out of order in the Canary`);
+    position = at;
+  }
+  console.log("PASS Canary 是另一个脚本：名字、更新地址和渠道都是 Canary 的，代码和正式版相同");
+}
+
 const settingsHost = "#__bilibili_thread_ripper_settings__";
 const openSettings = page => page.evaluate(() => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
 const settingsOf = page => page.evaluate(() => __biliThreadRipperDebug.getSettings());
@@ -81,6 +107,9 @@ async function unfold(panel) {
   fs.mkdirSync(path.join(root, "dist"), { recursive: true });
   fs.writeFileSync(path.join(root, "dist/userscript-test.user.js"), script);
   checkFile();
+  canaryScript = buildUserscript(version, { channel: "canary" });
+  fs.writeFileSync(path.join(root, "dist/userscript-test-canary.user.js"), canaryScript);
+  checkCanary();
   const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true });
   const origin = "http://127.0.0.1:18763/dev/userscript-test.html";
   const errors = [];
@@ -463,6 +492,35 @@ async function unfold(panel) {
     await silent.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas", null, { timeout: 8000 });
     assert.ok(Date.now() - silentStarted < 6000);
     console.log("PASS 管理器设置独立：不导入 localStorage，切回原管理器保留设置；跨子域与标签页同步、诊断和 localStorage 故障回退正常");
+
+    // The Canary alone: its own entry in the manager's menu, a yellow mark by the version and
+    // its channel in the diagnostic report.
+    const canaryOnly = await (await browser.newContext()).newPage();
+    canaryOnly.on("pageerror", error => errors.push(error.message));
+    await canaryOnly.goto(`${origin}?mode=sandbox&scripts=canary`);
+    await canaryOnly.waitForFunction(() => window.__biliThreadRipperDebug && document.documentElement.hasAttribute("data-btr-userscript"));
+    assert.deepEqual(await canaryOnly.evaluate(() => [__userscriptTest.injected, __userscriptTest.menus.map(item => item.name)]), [1, ["线程撕裂者 Canary 设置"]]);
+    assert.equal(JSON.parse(await canaryOnly.evaluate(() => __biliThreadRipperDebug.report())).channel, "canary");
+    await openSettings(canaryOnly);
+    const canaryPanel = canaryOnly.locator(`${settingsHost} .btr-popup`);
+    await canaryPanel.waitFor();
+    assert.equal(await canaryPanel.locator(".name .version").textContent(), `v${version}Canary`);
+    assert.equal(await canaryPanel.locator("#also-running").isVisible(), false);
+    // Both switched on, the released script first: only it runs, every settings request gets
+    // exactly one answer, and its settings page asks for one of the two to go.
+    const both = await managerTab();
+    await both.goto(`${origin}?gm=live&scripts=both`);
+    await modeOf(both, JSON.parse(gmStore.get("sync")).mode);
+    assert.equal(await both.evaluate(() => document.documentElement.getAttribute("data-btr-also-running")), "canary");
+    const replies = await both.evaluate(() => Object.values(__userscriptTest.replies));
+    assert.ok(replies.length > 0 && replies.every(count => count === 1), `settings answers per request: ${replies}`);
+    assert.equal(JSON.parse(await both.evaluate(() => __biliThreadRipperDebug.report())).channel, "stable");
+    await openSettings(both);
+    const bothPanel = both.locator(`${settingsHost} .btr-popup`);
+    await bothPanel.waitFor();
+    assert.equal(await bothPanel.locator(".version .canary").count(), 0);
+    assert.match(await bothPanel.locator("#also-running").textContent(), /同时启用了。现在生效的是正式版，Canary没有运行/);
+    console.log("PASS Canary：单独装时菜单、版本号和诊断都标明 Canary；和正式版同时开时只有一个在运行，设置请求只答一次，设置页提示只开一个");
 
     assert.deepEqual(errors, []);
     console.log("PASS 没有脚本错误");

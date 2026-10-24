@@ -1,0 +1,71 @@
+name: Canary
+
+# The Canary: the code on main as it is, as its own userscript in canary/, for contributors and
+# anyone who wants to try what comes next. tests.yml publishes it once every test passed on main;
+# run this workflow by hand (Actions → Canary → Run workflow) to publish it right away, without
+# running the tests. scripts/canary.mjs decides the version and writes nothing when the code
+# has not changed, so such a run leaves no commit.
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tested_sha:
+        description: The commit the tests ran on; the Canary waits for the next run if main moved on.
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: 生成 Canary
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 测过的还是不是 main 的最新提交
+        id: current
+        env:
+          TESTED: ${{ inputs.tested_sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ -n "$TESTED" ] && [ "$TESTED" != "$head" ]; then
+            echo "main 已经有更新的提交（${head:0:7}），这次测的是 ${TESTED:0:7}，Canary 留给下一次测试。" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 构建
+        id: build
+        if: steps.current.outputs.skip != 'true'
+        run: node scripts/canary.mjs
+      - name: 提交并推送
+        if: steps.build.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          git add canary
+          # Under the maintainer's own name, like every other commit in this repository.
+          git -c user.name="LouieTang" -c user.email="65329281+MrTangLuyao@users.noreply.github.com" commit -q -m "canary $VERSION"
+          git log -1 --format="作者: %an <%ae>%n提交者: %cn <%ce>%n%B"
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && break
+            git pull --rebase origin main
+          done
+      - name: 写进汇总
+        if: steps.build.outcome == 'success'
+        env:
+          CHANGED: ${{ steps.build.outputs.changed }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          if [ "$CHANGED" = true ]; then echo "Canary 更新到 **$VERSION**" >> "$GITHUB_STEP_SUMMARY"
+          else echo "代码没变，Canary 还是 $VERSION" >> "$GITHUB_STEP_SUMMARY"; fi

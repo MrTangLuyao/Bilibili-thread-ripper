@@ -11,6 +11,11 @@
   if (!core || !cdn) return;
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
+  // Which script this is: the released one, or the Canary built from main.
+  const SCRIPT_CHANNEL = "__BTR_CHANNEL__" === "canary" ? "canary" : "stable";
+  const CHANNEL_NAMES = { stable: "正式版", canary: "Canary" };
+  // Set by the other of the two scripts when both are switched on (see loader.js).
+  const otherScript = () => document.documentElement?.getAttribute("data-btr-also-running") || "";
   const HOST_ID = "__bilibili_thread_ripper_settings__";
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
@@ -78,7 +83,7 @@
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v__BTR_VERSION__</span>
+            <span class="version">v__BTR_VERSION__${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -88,6 +93,7 @@
           <span></span>
         </label>
       </header>
+      <p id="also-running" class="also-running" role="alert" hidden></p>
 
       <section class="takeover-select" aria-label="接管方式">
         <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
@@ -200,6 +206,8 @@
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .name { display: grid; gap: 2px; min-width: 0; }
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+    .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
+    .also-running { margin: -10px 0 14px; padding: 8px 10px; border: 1px solid rgba(245, 179, 1, .55); border-radius: 8px; background: rgba(245, 179, 1, .12); color: var(--text); font-size: 12px; line-height: 1.55; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
     .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
@@ -335,6 +343,8 @@
     const sections = [
       ["环境", {
         BTR: "__BTR_VERSION__",
+        渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
+        同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -397,6 +407,13 @@
     shadow.append(style, backdrop, panel);
 
     const $ = (id) => shadow.getElementById(id);
+    // The released script and the Canary are both switched on: only this one runs.
+    const other = otherScript();
+    if (other) {
+      const alsoRunning = $("also-running");
+      alsoRunning.textContent = `正式版和 Canary 同时启用了。现在生效的是${CHANNEL_NAMES[SCRIPT_CHANNEL]}，${CHANNEL_NAMES[other] || other}没有运行。请在脚本管理器里只启用一个。`;
+      alsoRunning.hidden = false;
+    }
     const advanced = $("advanced");
     advanced.open = advancedOpen || options.advanced === true;
     advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });

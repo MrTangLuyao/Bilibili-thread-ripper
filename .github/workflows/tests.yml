@@ -1,9 +1,41 @@
 name: Tests
 
+# Every push and pull request runs the offline tests, each group in a job of its own. Pushes to
+# main, and runs started by hand, also play real Bilibili videos; once everything passed on
+# main, canary.yml updates the Canary. A run by hand can also try HEVC in Chrome on Windows and
+# macOS, and can update the Canary even though tests failed. release.yml runs these same
+# tests on a version tag before it publishes.
 on:
+  # Branches only: a version tag gets these tests through release.yml.
   push:
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      online:
+        description: 也跑真实 B 站视频的测试
+        type: boolean
+        default: true
+      hevc:
+        description: 在 Windows 和 macOS 的 Chrome 上试 HEVC（Linux 机器没有显卡，放不了）
+        type: boolean
+        default: false
+      canary:
+        description: 在 main 上跑完以后更新 Canary
+        type: boolean
+        default: true
+      ignore_failures:
+        description: 测试没通过也照样更新 Canary
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      online:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -12,36 +44,219 @@ concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PLAYWRIGHT_VERSION: 1.62.1
+
 jobs:
-  regression:
-    name: Offline regression
+  prepare:
+    name: 准备
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      groups: ${{ steps.plan.outputs.groups }}
+      online: ${{ steps.plan.outputs.online }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - id: plan
+        name: 要测的提交和测试分组
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          CALLED_FOR: ${{ inputs.ref }}
+          ONLINE: ${{ inputs.online }}
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node -e '
+            const { unit, browser } = JSON.parse(require("node:child_process").execFileSync(process.execPath, ["dev/run-tests.js", "--list"], { encoding: "utf8" }));
+            console.log("groups=" + JSON.stringify([{ name: "单元测试", tests: unit.join(" "), browser: false }, ...browser.map((test) => ({ name: test, tests: test, browser: true }))]));
+          ' >> "$GITHUB_OUTPUT"
+          online=false
+          if [ -n "$CALLED_FOR" ] || [ "$EVENT" = workflow_dispatch ]; then online="$ONLINE"
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then online=true; fi
+          echo "online=$online" >> "$GITHUB_OUTPUT"
+
+  offline:
+    name: 离线 · ${{ matrix.group.name }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.prepare.outputs.groups) }}
+    steps:
+      # The build names itself after the latest tag, so the tags come along.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
-      - name: Install browser test tools
+      - name: 准备 Playwright 和开发版脚本
+        if: matrix.group.browser
         run: |
-          npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+          npm install --no-save --package-lock=false --ignore-scripts playwright@$PLAYWRIGHT_VERSION
           npx --no-install playwright install --with-deps chromium
           node -e "console.log('BTR_CHROME_PATH=' + require('playwright').chromium.executablePath())" >> "$GITHUB_ENV"
-      - name: Build development userscript
-        run: npm run build
-      - name: Run offline regression suite
-        run: npm test
-      - name: Preserve failure screenshots
+          npm run build
+      - name: ${{ matrix.group.name }}
+        env:
+          TESTS: ${{ matrix.group.tests }}
+        run: |
+          if [ "${{ matrix.group.browser }}" = true ]; then
+            node dev/server.js > server.log 2>&1 &
+            for i in $(seq 1 50); do (echo > /dev/tcp/127.0.0.1/18763) 2>/dev/null && break; sleep 0.2; done
+          fi
+          failed=0
+          for test in $TESTS; do
+            echo "::group::$test"
+            if node "dev/$test.js"; then result=通过; else result=失败; failed=1; fi
+            echo "::endgroup::"
+            echo "| $test | $result |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit $failed
+      - name: 保存失败时的截图
         if: failure()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: failure-screenshots
+          name: failure-screenshots-${{ strategy.job-index }}
           path: dist/*.png
           if-no-files-found: ignore
           retention-days: 7
+
+  online:
+    name: 真实视频 · ${{ matrix.bvid }}
+    needs: prepare
+    if: needs.prepare.outputs.online == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # An 18-minute 4K60 game video and a 3-minute music video; without an account Bilibili
+        # gives 480P and 360P, in AVC, HEVC and AV1.
+        bvid: [BV1T1NZ6xEZZ, BV1GJ411x7h7]
+    env:
+      BTR_TEST_BVID: ${{ matrix.bvid }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 这台机器能不能用 B 站
+        run: node dev/network-probe.mjs
+      # Google Chrome, which this machine has, plays AAC and H.264; Playwright's Chromium does not.
+      - name: 准备 Playwright
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts playwright@$PLAYWRIGHT_VERSION
+          echo "BTR_CHROME_PATH=$(command -v google-chrome)" >> "$GITHUB_ENV"
+      - name: 起播、拖动、播到结尾和跟随清晰度
+        run: |
+          set -o pipefail
+          node dev/server.js > server.log 2>&1 &
+          for i in $(seq 1 50); do (echo > /dev/tcp/127.0.0.1/18763) 2>/dev/null && break; sleep 0.2; done
+          node dev/native-mse-end-test.js 2>&1 | tee result.log
+      - name: 写进汇总
+        if: always()
+        run: |
+          { echo "**${{ matrix.bvid }}**"; echo; grep -E '^(PASS|FAIL|SKIP)' result.log | sed 's/^/- /' || true; } >> "$GITHUB_STEP_SUMMARY"
+      - name: 本地服务的输出
+        if: failure()
+        run: cat server.log || true
+
+  hevc:
+    name: HEVC · ${{ matrix.os }}
+    needs: prepare
+    if: github.event_name == 'workflow_dispatch' && inputs.hevc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      BTR_TEST_BVID: BV1GJ411x7h7
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 这台机器能不能用 B 站
+        run: node dev/network-probe.mjs
+      - name: 准备 Playwright（用机器自带的 Chrome）
+        run: |
+          npm install --no-save --package-lock=false --ignore-scripts playwright@$PLAYWRIGHT_VERSION
+          if [ "$RUNNER_OS" = Windows ]; then chrome="C:/Program Files/Google/Chrome/Application/chrome.exe"; else chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; fi
+          echo "BTR_CHROME_PATH=$chrome" >> "$GITHUB_ENV"
+      - name: 起播、拖动、播到结尾（放不了 HEVC 时跳过 HEVC）
+        run: |
+          set -o pipefail
+          node dev/server.js > server.log 2>&1 &
+          for i in $(seq 1 50); do (echo > /dev/tcp/127.0.0.1/18763) 2>/dev/null && break; sleep 0.2; done
+          node dev/native-mse-end-test.js 2>&1 | tee result.log
+      - name: 写进汇总
+        if: always()
+        run: |
+          { echo "**HEVC · ${{ matrix.os }}**"; echo; grep -E '^(PASS|FAIL|SKIP)' result.log | sed 's/^/- /' || true; } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: 汇总
+    needs: [prepare, offline, online, hevc]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SHA: ${{ needs.prepare.outputs.sha }}
+      PREPARE: ${{ needs.prepare.result }}
+      OFFLINE: ${{ needs.offline.result }}
+      ONLINE: ${{ needs.online.result }}
+      HEVC: ${{ needs.hevc.result }}
+    steps:
+      - name: 结果
+        run: |
+          label() { case "$1" in success) echo 通过;; failure) echo "**失败**";; skipped) echo 没跑;; cancelled) echo 取消;; *) echo "$1";; esac; }
+          {
+            echo "## 测试汇总"
+            echo
+            echo "提交 \`${SHA:0:7}\`"
+            echo
+            echo "| 部分 | 结果 |"
+            echo "|---|---|"
+            echo "| 离线测试 | $(label "$OFFLINE") |"
+            echo "| 真实视频 | $(label "$ONLINE") |"
+            echo "| HEVC（Windows / macOS） | $(label "$HEVC") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$PREPARE" = success ] && [ "$OFFLINE" = success ] \
+            && [ "$ONLINE" != failure ] && [ "$ONLINE" != cancelled ] \
+            && [ "$HEVC" != failure ] && [ "$HEVC" != cancelled ]
+
+  canary:
+    name: 更新 Canary
+    needs: [prepare, summary]
+    if: >-
+      always() && github.ref == 'refs/heads/main' && needs.prepare.result == 'success'
+      && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.canary))
+      && (needs.summary.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.ignore_failures))
+    permissions:
+      contents: write
+    uses: ./.github/workflows/canary.yml
+    with:
+      tested_sha: ${{ needs.prepare.outputs.sha }}

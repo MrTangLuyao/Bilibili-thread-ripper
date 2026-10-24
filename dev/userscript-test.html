@@ -12,12 +12,19 @@
     // unsafeWindow is another object and the manager provides its menu and injection APIs.
     const sandbox = new URLSearchParams(location.search).get("mode") === "sandbox";
     const gm = new URLSearchParams(location.search).get("gm");
+    // ?scripts=canary: only the Canary is installed; ?scripts=both: the released script and the
+    // Canary are both switched on, in that order.
+    const scripts = new URLSearchParams(location.search).get("scripts") || "stable";
     // ?gmstore=2: another manager's storage, empty at first (a viewer who moved to another one).
     window.__gmStoreId = new URLSearchParams(location.search).get("gmstore") || "1";
     history.replaceState(null, "", "/video/BV1userA0001");
     window.__INITIAL_STATE__ = { videoData: { bvid: "BV1userA0001", cid: 101 } };
     window.__playinfo__ = { data: { dash: { video: [], audio: [] } } };
-    window.__userscriptTest = { calls: [], menus: [], injected: 0, statusRequests: 0 };
+    window.__userscriptTest = { calls: [], menus: [], injected: 0, statusRequests: 0, replies: {} };
+    // How many answers each settings request gets from the manager's side of the script.
+    document.addEventListener("btr-userscript-storage-reply", event => {
+      try { const id = JSON.parse(event.detail).id; __userscriptTest.replies[id] = (__userscriptTest.replies[id] || 0) + 1; } catch (_error) {}
+    });
     window.addEventListener("message", event => { if (event.data?.type === "get-stats") __userscriptTest.statusRequests += 1; });
     window.fetch = async input => {
       const url = new URL(String(input), location.href);
@@ -60,7 +67,9 @@
         return element;
       };
     }
+    for (const file of scripts === "both" ? ["userscript-test", "userscript-test-canary"] : [scripts === "canary" ? "userscript-test-canary" : "userscript-test"]) {
+      document.write(`<script src="/dist/${file}.user.js"><\/script>`);
+    }
   </script>
-  <script src="/dist/userscript-test.user.js"></script>
 </body>
 </html>

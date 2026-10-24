@@ -9,6 +9,10 @@
 // unsafeWindow is the content script's global rather than the page's.
 const LOADED = "data-btr-userscript";
 const pageWindow = typeof unsafeWindow !== "undefined" && unsafeWindow ? unsafeWindow : window;
+// Which of the two scripts this is: the released one, or the Canary built from main.
+const CHANNEL = "__BTR_CHANNEL__" === "canary" ? "canary" : "stable";
+// Left on the page by the one of the two that found the other already running.
+const ALSO_RUNNING = "data-btr-also-running";
 
 // Which manager runs the script, its version and injection mode, for the diagnostic report
 // (Tampermonkey and Violentmonkey both describe themselves in GM_info).
@@ -61,7 +65,6 @@ function serveStorage() {
     }
   }
 }
-if (manager) serveStorage();
 
 function injected() {
   return document.documentElement?.hasAttribute(LOADED) === true;
@@ -85,6 +88,14 @@ function inject() {
 // The page code reads this mark once, when it starts, to know whether its settings go
 // through the manager ("live": the manager also reports other tabs' changes).
 function start() {
+  // The released script and the Canary may both be installed and switched on. Only the one
+  // that starts first runs: two would answer every settings request from two different
+  // stores. The other leaves its mark for the settings page, which asks for one to go.
+  if (injected()) {
+    document.documentElement.setAttribute(ALSO_RUNNING, CHANNEL);
+    return;
+  }
+  if (manager) serveStorage();
   if (manager) document.documentElement.setAttribute(STORAGE_MARK, managerReportsChanges ? "manager live" : "manager");
   const described = describeManager();
   if (described) document.documentElement.setAttribute(MANAGER_MARK, described);
@@ -106,5 +117,5 @@ else {
 let topLevelFrame = true;
 try { topLevelFrame = window.self === window.top; } catch (_error) {}
 if (typeof GM_registerMenuCommand === "function" && topLevelFrame) {
-  GM_registerMenuCommand("线程撕裂者设置", () => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
+  GM_registerMenuCommand(CHANNEL === "canary" ? "线程撕裂者 Canary 设置" : "线程撕裂者设置", () => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
 }

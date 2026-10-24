@@ -1,0 +1,59 @@
+name: Release
+
+# A version tag, pushed after scripts/release.mjs (`git push origin <version>`), gets the same
+# tests as main, real videos included; when they pass, a GitHub Release with that version's
+# CHANGELOG section and the userscript. Users still update from the file on main: the Release
+# is the record, and a copy to download. It can also be run by hand for an existing tag.
+on:
+  push:
+    tags: ['20*.*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 版本 tag，例如 2026.10.24.1
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: 测试
+    uses: ./.github/workflows/tests.yml
+    # tests.yml holds the Canary job, which writes; it never runs for a tag, but a called
+    # workflow may not ask for more than its caller grants.
+    permissions:
+      contents: write
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+      online: true
+
+  publish:
+    name: 发布 GitHub Release
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 核对版本，取出这一版的更新说明
+        run: node scripts/release-notes.mjs "$TAG" > notes.md
+      - name: 发布
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file notes.md
+            gh release upload "$TAG" user_scripts/bilibili-thread-ripper.user.js --clobber
+          else
+            gh release create "$TAG" user_scripts/bilibili-thread-ripper.user.js --verify-tag --title "$TAG" --notes-file notes.md
+          fi
+          echo "已发布 $TAG：$(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"

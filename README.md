@@ -60,7 +60,11 @@
 
 3. 点这里安装：
 
-   [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+   正式版（推荐）：[![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+
+   测试版：[![点击测试 BTR Canary](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E6%B5%8B%E8%AF%95-BTR%20Canary-f5b301?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js)
+
+   <sub>测试版 BTR Canary 跟着开发中的最新代码自动构建，能抢先用上新改动，但可能不稳定，适合帮忙测试的人（[详细说明](#开发与构建)）。两个版本只启用一个。</sub>
 
 4. 打开任意 B 站视频，页面上出现 BTR 悬浮球就装好了。以后有新版会自动更新，看到更新弹窗点“更新”即可。
 
@@ -274,24 +278,55 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 ## 开发与构建
 
+[![点击测试 BTR Canary](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E6%B5%8B%E8%AF%95-BTR%20Canary-f5b301?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js)
+
+**BTR Canary 测试版**：跟着开发中的最新代码自动更新的另一个脚本，给贡献者和想抢先试新改动的人用，可能不稳定。
+
+- 点上面的按钮安装，脚本管理器里会多出一个“Bilibili 线程撕裂者 Canary”，和正式版各自更新、各存一份设置。
+- main 上的代码每次有改动、自动测试全部通过后，Canary 就会更新。版本号是当天的日期加上当天第几个 Canary，比如 `2026.10.24.2`，和正式版的版本号各算各的。
+- 设置面板的版本号后面有黄色的 **Canary** 标记，诊断信息里也写着是哪一个。
+- 正式版和 Canary 只开一个。两个都开着时，只有先启动的那个在运行，设置面板会提醒你关掉一个。想回到正式版：在脚本管理器里停用 Canary，启用正式版。
+
 项目运行和构建没有任何依赖。单元测试只需要 Node.js，浏览器测试还需要 Playwright 和浏览器。
+
+<details>
+<summary><b>自动测试、Canary 和发版是怎么跑的（GitHub Actions）</b></summary>
+
+- **自动测试**（`.github/workflows/tests.yml`）
+  - 每次推送和 PR：跑离线测试。按 `node dev/run-tests.js --list` 的分组同时跑：单元测试一组，每个浏览器测试各一组。
+  - 推送到 main 和手动运行：再用真实 B 站视频跑 `dev/native-mse-end-test.js`，起播、拖动、播到结尾和跟随清晰度都测。两个视频同时跑；不登录，B 站只给 480P 和 360P，AVC、HEVC、AV1 三种编码都有。跑之前先用 `dev/network-probe.mjs` 看这台机器能不能用 B 站。GitHub 的 Linux 机器没有显卡，放不了 HEVC，HEVC 的两项会显示“跳过”。
+  - 手动运行（Actions → Tests → Run workflow）还可以勾选：在 Windows 和 macOS 的 Chrome 上试 HEVC；测试没通过也照样更新 Canary。
+  - 每次运行的页面上都有一张汇总表。
+- **Canary**（`.github/workflows/canary.yml`）
+  - 默认：main 上的测试全部通过后自动运行；有测试没通过就不发。
+  - 手动：Actions → Canary → Run workflow，不跑测试，直接用 main 现在的代码生成。或者手动运行 Tests 时勾选“测试没通过也照样更新 Canary”。
+  - `scripts/canary.mjs` 生成 `canary/bilibili-thread-ripper-canary.user.js`。代码没变就什么都不写；变了就以维护者的身份提交回 main，装了 Canary 的人随后自动更新。
+- **发版**（`.github/workflows/release.yml`）
+  - 在本地用 `node scripts/release.mjs` 发版，推送 main 和 tag 以后，这个 tag 会触发：先跑和 main 一样的全部测试（包括真实视频），通过后用 `scripts/release-notes.mjs` 取出 CHANGELOG 里这一版的说明，建一个 GitHub Release，附上脚本。
+  - 用户照样从 main 上的 `user_scripts/bilibili-thread-ripper.user.js` 自动更新，Release 只是记录和下载备份。也可以手动运行，给已经有的 tag 补一个 Release。
+
+</details>
 
 <details>
 <summary><b>目录结构、构建、测试和发版</b></summary>
 
 ```text
-src/          原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
-user_scripts/ 油猴脚本（发版时生成）和它的适配层；adapter/meta.json 是脚本头和打包顺序
-scripts/      构建和发版脚本
-dev/          本地测试
-icons/        脚本图标
+src/              原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
+user_scripts/     油猴脚本（发版时生成）和它的适配层；adapter/meta.json 是脚本头和打包顺序
+canary/           Canary 测试版脚本（由 Actions 生成，不要手改）
+scripts/          构建、发版、Canary 和贡献者脚本
+dev/              测试
+.github/workflows 自动测试、Canary 和发版
+icons/            脚本图标
 ```
 
-- **构建**：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag。想在自己浏览器里试，就在 Tampermonkey 里新建一个脚本，把这个文件的内容整个贴进去保存。
-- **测试**：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。
-- **发版**：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]`，然后在 main 上运行 `node scripts/release.mjs`（或 `npm run release`）。它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令。推送要自己来，推到 main 就等于发给所有用户。
+- **构建**：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag；加 `--canary` 生成 Canary 版 `dist/bilibili-thread-ripper-canary.user.js`。想在自己浏览器里试，就在脚本管理器里新建一个脚本，把文件内容整个贴进去保存。
+- **测试**：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。设置了 `BTR_TEST_BVID` 和 `BTR_TEST_CID` 时还会跑真实视频的测试（Playwright 自带的 Chromium 放不了 AAC 和 H.264，要用 Chrome）；`node dev/network-probe.mjs` 可以查到某个视频的 CID。
+- **发版**：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]`，然后在 main 上运行 `node scripts/release.mjs`（或 `npm run release`）。它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令。推送要自己来，推到 main 就等于发给所有用户；推送 tag 以后 GitHub Actions 会再测一遍并建 Release。
+- **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
+- **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。
 
-源码里的版本号都写成 `__BTR_VERSION__`，构建时才换成真实版本，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices 这 5 个文件桌面版也在用，改了要同步过去。
+源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices 这 5 个文件桌面版也在用，改了要同步过去。
 
 </details>
 
@@ -300,7 +335,7 @@ icons/        脚本图标
 我个人能力有限，由衷希望各路大佬都来贡献代码、提提意见，我都会看的。希望有朝一日 B 站能优化好海外的 CDN，我们也不用搞这么多复杂的玩意了。
 
 <a href="https://github.com/MrTangLuyao/Bilibili-thread-ripper/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=MrTangLuyao/Bilibili-thread-ripper" alt="贡献者">
+  <img src="pics/contributors.svg" alt="贡献者">
 </a>
 
 ## 开源协议
