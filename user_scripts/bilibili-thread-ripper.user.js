@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.24.1
+// @version      2026.10.25.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2886,6 +2886,13 @@ const chrome = (() => {
       }
     }
 
+    // Pauses the element to wait for data. Its "pause" event comes later and only if it was
+    // playing; counting those keeps it from being read as the viewer's pause.
+    function pauseForData(candidate) {
+      if (!video.paused) candidate.ownPauses += 1;
+      video.pause();
+    }
+
     function attemptAutoplay(candidate) {
       if (candidate.playAttempted || !candidate.resumeWanted || !sessionIsCurrent(candidate)) return;
       candidate.playAttempted = true;
@@ -2948,7 +2955,7 @@ const chrome = (() => {
         candidate.underflowRebuffers += 1;
         note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
         options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
-        video.pause();
+        pauseForData(candidate);
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
       if (candidate.recovering && ready) {
@@ -3044,7 +3051,7 @@ const chrome = (() => {
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -3147,7 +3154,7 @@ const chrome = (() => {
         candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
         candidate.playAttempted = false;
         candidate.seekPending = true;
-        video.pause();
+        pauseForData(candidate);
       }
       ensureBuffer(candidate);
       publishState();
@@ -3236,10 +3243,24 @@ const chrome = (() => {
           candidate.resumeWanted = true;
           candidate.playAttempted = false;
           candidate.recoveryTargetSeconds = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
-          video.pause();
+          pauseForData(candidate);
         }
         ensureBuffer(candidate);
       }
+    }, { signal: eventController.signal });
+    // While a session waits for data after a seek or a stall, the element is paused and the
+    // session remembers whether the viewer means it to play. Play or pause pressed meanwhile
+    // changes that: a second drag used to read the intent from before and leave the video
+    // paused for good. The pauses that start such a wait are ours and do not count.
+    video.addEventListener("play", () => {
+      const candidate = session;
+      if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = true;
+    }, { signal: eventController.signal });
+    video.addEventListener("pause", () => {
+      const candidate = session;
+      if (!candidate || !sessionIsCurrent(candidate)) return;
+      if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
+      else if (candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = false;
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
@@ -3481,7 +3502,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.24.1",
+        version: "2026.10.25.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4279,6 +4300,11 @@ const chrome = (() => {
   if (!core || !cdn) return;
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
+  // Which script this is: the released one, or the Canary built from main.
+  const SCRIPT_CHANNEL = "stable" === "canary" ? "canary" : "stable";
+  const CHANNEL_NAMES = { stable: "正式版", canary: "Canary" };
+  // Set by the other of the two scripts when both are switched on (see loader.js).
+  const otherScript = () => document.documentElement?.getAttribute("data-btr-also-running") || "";
   const HOST_ID = "__bilibili_thread_ripper_settings__";
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
@@ -4346,7 +4372,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.24.1</span>
+            <span class="version">v2026.10.25.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4356,6 +4382,7 @@ const chrome = (() => {
           <span></span>
         </label>
       </header>
+      <p id="also-running" class="also-running" role="alert" hidden></p>
 
       <section class="takeover-select" aria-label="接管方式">
         <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
@@ -4468,6 +4495,8 @@ const chrome = (() => {
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .name { display: grid; gap: 2px; min-width: 0; }
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+    .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
+    .also-running { margin: -10px 0 14px; padding: 8px 10px; border: 1px solid rgba(245, 179, 1, .55); border-radius: 8px; background: rgba(245, 179, 1, .12); color: var(--text); font-size: 12px; line-height: 1.55; }
     .title { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .github-link, .theme-toggle { display: grid; flex: none; place-items: center; width: 26px; height: 26px; border-radius: 6px; color: var(--muted); transition: color 160ms ease, background 160ms ease; }
     .github-link:hover, .theme-toggle:hover { color: var(--text); background: var(--hover); }
@@ -4602,7 +4631,9 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.24.1",
+        BTR: "2026.10.25.1",
+        渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
+        同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
         浏览器: navigator.userAgent,
         页面: `${location.origin}${location.pathname}`,
@@ -4665,6 +4696,13 @@ const chrome = (() => {
     shadow.append(style, backdrop, panel);
 
     const $ = (id) => shadow.getElementById(id);
+    // The released script and the Canary are both switched on: only this one runs.
+    const other = otherScript();
+    if (other) {
+      const alsoRunning = $("also-running");
+      alsoRunning.textContent = `正式版和 Canary 同时启用了。现在生效的是${CHANNEL_NAMES[SCRIPT_CHANNEL]}，${CHANNEL_NAMES[other] || other}没有运行。请在脚本管理器里只启用一个。`;
+      alsoRunning.hidden = false;
+    }
     const advanced = $("advanced");
     advanced.open = advancedOpen || options.advanced === true;
     advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });
@@ -5204,7 +5242,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.24.1",
+    version: "2026.10.25.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -6881,7 +6919,7 @@ const chrome = (() => {
         } catch (_error) {}
         // Playback state and node names only: no download address or account data.
         return JSON.stringify({
-          version: stats.version, scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
+          version: stats.version, channel: "stable" === "canary" ? "canary" : "stable", scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
           actualTakeover: !player ? "native" : player.nativeTransport ? "compat" : "full",
           nativeCore: { buffersLocked: lockedBuffers.size, mediaRequests: nativeMedia.requests },
           playback: video ? { currentTime: video.currentTime, duration: video.duration, ended: video.ended,
@@ -6891,7 +6929,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.24.1"
+      version: "2026.10.25.1"
     })
   });
   publish();
@@ -7145,7 +7183,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.24.1",
+    version: "2026.10.25.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7609,7 +7647,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.24.1"
+      version: "2026.10.25.1"
     })
   });
   publish();
@@ -7926,7 +7964,7 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.24.1";
+  const VERSION = "2026.10.25.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
@@ -8223,6 +8261,10 @@ const chrome = (() => {
 // unsafeWindow is the content script's global rather than the page's.
 const LOADED = "data-btr-userscript";
 const pageWindow = typeof unsafeWindow !== "undefined" && unsafeWindow ? unsafeWindow : window;
+// Which of the two scripts this is: the released one, or the Canary built from main.
+const CHANNEL = "stable" === "canary" ? "canary" : "stable";
+// Left on the page by the one of the two that found the other already running.
+const ALSO_RUNNING = "data-btr-also-running";
 
 // Which manager runs the script, its version and injection mode, for the diagnostic report
 // (Tampermonkey and Violentmonkey both describe themselves in GM_info).
@@ -8275,7 +8317,6 @@ function serveStorage() {
     }
   }
 }
-if (manager) serveStorage();
 
 function injected() {
   return document.documentElement?.hasAttribute(LOADED) === true;
@@ -8299,6 +8340,14 @@ function inject() {
 // The page code reads this mark once, when it starts, to know whether its settings go
 // through the manager ("live": the manager also reports other tabs' changes).
 function start() {
+  // The released script and the Canary may both be installed and switched on. Only the one
+  // that starts first runs: two would answer every settings request from two different
+  // stores. The other leaves its mark for the settings page, which asks for one to go.
+  if (injected()) {
+    document.documentElement.setAttribute(ALSO_RUNNING, CHANNEL);
+    return;
+  }
+  if (manager) serveStorage();
   if (manager) document.documentElement.setAttribute(STORAGE_MARK, managerReportsChanges ? "manager live" : "manager");
   const described = describeManager();
   if (described) document.documentElement.setAttribute(MANAGER_MARK, described);
@@ -8320,6 +8369,6 @@ else {
 let topLevelFrame = true;
 try { topLevelFrame = window.self === window.top; } catch (_error) {}
 if (typeof GM_registerMenuCommand === "function" && topLevelFrame) {
-  GM_registerMenuCommand("线程撕裂者设置", () => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
+  GM_registerMenuCommand(CHANNEL === "canary" ? "线程撕裂者 Canary 设置" : "线程撕裂者设置", () => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")));
 }
 })();
