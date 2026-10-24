@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.24.1
+// @version      2026.10.25.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -349,6 +349,87 @@ const chrome = (() => {
     parseRangeHeader,
     splitRange
   });
+})(globalThis);
+
+/* src/bilibili-site.js */
+// Bilibili's international site: the same pages under a language, /zh-Hans/video/…,
+// /en/bangumi/play/…, /ja/list/watchlater, or with ?site=OVERSEAS&lang=…, and a home page
+// without the channel bar. The user_site cookie (CN or OVERSEAS) tells both Bilibili's
+// server and its page code which site to show. page-hook.js reads addresses with the language
+// taken off; bridge.js keeps viewers on the domestic site while 阻止使用国际版 is on (off unless
+// switched on).
+//
+// The languages keep growing, so one is recognised by its form and by the browser knowing it
+// as a language, besides the ones the site has today (Chrome knows fewer languages than Node).
+(function installBilibiliSite(root) {
+  "use strict";
+
+  const KNOWN = ["zh-hans", "zh-hant", "en", "ja", "th", "vi", "id", "ar", "pt", "es", "tr", "ru", "ms"];
+  const TAG = /^[a-z]{2,3}(?:-[a-z]{4})?(?:-(?:[a-z]{2}|\d{3}))?$/i;
+  const COOKIE = "domain=.bilibili.com; path=/; max-age=31536000";
+  // Two trips back to the domestic site within this time: Bilibili keeps sending this tab to
+  // the international one (a signed-in account it allows nothing else), so it is left there.
+  const REDIRECT_WINDOW_MS = 15000;
+  const REDIRECT_KEY = "btr-domestic-site-redirects";
+  let names = null;
+  try { names = new Intl.DisplayNames(["en"], { type: "language", fallback: "none" }); } catch (_error) {}
+
+  function isLanguage(segment) {
+    const value = String(segment || "");
+    if (!TAG.test(value)) return false;
+    if (KNOWN.includes(value.toLowerCase())) return true;
+    try { return Boolean(names?.of(value)); } catch (_error) { return false; }
+  }
+
+  // The address's path without the language in front: /zh-Hans/video/BV… → /video/BV….
+  function withoutLanguage(pathname) {
+    const [, first = "", ...rest] = String(pathname || "/").split("/");
+    return isLanguage(first) ? `/${rest.join("/")}` : String(pathname || "/");
+  }
+
+  // The same page on the domestic site, or "" when this already is one.
+  function domesticAddress(href) {
+    let url;
+    try { url = new URL(String(href)); } catch (_error) { return ""; }
+    if (url.hostname !== "www.bilibili.com") return "";
+    let changed = false;
+    const path = withoutLanguage(url.pathname);
+    if (path !== url.pathname) { url.pathname = path; changed = true; }
+    if (String(url.searchParams.get("site") || "").toUpperCase() === "OVERSEAS") {
+      url.searchParams.delete("site");
+      url.searchParams.delete("lang");
+      changed = true;
+    }
+    return changed ? url.href : "";
+  }
+
+  function readCookie(name) {
+    const match = new RegExp(`(?:^|;\\s*)${name}=([^;]*)`).exec(document.cookie);
+    return match ? match[1] : null;
+  }
+
+  // Tells the server and Bilibili's page code to show the domestic site, so that
+  // bilibili.com/ is never sent on to bilibili.com/<language>.
+  function keepDomestic() {
+    if (readCookie("user_site") !== "CN") document.cookie = `user_site=CN; ${COOKIE}`;
+  }
+
+  // When the switch goes off, Bilibili chooses the site again, as it would without BTR.
+  function stopKeepingDomestic() {
+    if (readCookie("user_site") === "CN") document.cookie = `user_site=; domain=.bilibili.com; path=/; max-age=0`;
+  }
+
+  // Without the tab's own storage there is no way to tell a loop, so no redirect either.
+  function mayRedirect(now = Date.now()) {
+    try {
+      const recent = JSON.parse(sessionStorage.getItem(REDIRECT_KEY) || "[]").filter((at) => now - at < REDIRECT_WINDOW_MS);
+      if (recent.length >= 2) return false;
+      sessionStorage.setItem(REDIRECT_KEY, JSON.stringify([...recent, now]));
+      return true;
+    } catch (_error) { return false; }
+  }
+
+  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect });
 })(globalThis);
 
 /* src/cdn-resolver.js */
@@ -3502,7 +3583,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.24.1",
+        version: "2026.10.25.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4372,7 +4453,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.24.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.25.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4436,6 +4517,10 @@ const chrome = (() => {
           <section class="accel-controls" aria-label="加速范围">
             <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
             <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
+          </section>
+
+          <section class="site-controls" aria-label="网页版本">
+            <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
           </section>
 
           <section class="notice-controls" aria-label="提示设置">
@@ -4566,7 +4651,7 @@ const chrome = (() => {
     .scale span { width: 24px; text-align: center; }
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
-    .accel-controls, .notice-controls { margin-top: 12px; padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .accel-controls, .site-controls, .notice-controls { margin-top: 12px; padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
     .debug-filters[hidden] { display: none; }
     .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
@@ -4631,7 +4716,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.24.1",
+        BTR: "2026.10.25.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -4737,6 +4822,7 @@ const chrome = (() => {
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
+    const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
@@ -4820,6 +4906,7 @@ const chrome = (() => {
       renderHosts();
       liveEnabled.checked = settings.liveEnabled === true;
       episodeEnabled.checked = settings.episodeEnabled !== false;
+      blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
       errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
@@ -4841,6 +4928,7 @@ const chrome = (() => {
     });
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
     episodeEnabled.addEventListener("change", () => save({ episodeEnabled: episodeEnabled.checked }));
+    blockInternational.addEventListener("change", () => save({ blockInternational: blockInternational.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {
       const threads = THREAD_OPTIONS[Number(concurrency.value)];
@@ -5242,7 +5330,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.24.1",
+    version: "2026.10.25.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -5519,13 +5607,16 @@ const chrome = (() => {
   }
 
   function urlPathId() {
-    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
+    // The international site puts the language first (/zh-Hans/bangumi/play/…, see
+    // bilibili-site.js); without it the address is the same page.
+    const path = root.__BTR_BILIBILI_SITE__?.withoutLanguage(location.pathname) ?? location.pathname;
+    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(path);
     if (match) return match[1];
 
-    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(location.pathname);
+    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(path);
     if (episode) return episode[1];
 
-    if (/^\/list\//i.test(location.pathname)) {
+    if (/^\/list\//i.test(path)) {
       const bvid = new URLSearchParams(location.search).get("bvid") || "";
       if (/^BV[0-9A-Za-z]+$/i.test(bvid)) return bvid;
     }
@@ -6929,7 +7020,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.24.1"
+      version: "2026.10.25.1"
     })
   });
   publish();
@@ -7183,7 +7274,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.24.1",
+    version: "2026.10.25.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7647,7 +7738,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.24.1"
+      version: "2026.10.25.1"
     })
   });
   publish();
@@ -7964,12 +8055,12 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.24.1";
+  const VERSION = "2026.10.25.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
   // of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -7986,6 +8077,7 @@ const chrome = (() => {
       enabled: input?.enabled !== false,
       liveEnabled: input?.liveEnabled === true,
       episodeEnabled: input?.episodeEnabled !== false,
+      blockInternational: input?.blockInternational === true,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
@@ -8160,6 +8252,25 @@ const chrome = (() => {
     }
   }
 
+  // 阻止使用国际版 (bilibili-site.js), in the page's own frame: keeps the domestic site and
+  // takes an international address to the same page on it. Turned off, Bilibili chooses again.
+  const site = globalThis.__BTR_BILIBILI_SITE__;
+  let keepingDomestic = false;
+  function applySiteChoice() {
+    if (!site || window.top !== window) return;
+    if (!latestSettings.enabled || !latestSettings.blockInternational) {
+      if (keepingDomestic) site.stopKeepingDomestic();
+      keepingDomestic = false;
+      return;
+    }
+    keepingDomestic = true;
+    site.keepDomestic();
+    const target = site.domesticAddress(location.href);
+    if (!target) return;
+    if (site.mayRedirect()) location.replace(target);
+    else console.warn("BTR：B 站一直把这个标签页送回国际版（可能是账号只能用国际版），这个标签页先不再跳转。");
+  }
+
   chrome.storage.sync.get(null, (stored) => {
     latestSettings = normalizeStoredSettings({ ...DEFAULTS, ...stored });
     const retired = RETIRED_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(stored, key));
@@ -8170,6 +8281,7 @@ const chrome = (() => {
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
     postSettings();
+    applySiteChoice();
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -8182,6 +8294,7 @@ const chrome = (() => {
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
     postSettings();
+    applySiteChoice();
   });
 
   window.addEventListener("message", (event) => {
