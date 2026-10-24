@@ -9,6 +9,7 @@ const { chromium } = require("playwright");
     ["multipart-navigation-test.html", "multipart-navigation-result"],
     ["interactive-navigation-test.html", "interactive-navigation-result"],
     ["bangumi-navigation-test.html", "bangumi-navigation-result"],
+    ["bangumi-navigation-test.html?lang=zh-Hans", "bangumi-navigation-result"],
     ["episode-settings-test.html", "episode-settings-result"],
     ["takeover-error-test.html", "takeover-error-result"],
     ["floating-button-test.html", "result"],

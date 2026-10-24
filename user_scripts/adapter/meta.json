@@ -25,6 +25,7 @@
   "pageFiles": [
     "user_scripts/adapter/storage-shim.js",
     "src/range-core.js",
+    "src/bilibili-site.js",
     "src/cdn-resolver.js",
     "src/sidx.js",
     "src/idm-downloader.js",

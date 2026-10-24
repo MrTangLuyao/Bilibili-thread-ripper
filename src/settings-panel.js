@@ -149,6 +149,10 @@
             <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
           </section>
 
+          <section class="site-controls" aria-label="网页版本">
+            <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
+          </section>
+
           <section class="notice-controls" aria-label="提示设置">
             <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
             <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
@@ -277,7 +281,7 @@
     .scale span { width: 24px; text-align: center; }
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
-    .accel-controls, .notice-controls { margin-top: 12px; padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .accel-controls, .site-controls, .notice-controls { margin-top: 12px; padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
     .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
     .debug-filters[hidden] { display: none; }
     .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
@@ -448,6 +452,7 @@
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
+    const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
@@ -531,6 +536,7 @@
       renderHosts();
       liveEnabled.checked = settings.liveEnabled === true;
       episodeEnabled.checked = settings.episodeEnabled !== false;
+      blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
       errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
@@ -552,6 +558,7 @@
     });
     liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
     episodeEnabled.addEventListener("change", () => save({ episodeEnabled: episodeEnabled.checked }));
+    blockInternational.addEventListener("change", () => save({ blockInternational: blockInternational.checked }));
     floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
     concurrency.addEventListener("input", () => {
       const threads = THREAD_OPTIONS[Number(concurrency.value)];

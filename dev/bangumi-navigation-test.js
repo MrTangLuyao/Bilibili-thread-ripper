@@ -11,8 +11,13 @@
     headers: { "content-type": "application/json" }
   })), delay));
 
+  // ?lang=zh-Hans runs the same steps on the international site's addresses, which start with
+  // the language: /zh-Hans/bangumi/play/…
+  const lang = new URLSearchParams(location.search).get("lang") || "";
+  const prefix = lang ? `/${lang}` : "";
+
   // A season address: the episode comes from the playinfo embedded in the page.
-  history.replaceState(null, "", "/bangumi/play/ss9");
+  history.replaceState(null, "", `${prefix}/bangumi/play/ss9`);
   root.__playinfo__ = {
     code: 0,
     result: {
@@ -100,12 +105,12 @@
     if (calls.length === 1 && calls[0].marker === "ep101" && location.pathname.endsWith("ss9")) {
       // A late answer for the episode being left must not come back as the new one.
       playview(101);
-      history.pushState(null, "", "/bangumi/play/ep202");
+      history.pushState(null, "", `${prefix}/bangumi/play/ep202`);
       playview(202);
     } else if (calls.some((item) => item.marker === "ep202") && location.pathname.endsWith("ep202")) {
       clearInterval(steps);
       setTimeout(() => {
-        history.pushState(null, "", "/bangumi/play/ep303");
+        history.pushState(null, "", `${prefix}/bangumi/play/ep303`);
         drmSwitchedAt = Date.now();
       }, 800);
     }

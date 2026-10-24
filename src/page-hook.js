@@ -353,13 +353,16 @@
   }
 
   function urlPathId() {
-    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(location.pathname);
+    // The international site puts the language first (/zh-Hans/bangumi/play/…, see
+    // bilibili-site.js); without it the address is the same page.
+    const path = root.__BTR_BILIBILI_SITE__?.withoutLanguage(location.pathname) ?? location.pathname;
+    const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(path);
     if (match) return match[1];
 
-    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(location.pathname);
+    const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(path);
     if (episode) return episode[1];
 
-    if (/^\/list\//i.test(location.pathname)) {
+    if (/^\/list\//i.test(path)) {
       const bvid = new URLSearchParams(location.search).get("bvid") || "";
       if (/^BV[0-9A-Za-z]+$/i.test(bvid)) return bvid;
     }

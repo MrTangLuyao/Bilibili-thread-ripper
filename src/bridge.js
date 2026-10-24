@@ -7,7 +7,7 @@
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
   // of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -24,6 +24,7 @@
       enabled: input?.enabled !== false,
       liveEnabled: input?.liveEnabled === true,
       episodeEnabled: input?.episodeEnabled !== false,
+      blockInternational: input?.blockInternational === true,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
@@ -198,6 +199,25 @@
     }
   }
 
+  // 阻止使用国际版 (bilibili-site.js), in the page's own frame: keeps the domestic site and
+  // takes an international address to the same page on it. Turned off, Bilibili chooses again.
+  const site = globalThis.__BTR_BILIBILI_SITE__;
+  let keepingDomestic = false;
+  function applySiteChoice() {
+    if (!site || window.top !== window) return;
+    if (!latestSettings.enabled || !latestSettings.blockInternational) {
+      if (keepingDomestic) site.stopKeepingDomestic();
+      keepingDomestic = false;
+      return;
+    }
+    keepingDomestic = true;
+    site.keepDomestic();
+    const target = site.domesticAddress(location.href);
+    if (!target) return;
+    if (site.mayRedirect()) location.replace(target);
+    else console.warn("BTR：B 站一直把这个标签页送回国际版（可能是账号只能用国际版），这个标签页先不再跳转。");
+  }
+
   chrome.storage.sync.get(null, (stored) => {
     latestSettings = normalizeStoredSettings({ ...DEFAULTS, ...stored });
     const retired = RETIRED_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(stored, key));
@@ -208,6 +228,7 @@
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
     postSettings();
+    applySiteChoice();
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -220,6 +241,7 @@
     notices?.configure(latestSettings);
     syncTakeoverErrorNotice();
     postSettings();
+    applySiteChoice();
   });
 
   window.addEventListener("message", (event) => {
