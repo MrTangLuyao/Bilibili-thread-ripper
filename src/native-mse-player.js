@@ -19,6 +19,11 @@
   const QUOTA_FATAL_AHEAD_SECONDS = 10;
   // A video whose buffer stays full through this many waits is given up after all.
   const QUOTA_MAX_WAITS = 8;
+  // 二级缓冲: segments the browser's buffer has no room for wait in memory, at most this much
+  // for both tracks together; 64 MB for each GB the browser reports, 4 GB when it reports none.
+  const RESERVE_MAX_MB = 512;
+  const RESERVE_MB_PER_GB = 64;
+  const reserveLimitBytes = () => Math.min(RESERVE_MAX_MB, (Number(root.navigator?.deviceMemory) || 4) * RESERVE_MB_PER_GB) * 1024 * 1024;
 
   function playbackDeadlineAt(segmentStart, currentTime, playbackRate, now = performance.now()) {
     const rate = Math.max(0.25, Math.abs(Number(playbackRate) || 1));
@@ -557,6 +562,9 @@
         startupScheduled: false,
         followupScheduled: false,
         prefetches: new Map(),
+        // The prefetched segments that are in, whole and not yet written: a seek keeps those
+        // still ahead of it, and only the others count as downloads on their way.
+        ready: new Set(),
         operation: Promise.resolve()
       };
       await append(candidate, track, header.initialization, candidate.generation);
@@ -601,7 +609,10 @@
         onStartupScheduled: downloadOptions.onStartupScheduled,
         onOrderedChunk: downloadOptions.onOrderedChunk || null
       }).then(
-        (result) => ({ index, result }),
+        (result) => {
+          if (!result.streamed) track.ready.add(index);
+          return { index, result };
+        },
         (error) => ({ error, index })
       );
     }
@@ -657,6 +668,45 @@
       return Math.min(seconds, Math.max(0.5, aheadTarget(candidate) - 2));
     }
 
+    // 二级缓冲: once the browser's buffer holds what it can, further segments are downloaded up
+    // to the whole 预缓冲时长 and wait in memory, written as playback makes room. Without it
+    // the downloads stop where the buffer does, as they always did.
+    function downloadTarget(candidate) {
+      const settings = core.normalizeSettings(getSettings());
+      const buffer = aheadTarget(candidate);
+      return settings.secondaryBuffer ? Math.min(settings.bufferAheadSeconds, uiBufferLimit || Infinity) : buffer;
+    }
+
+    // Bytes of the segments downloaded or on their way and not yet written, both tracks.
+    function reserveBytes(candidate) {
+      let bytes = 0;
+      for (const track of candidate.tracks) {
+        for (const index of track.prefetches.keys()) bytes += Number(track.sidx.segments[index]?.length) || 0;
+      }
+      return bytes;
+    }
+
+    function scheduleReserve(candidate, track, current) {
+      const target = downloadTarget(candidate);
+      const limit = reserveLimitBytes();
+      // A few at a time, like the window that fills the buffer, behind its segments.
+      const window = track.kind === "video" ? 3 : 4;
+      let onTheirWay = 0;
+      for (const index of track.prefetches.keys()) if (!track.ready.has(index)) onTheirWay += 1;
+      for (let index = track.nextIndex; onTheirWay < window; index += 1) {
+        const segment = track.sidx.segments[index];
+        if (!segment || segment.startTime - current >= target) break;
+        if (track.prefetches.has(index) || track.held?.index === index) continue;
+        if (reserveBytes(candidate) + (Number(segment.length) || 0) > limit) break;
+        onTheirWay += 1;
+        track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 20 }).then((settled) => {
+          // The next one starts as soon as this one is in, not at the next check.
+          if (!settled.error && sessionIsCurrent(candidate)) ensureBuffer(candidate);
+          return settled;
+        }));
+      }
+    }
+
     async function fillTrack(candidate, track) {
       // The lock carries its generation: a loop cancelled by a seek must not unlock the loop
       // that replaced it, which would leave two loops downloading the same segments.
@@ -671,7 +721,10 @@
             track.complete = true;
             break;
           }
-          if (bufferedEndAt(track.sourceBuffer, current) - current >= aheadTarget(candidate)) break;
+          if (bufferedEndAt(track.sourceBuffer, current) - current >= aheadTarget(candidate)) {
+            if (core.normalizeSettings(getSettings()).secondaryBuffer) scheduleReserve(candidate, track, current);
+            break;
+          }
           // A sliding window: the next segment starts as soon as one has been appended. Waiting
           // for a whole batch left the connections idle until its slowest segment arrived.
           const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
@@ -709,7 +762,10 @@
           const pending = track.held ? null : track.prefetches.get(track.nextIndex);
           if (!track.held && !pending) break;
           const settled = track.held || await pending;
-          if (!track.held) track.prefetches.delete(settled.index);
+          if (!track.held) {
+            track.prefetches.delete(settled.index);
+            track.ready.delete(settled.index);
+          }
           if (settled.error) throw settled.error;
           if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
           if (!settled.result.streamed) {
@@ -1047,17 +1103,27 @@
       candidate.ending = false;
       clearTimeout(candidate.endRetryTimer);
       candidate.quotaWaits = 0;
+      const keepReady = core.normalizeSettings(getSettings()).secondaryBuffer;
       for (const track of candidate.tracks) {
         // Queued, so it runs after whatever write is in progress and before the new
         // position's first one: the parser forgets any half-written segment.
         queuedSourceOperation(candidate, track, async () => {
           if (candidate.mediaSource.readyState === "open") track.sourceBuffer.abort();
         }).catch(() => {});
+        const index = sidxTools.segmentIndexAt(track.sidx.segments, target);
+        // 二级缓冲: segments already in memory past the new position are used, not downloaded
+        // again; the ones still on their way were cancelled with the old generation.
+        const kept = keepReady ? [...track.prefetches].filter(([at]) => at >= index && track.ready.has(at)) : [];
         track.prefetches.clear();
+        track.ready.clear();
+        for (const [at, entry] of kept) {
+          track.prefetches.set(at, entry);
+          track.ready.add(at);
+        }
         track.held = null;
         track.complete = false;
         track.started = false;
-        track.nextIndex = track.startupIndex = sidxTools.segmentIndexAt(track.sidx.segments, target);
+        track.nextIndex = track.startupIndex = index;
       }
       // Media buffered far from the target only takes room the new position needs.
       const duration = Number(candidate.mediaSource.duration);
@@ -1447,6 +1513,13 @@
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
+        // 二级缓冲: the seconds of video waiting in memory, and the bytes held or on their way.
+        reserve: session?.tracks?.length ? {
+          seconds: Math.round([...(session.tracks.find((track) => track.kind === "video")?.ready || [])]
+            .reduce((sum, index) => sum + (Number(session.tracks.find((track) => track.kind === "video").sidx.segments[index]?.durationSeconds) || 0), 0) * 10) / 10,
+          bytes: reserveBytes(session),
+          limitBytes: reserveLimitBytes()
+        } : null,
         uiBufferLimit,
         urlDeadline: urlDeadlineSeconds(),
         // Errors from Bilibili's idle core that were kept out of the page's console.

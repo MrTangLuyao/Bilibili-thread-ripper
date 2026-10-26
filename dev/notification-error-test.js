@@ -32,9 +32,11 @@ function mockChrome() {
     if (navigate) await tab.goto(origin + "/dev/notification-home-test.html");
     await tab.evaluate(() => setTimeout(() => document.dispatchEvent(new CustomEvent("btr-userscript-open-settings")), 50));
     await tab.locator("#__bilibili_thread_ripper_settings__ .btr-popup").waitFor();
-    // The settings these tests use are under 高级设置, folded until clicked open.
+    // The settings these tests use are under 高级设置, a page of its own opened from the main one.
     const advanced = tab.locator("#__bilibili_thread_ripper_settings__ #advanced");
     if (!(await advanced.evaluate(node => node.open))) await advanced.locator("summary").click();
+    // They are under its 功能 tab.
+    await tab.locator('#__bilibili_thread_ripper_settings__ [role="tab"][data-tab="features"]').click();
   };
   const red = '.bubble[data-level="error"]:not(.leaving)';
   try {

@@ -95,9 +95,25 @@ async function chooseTheme(page, panel, value) {
   }
   assert.equal(await themeOf(panel), value);
 }
-// 高级设置 is folded until clicked open; the panel keeps it open for the rest of the page.
+// 高级设置 is a page of its own, opened from the main one and kept open for the rest of the
+// page; its settings are on tabs. 接管方式 and 运行状态 are on the main page.
+// Its pages and tabs glide in; a forced click lands only once they stand still. Only those
+// animations of the panel count: a transition of a control just hidden never reports its end.
+const settle = panel => panel.evaluate(node => Promise.all(node.getAnimations({ subtree: true })
+  .filter(animation => animation.constructor === Animation)
+  .map(animation => animation.finished.catch(() => {}))));
 async function unfold(panel) {
   if (!(await panel.locator("#advanced").evaluate(node => node.open))) await panel.locator("#advanced > summary").click();
+  await settle(panel);
+}
+async function showTab(panel, name) {
+  await unfold(panel);
+  await panel.locator(`[role="tab"][data-tab="${name}"]`).click();
+  await settle(panel);
+}
+async function showMain(panel) {
+  if (await panel.locator("#advanced").evaluate(node => node.open)) await panel.locator("#advanced-back").click();
+  await settle(panel);
 }
 
 (async () => {
@@ -153,8 +169,8 @@ async function unfold(panel) {
     await openSettings(page);
     const panel = page.locator(`${settingsHost} .btr-popup`);
     await panel.waitFor();
-    // 高级设置 starts folded with its note showing. A press ripples, and a ripple cut short by
-    // folding its part away does not play again when the part opens.
+    // 高级设置 starts closed with its note showing. A press ripples, and a ripple cut short by
+    // going back to the main page does not play again when 高级设置 opens again.
     const advanced = panel.locator("#advanced");
     assert.equal(await advanced.evaluate(node => node.open), false);
     assert.match(await advanced.locator("summary").textContent(), /高级设置[\s\S]*默认设置在绝大多数场景就是表现最优的/);
@@ -163,7 +179,7 @@ async function unfold(panel) {
     await panel.locator(".mode-select").waitFor();
     await panel.locator('.mode-select input[value="mainland"] + span').click();
     assert.equal(await panel.locator(".mode-select .btr-ripple").count(), 1);
-    await advanced.locator("summary").click();
+    await panel.locator("#advanced-back").click();
     await page.waitForTimeout(800);
     await advanced.locator("summary").click();
     await panel.locator(".mode-select").waitFor();
@@ -215,6 +231,7 @@ async function unfold(panel) {
     assert.equal(await panel.locator(".notice-controls #live-enabled").count(), 0);
     // The panel shows the script's own icon.
     assert.equal(await panel.locator("img.logo").getAttribute("src"), `data:image/png;base64,${fs.readFileSync(path.join(root, "icons/icon-128.png")).toString("base64")}`);
+    await showTab(panel, "features");
     await panel.locator("#episode-enabled").setChecked(false, { force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().episodeEnabled === false);
     await panel.locator("#episode-enabled").setChecked(true, { force: true });
@@ -226,6 +243,7 @@ async function unfold(panel) {
     // default, with the note for Safari users under it.
     assert.equal(await panel.locator('input[name="takeover"][value="full"]').isChecked(), true);
     assert.match(await panel.locator(".takeover-note").textContent(), /Safari 用户建议使用兼容模式/);
+    await showMain(panel);
     await panel.locator('input[name="takeover"][value="compat"]').check({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "compat");
     await panel.locator('input[name="takeover"][value="full"]').check({ force: true });
@@ -239,6 +257,7 @@ async function unfold(panel) {
     await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("默认不显示的错误", "显示错误关闭", "error"));
     await page.waitForTimeout(600);
     assert.equal(await page.locator(".bubble").count(), 0);
+    await showTab(panel, "features");
     await panel.locator("#error-notices").check();
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().errorNotices === true);
     await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("打开后显示的错误", "这一小段没能下载下来", "error"));
@@ -246,11 +265,13 @@ async function unfold(panel) {
     // The slider only counts once the automatic mode is switched off.
     assert.equal(await panel.locator("#auto-concurrency").isChecked(), true);
     assert.equal(await panel.locator("#concurrency").isDisabled(), true);
+    await showTab(panel, "network");
     await panel.locator("#auto-concurrency").uncheck({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().autoConcurrency === false);
     await panel.locator("#concurrency").fill("2");
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().concurrency === 16);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
+    await showTab(panel, "features");
     await panel.locator("#debug-notices").check();
     await panel.locator("#debug-filters").waitFor();
     assert.equal(await panel.locator("[data-debug-category]:checked").count(), 6);

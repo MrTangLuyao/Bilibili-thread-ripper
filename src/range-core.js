@@ -126,7 +126,11 @@
       stallTimeoutMs: 4000,
       attemptTimeoutMs: 15000,
       hedgeDelayMs: 900,
-      bufferAheadSeconds: 45
+      // 全接管预缓冲时长: how far ahead the full takeover buffers, one of a few choices.
+      bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
+      // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
+      // Experimental, off unless switched on.
+      secondaryBuffer: source.secondaryBuffer === true
     };
   }
 
