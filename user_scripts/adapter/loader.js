@@ -85,8 +85,6 @@ function inject() {
   if (!injected()) console.error("BTR: 无法在页面里启动线程撕裂者");
 }
 
-// The page code reads this mark once, when it starts, to know whether its settings go
-// through the manager ("live": the manager also reports other tabs' changes).
 function start() {
   // The released script and the Canary may both be installed and switched on. Only the one
   // that starts first runs: two would answer every settings request from two different
@@ -96,6 +94,8 @@ function start() {
     return;
   }
   if (manager) serveStorage();
+  // The page code reads this mark once, when it starts, to know whether its settings go
+  // through the manager ("live": the manager also reports other tabs' changes).
   if (manager) document.documentElement.setAttribute(STORAGE_MARK, managerReportsChanges ? "manager live" : "manager");
   const described = describeManager();
   if (described) document.documentElement.setAttribute(MANAGER_MARK, described);
@@ -113,7 +113,7 @@ else {
   observer.observe(document, { childList: true });
 }
 
-// The script now runs in live-site iframes too; the manager menu entry stays one per tab.
+// The script runs in bilibili's iframes too; the manager menu entry stays one per tab.
 let topLevelFrame = true;
 try { topLevelFrame = window.self === window.top; } catch (_error) {}
 if (typeof GM_registerMenuCommand === "function" && topLevelFrame) {

@@ -14,7 +14,9 @@
 
 [**安装**](#-安装) · [建议设置](#建议设置) · [原理](#原理解释) · [常见问题](#常见问题) · [反馈问题](#反馈问题) · [更新日志](CHANGELOG.md)
 
-<img src="docs/demo.gif" alt="线程撕裂者效果演示" width="58%"> <img src="pics/image-20260828033742780.png" alt="播放器设置里的线程撕裂者选项" width="39%">
+<img src="pics/readme-main-dark.png" alt="线程撕裂者设置面板" width="32%"> <img src="pics/readme-network-dark.png" alt="高级设置：网络" width="32%"> <img src="pics/readme-buffer-dark.png" alt="高级设置：缓冲" width="32%">
+<br>
+<img src="docs/demo.gif" alt="线程撕裂者效果演示" width="96%">
 
 </div>
 
@@ -83,6 +85,10 @@
 | 手动调优 | 大陆 CDN | 8 到 32 |
 | 设备性能弱 | 大陆 CDN | 4 到 8 |
 | 本地连大陆网络太差 | 海外 CDN | 自动 |
+
+<div align="center">
+<img src="pics/readme-advanced-light.png" alt="设置面板的高级设置：网络、缓冲和功能" width="96%">
+</div>
 
 **设置在哪里**，三个入口都可以：
 
@@ -291,14 +297,14 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 - **自动测试**（`.github/workflows/tests.yml`）
   - 每次推送和 PR：跑离线测试。按 `node dev/run-tests.js --list` 的分组同时跑：单元测试一组，每个浏览器测试各一组。
   - PR、推送到 main 和手动运行：再用真实 B 站视频跑 `dev/native-mse-end-test.js`，起播、拖动、播到结尾和跟随清晰度都测。两个视频同时跑；不登录，B 站只给 480P 和 360P，AVC、HEVC、AV1 三种编码都有。跑之前先用 `dev/network-probe.mjs` 看这台机器能不能用 B 站。GitHub 的 Linux 机器没有显卡，放不了 HEVC，HEVC 的两项会显示“跳过”。
-  - 手动运行（Actions → Tests → Run workflow）还可以勾选：在 Windows 和 macOS 的 Chrome 上试 HEVC；测试没通过也照样更新 Canary。
+  - 手动运行（Actions → Tests → Run workflow）可以取消真实视频测试或更新 Canary（默认都勾选），还可以勾选：在 Windows 和 macOS 的 Chrome 上试 HEVC；测试没通过也照样更新 Canary。
   - 每次运行的页面上都有一张汇总表。
 - **Canary**（`.github/workflows/canary.yml`）
   - 默认：main 上的测试全部通过后自动运行；有测试没通过就不发。
   - 手动：Actions → Canary → Run workflow，不跑测试，直接用 main 现在的代码生成。或者手动运行 Tests 时勾选“测试没通过也照样更新 Canary”。
   - `scripts/canary.mjs` 生成 `canary/bilibili-thread-ripper-canary.user.js`。代码没变就什么都不写；变了就以维护者的身份提交回 main，装了 Canary 的人随后自动更新。
 - **发版**（`.github/workflows/release.yml`）
-  - 在本地用 `node scripts/release.mjs` 发版，推送 main 和 tag 以后，这个 tag 会触发：先跑和 main 一样的全部测试（包括真实视频），通过后用 `scripts/release-notes.mjs` 取出 CHANGELOG 里这一版的说明，建一个 GitHub Release，附上脚本。
+  - 在本地用 `node scripts/release.mjs` 发版，推送 main 和 tag 以后，这个 tag 会触发：先跑和 main 一样的全部测试（包括真实视频），通过后用 `scripts/release-notes.mjs` 核对脚本的版本号、取出 CHANGELOG 里这一版的说明（开头加上“Chrome 独立插件版已停止维护”的提示），建一个 GitHub Release，附上脚本。
   - 用户照样从 main 上的 `user_scripts/bilibili-thread-ripper.user.js` 自动更新，Release 只是记录和下载备份。也可以手动运行，给已经有的 tag 补一个 Release。
 
 </details>
@@ -314,10 +320,11 @@ scripts/          构建、发版、Canary 和贡献者脚本
 dev/              测试
 .github/workflows 自动测试、Canary 和发版
 icons/            脚本图标
+pics/、docs/      README 里的图片，以及贡献者头像（pics/contributors.svg）
 ```
 
 - **构建**：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag；加 `--canary` 生成 Canary 版 `dist/bilibili-thread-ripper-canary.user.js`。想在自己浏览器里试，就在脚本管理器里新建一个脚本，把文件内容整个贴进去保存。
-- **测试**：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。设置了 `BTR_TEST_BVID` 和 `BTR_TEST_CID` 时还会跑真实视频的测试（Playwright 自带的 Chromium 放不了 AAC 和 H.264，要用 Chrome）；`node dev/network-probe.mjs` 可以查到某个视频的 CID。
+- **测试**：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。设置了 `BTR_TEST_BVID` 和 `BTR_TEST_CID` 时还会跑真实视频的测试（Playwright 自带的 Chromium 放不了 AAC 和 H.264，要用 Chrome）；CID 可以从 `https://api.bilibili.com/x/player/pagelist?bvid=<BV 号>` 返回的 `data[0].cid` 查到。
 - **发版**：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]`，然后在 main 上运行 `node scripts/release.mjs`（或 `npm run release`）。它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令。推送要自己来，推到 main 就等于发给所有用户；推送 tag 以后 GitHub Actions 会再测一遍并建 Release。
 - **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
 - **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。

@@ -54,13 +54,16 @@ jobs:
           VERSION: ${{ steps.build.outputs.version }}
         run: |
           git add canary
-          # Under the maintainer's own name, like every other commit in this repository.
+          # Under the maintainer's own name and noreply address, not the Actions bot.
           git -c user.name="LouieTang" -c user.email="65329281+MrTangLuyao@users.noreply.github.com" commit -q -m "canary $VERSION"
           git log -1 --format="作者: %an <%ae>%n提交者: %cn <%ce>%n%B"
+          # Three tries; if none of them gets through, the step fails instead of reporting
+          # a Canary that was never pushed.
           for attempt in 1 2 3; do
-            git push origin HEAD:main && break
+            git push origin HEAD:main && exit 0
             git pull --rebase origin main
           done
+          exit 1
       - name: 写进汇总
         if: steps.build.outcome == 'success'
         env:

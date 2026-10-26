@@ -56,8 +56,9 @@
     const ordered = allCards();
     for (const card of ordered) card.height = card.wrapper.offsetHeight;
     const errors = ordered.filter(card => card.isError).reverse();
-    // Red messages occupy a protected lane at the top of the notification
-    // column. Ordinary traffic cannot evict them or push them offscreen.
+    // Red messages occupy a protected lane above the ordinary ones, starting at
+    // most 560px above the bottom of the column. Ordinary traffic cannot evict
+    // them or push them offscreen.
     let top = Math.max(2, stack.clientHeight - 560);
     for (const card of errors) {
       moveUp(card, Math.min(card.y, top));
@@ -87,8 +88,9 @@
     const height = `${Math.max(0, innerHeight - bottom - 14)}px`;
     if (host.style.height === height) return;
     host.style.setProperty("height", height, "important");
-    // A cleared error or taller viewport may offer more space below. Existing
-    // messages keep their positions; only newly created messages use that space.
+    // When the takeover error notice below closes, or the viewport grows, there
+    // is more space below. Existing messages keep their positions; only newly
+    // created messages use that space.
     trimErrors();
     packUpwards();
   }
@@ -207,8 +209,8 @@
     card.fade?.cancel();
     card.motion?.cancel();
     card.wrapper.remove();
-    // Absolute positions intentionally leave a gap. Removing a bubble must not
-    // pull older bubbles down to refill a bottom-aligned flex layout.
+    // A removed bubble leaves its gap on purpose: older bubbles never move down
+    // to fill it.
   }
 
   function retire(card) {

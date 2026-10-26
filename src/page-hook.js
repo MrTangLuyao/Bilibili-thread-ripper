@@ -11,8 +11,8 @@
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
   // The userscript runs on every bilibili.com page. The video takeover belongs to the video
-  // pages only: the live site has its
-  // own module (live-hook.js), and elsewhere only the settings panel is wanted.
+  // pages only: the live site has its own module (live-hook.js), and elsewhere only the
+  // settings panel is wanted.
   const pageHost = root.location?.hostname || "";
   if (/(^|\.)bilibili\.com$/i.test(pageHost) && !/^(www|m)\.bilibili\.com$/i.test(pageHost)) return;
 
@@ -27,7 +27,8 @@
   let settingsLoaded = false;
   let player = null;
   let playerRoute = "";
-  // A CDN node that twice sends nothing is skipped until the page moves to another video.
+  // A CDN node that twice sends nothing, and a download address the nodes keep refusing, is
+  // skipped until the page moves to another video.
   // Restarting the takeover for the same video keeps the list.
   let cdnBanRoute = "";
   const cdnBans = root.__BILI_CDN_RESOLVER_FACTORY__?.createBanList({
@@ -75,9 +76,10 @@
     schedulePublish();
   });
 
+  const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
     version: "__BTR_VERSION__",
-    architecture: "bilibili-native-ui-progressive-mse-0.8-core",
+    architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
     quality: "",
@@ -386,7 +388,8 @@
     const podVideoKey = podBvid ? podBvid.toLowerCase() : "";
     // During an ordinary SPA navigation the previous collection DOM may stay
     // mounted for a moment. Only let a collection item override the URL when
-    // it is the item captured from the current click transaction.
+    // it is the item captured from the current click transaction, or the one
+    // the last collection switch took over (trustedPodVideoKey).
     const usePodBvid = Boolean(podBvid && (
       podVideoKey === pathVideoKey
       || (pendingPodSwitch?.targetVideoKey && podVideoKey === pendingPodSwitch.targetVideoKey)
@@ -406,7 +409,7 @@
   // An interactive video (互动视频) plays its branches as separate CIDs under the same BVID
   // and address; the player itself knows which branch is on. The first branch keeps the
   // ordinary route key, so the takeover does not start over when the player reports it.
-  // Returns the CID of the branch playing now when it is not the first one, otherwise 0.
+  // The first branch's CID, or 0 when this is not an interactive video.
   function interactiveFirstCid(videoKey, part) {
     try {
       const state = root.__INITIAL_STATE__;
@@ -417,6 +420,7 @@
     }
   }
 
+  // The CID of the branch playing now when it is not the first one, otherwise 0.
   function interactiveNode(videoKey, part) {
     const first = interactiveFirstCid(videoKey, part);
     if (!first) return 0;
@@ -528,8 +532,8 @@
         return root.__playinfo__;
       }
     } catch (_error) {}
-    const scripts = Array.from(document.scripts || []).reverse();
     if (identity?.key !== bootRouteKey) return null;
+    const scripts = Array.from(document.scripts || []).reverse();
     for (const script of scripts) {
       const text = script.textContent || "";
       if (!text.includes("__playinfo__") || !text.includes("__INITIAL_STATE__")) continue;
@@ -966,7 +970,8 @@
 
   // Stopping the full takeover without handing the video back takes our MediaSource off the
   // element, which then reads zero. A full takeover of the same video right after (重新接管,
-  // the debug restart, a switch of the takeover mode) started it over from there. It goes on
+  // a switch to the compatibility mode where Bilibili's core is missing) started it over
+  // from there. It goes on
   // where the viewer was instead, on the same element, playing or paused as before. The same
   // when Bilibili's player put a new source for the same video in place: that source reads
   // zero and paused too, and taking it over from there played a paused video from its start
@@ -1045,7 +1050,6 @@
       : pendingPodSwitch?.resume ?? (nativeVideo ? !nativeVideo.paused : true);
     pendingPodSwitch = {
       fromRoute: identity?.key || playerRoute || pendingPodSwitch?.fromRoute || "",
-      itemKey,
       targetVideoKey,
       resume,
       readyAt: Date.now() + 650,
@@ -1181,8 +1185,9 @@
   // seeking and quality switches wake them, they download the same segments in parallel with
   // ours (an 8K stream doubles the bandwidth bill), and their appends then crash forever on
   // the long-detached SourceBuffers — the endless "reading 'updating' of null" TypeErrors.
-  // While the takeover is active the controllers are stopped, and stopped again on every
-  // native wake-up; handing the video back to Bilibili starts them again.
+  // While the takeover is active the controllers are stopped: when it starts, every second,
+  // and every 150 ms during a quality switch. Handing the video back to Bilibili starts them
+  // again.
   function nativeStreamProcessors() {
     try { return root.player?.__core?.()?.getCorePlayer?.()?.getActiveStream?.()?.getProcessors?.() || []; }
     catch (_error) { return []; }
@@ -1191,14 +1196,14 @@
   const stoppedSchedulers = new WeakSet();
 
   // Stopping the controllers once a second still let them download: every seek or play woke
-  // them before the next stop, each time for several megabytes at 4K under their own ten
-  // seconds. Those downloads failed often enough for the core to show 错误码 6006 and reload
-  // the video (#49), and in a background tab the stop came only once a minute. Bilibili's
-  // dash core asks one question before it downloads anything: its schedule controller
-  // refuses to start, and stops scheduling, once the buffer controller says buffering is
-  // completed. While BTR plays the video, every native buffer controller says so, and the
-  // core asks its nodes for nothing; the original answer comes back with the video. A core
-  // without this method keeps the stop above.
+  // them before the next stop, each time for several megabytes at 4K toward their own
+  // ten-second buffer. Those downloads failed often enough for the core to show 错误码 6006
+  // and reload the video (#49), and in a background tab the stop came only once a minute.
+  // Bilibili's dash core asks one question before it downloads anything: its schedule
+  // controller refuses to start, and stops scheduling, once the buffer controller says
+  // buffering is completed. While BTR plays the video, every native buffer controller says
+  // so, and the core asks its nodes for nothing; the original answer comes back with the
+  // video. A core without this method still gets the stop in suppressNativeSchedulers below.
   const lockedBuffers = new Map();
   function lockNativeBuffers() {
     for (const processor of nativeStreamProcessors()) {
@@ -1596,7 +1601,7 @@
       }
       player = nextPlayer;
       remember("took over", `${route}${nextPlayer.nativeTransport ? " (兼容模式)" : ""}`);
-      stats.architecture = nextPlayer.nativeTransport ? "native-player-range-transport" : "bilibili-native-ui-progressive-mse-0.8-core";
+      stats.architecture = nextPlayer.nativeTransport ? "native-player-range-transport" : FULL_ARCHITECTURE;
       playerRoute = route;
       playerContainer = container;
       suppressNativeSchedulers();
@@ -1668,9 +1673,10 @@
         restartPlayer(true);
       }
       else {
-        // The download lists read the CDN mode and servers for every request, so a new choice
-        // applies to the next downloads. Restarting the player used to send the video back to
-        // its start.
+        // Everything else applies in place: the download lists read the CDN mode and servers
+        // for every request, the downloads the thread count for every range, and the full
+        // takeover its buffer settings whenever it tops the buffer up (applySettings does that
+        // at once). Restarting the player used to send the video back to its start.
         if (hadLoadedSettings && (previous.mode !== settings.mode || serversChanged) && playerRoute) preconnectCdnNodes(playerRoute);
         player?.applySettings?.(settings);
         startPlayer();

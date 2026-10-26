@@ -107,8 +107,7 @@
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
         .slice(0, 32),
-      // The round button in the page corner that opens the settings panel, and where the
-      // viewer dragged it: which side, and how far down as a share of the window height.
+      // The round button in the page corner that opens the settings panel.
       floatingButton: source.floatingButton !== false,
       // Where the viewer dragged it, as shares of the window (0 = flush left, 1 = flush
       // right); null when it was never moved.
@@ -119,7 +118,8 @@
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
-      // `concurrency` above is only what the viewer set by hand. Off unless asked for.
+      // `concurrency` above is only what the viewer set by hand. Off when the value is
+      // missing here; the userscript's stored settings (bridge.js) default it to on.
       autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,

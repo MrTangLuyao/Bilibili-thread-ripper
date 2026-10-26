@@ -1,9 +1,11 @@
 name: Release
 
 # A version tag, pushed after scripts/release.mjs (`git push origin <version>`), gets the same
-# tests as main, real videos included; when they pass, a GitHub Release with that version's
-# CHANGELOG section and the userscript. Users still update from the file on main: the Release
-# is the record, and a copy to download. It can also be run by hand for an existing tag.
+# tests as main, real videos included; when they pass, a GitHub Release with the notice about
+# the old Chrome extension, that version's CHANGELOG section and the userscript
+# (scripts/release-notes.mjs, which first checks the script's version). Users still update
+# from the file on main: the Release is the record, and a copy to download. It can also be
+# run by hand for an existing tag.
 on:
   push:
     tags: ['20*.*.*.*']

@@ -39,10 +39,10 @@
 
   // The ripple on everything that can be pressed, the same one as on louie1.com: a circle that
   // grows from where the press landed and fades out. A timer removes each circle after its run,
-  // not only animationend: an animation does not run while its element is hidden (a section
-  // folded away, the floating button taken off the page while the panel is open), so
-  // animationend would never come, and the leftover circle would play again as soon as the
-  // element showed up.
+  // not only animationend: an animation does not run while its element is hidden (a page or
+  // tab of the panel not shown, the floating button taken off the page while the panel is
+  // open), so animationend would never come, and the leftover circle would play again as
+  // soon as the element showed up.
   const RIPPLE_MS = 600;
   const RIPPLE_CSS = `
     .btr-ripple-host { overflow: hidden; }
@@ -207,7 +207,7 @@
             </div>
             <div class="block">
               <h2 class="block-title">调试</h2>
-              <section class="notice-controls" aria-label="提示设置">
+              <section class="notice-controls" aria-label="调试">
                 <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
                 <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
                 <fieldset id="debug-filters" class="debug-filters" hidden>
@@ -245,7 +245,7 @@
   const PANEL_CSS = `
     .btr-popup {
       --scheme: dark; --bg: #17191f; --surface: #20232a; --hover: #292d35;
-      --border: #30343d; --divider: #343943; --control-border: #444b57;
+      --divider: #343943; --control-border: #444b57;
       --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
       --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
       --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943;
@@ -253,7 +253,7 @@
     }
     .btr-popup[data-theme="light"] {
       --scheme: light; --bg: #fff; --surface: #f4f5f8; --hover: #e8ebf0;
-      --border: #d6dae2; --divider: #d6dae2; --control-border: #aeb6c4;
+      --divider: #d6dae2; --control-border: #aeb6c4;
       --text: #202532; --label: #363f50; --button-text: #363f50;
       --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
       --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff;
@@ -273,7 +273,8 @@
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
     /* With the master switch off the panel says so, and what only works with BTR on fades out
-       and cannot be used: not the notices, the debug log or the floating button, which still apply. */
+       and cannot be used: not 调试 (the notices and the diagnostic copy) or the floating button,
+       which still apply. */
     .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
     [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
     main.is-off [data-needs-enabled] { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
@@ -382,7 +383,7 @@
     .advanced > summary:hover { background: var(--hover); }
     .advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .advanced-title { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
-    .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); transition: transform 160ms ease; }
+    .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
     .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
     .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .view-main { margin-bottom: 14px; }
@@ -427,6 +428,7 @@
   let current = null;
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
+  let latestStats = null;
   // The debug notices shown on this page, newest last, for the diagnostic copy.
   const noticeHistory = [];
 
@@ -464,9 +466,9 @@
     const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
-  let latestStats = null;
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
-  // 高级设置 starts folded. Unfolded once, it stays so for the rest of this page.
+  // The panel opens on its main page, or on 高级设置 when it was closed there, for the rest
+  // of this page.
   let advancedOpen = false;
   // The tab of 高级设置 last shown, for the rest of this page too.
   let advancedTab = "network";
@@ -590,7 +592,6 @@
     });
     const enabled = $("enabled");
     const disabledNote = $("disabled-note");
-    const main = panel.querySelector("main");
     const needsEnabled = [...panel.querySelectorAll("[data-needs-enabled]")];
     const concurrency = $("concurrency");
     const autoConcurrency = $("auto-concurrency");
@@ -701,7 +702,7 @@
       showTheme(settings.theme);
       enabled.checked = settings.enabled;
       disabledNote.hidden = settings.enabled !== false;
-      main.classList.toggle("is-off", settings.enabled === false);
+      panelMain.classList.toggle("is-off", settings.enabled === false);
       for (const node of needsEnabled) node.inert = settings.enabled === false;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
@@ -850,7 +851,9 @@
     (document.body || document.documentElement).append(dialog);
     try { dialog.showModal(); }
     catch (_error) { dialog.setAttribute("open", ""); }
-    render(latestSettings || core.normalizeSettings({}));
+    // Until bridge.js sends the stored settings, its defaults: 自动线程数 is on there, while
+    // normalizeSettings on its own leaves it off.
+    render(latestSettings || core.normalizeSettings({ autoConcurrency: true }));
     post("get-settings");
     refresh();
     panel.focus();
@@ -861,7 +864,8 @@
   // The button in the corner of every bilibili page. The userscript manager's menu is not
   // obvious (and on the home page people do not find it at all), so the panel needs a way in
   // that is always visible.
-  // It hides while the video is fullscreen and while the panel itself is open.
+  // It hides while the video is fullscreen, while the panel itself is open, and when 悬浮按钮
+  // is switched off.
   const launcher = (() => {
     if (root.top !== root) return null;
     const MARGIN = 12;
@@ -869,7 +873,7 @@
     const DRAG_SLOP = 4;
     // Let go this close to the left or right edge and it snaps flush to it; let go anywhere
     // else and it simply stays where it was put.
-    const SNAP_MS = 72;
+    const SNAP_PX = 72;
     let host = null;
     let button = null;
     let wanted = true;
@@ -963,8 +967,8 @@
       // edge rather than the pixel, so it stays there whatever the window size. Dropped
       // anywhere else: it stays exactly where it was put.
       const width = root.innerWidth || 1;
-      if (left <= SNAP_MS) leftRatio = 0;
-      else if (left + size >= width - SNAP_MS) leftRatio = 1;
+      if (left <= SNAP_PX) leftRatio = 0;
+      else if (left + size >= width - SNAP_PX) leftRatio = 1;
       else leftRatio = clamp(left / width, 0, 1);
       topRatio = clamp(top / (root.innerHeight || 1), 0, 1);
       place();
@@ -1018,9 +1022,8 @@
         host?.remove();
         return;
       }
+      // Bilibili replaces large parts of the page when you navigate; mount puts it back if it went.
       mount();
-      // Bilibili replaces large parts of the page when you navigate; put it back if it went.
-      if (!host.isConnected) (document.body || document.documentElement).append(host);
       if (!dragging) place();
     }
 

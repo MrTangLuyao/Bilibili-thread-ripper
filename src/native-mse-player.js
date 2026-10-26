@@ -17,7 +17,8 @@
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
   const QUOTA_FATAL_AHEAD_SECONDS = 10;
-  // A video whose buffer stays full through this many waits is given up after all.
+  // A session that finds its buffer full more than this many times (since it started or
+  // last seeked, both tracks together) is given up after all.
   const QUOTA_MAX_WAITS = 8;
   // 二级缓冲: segments the browser's buffer has no room for wait in memory, at most this much
   // for both tracks together; 64 MB for each GB the browser reports, 4 GB when it reports none.
@@ -34,7 +35,8 @@
   // quality switch, or the retry it makes once BTR replaced the source) and seeks back to
   // it every time the element reports new metadata, until the video ends or the page
   // moves on. Every BTR session starts with new metadata, so after one such reload every
-  // drag of the progress bar and every quality switch ended up back at that old position.
+  // drag of the progress bar (each one then started a new session) and every quality switch
+  // ended up back at that old position.
   // The moment of its last reload is known here, so its seek can be told from a viewer's
   // and undone. Kept across players: the retake after a fallback is a new player.
   let nativeRestore = { key: "", time: 0 };
@@ -49,10 +51,6 @@
 
   function dashBody(playinfo) {
     return playinfo?.data?.dash ? playinfo.data : playinfo?.result?.dash ? playinfo.result : playinfo;
-  }
-
-  function dashData(playinfo) {
-    return dashBody(playinfo)?.dash || null;
   }
 
   function mimeFor(representation, fallbackKind) {
@@ -349,7 +347,7 @@
   // off for the rest of the tab (sessionStorage) or, when its server asks for it, for days
   // (localStorage). While a takeover is active those records are not written.
   const CODEC_FAILURE_KEYS = new Set(["enableHEVCError", "enableAV1Error", "decodeHEVCError", "decodeAV1Error", "bilibili_decode_error_obj"]);
-  const codecFailures = { blocked: 0, last: "" };
+  const codecFailures = { blocked: 0 };
   let codecFailureGuardInstalled = false;
   function installCodecFailureGuard() {
     const storage = root.Storage?.prototype;
@@ -359,7 +357,6 @@
     storage.setItem = function (key, value) {
       if (CODEC_FAILURE_KEYS.has(String(key)) && document.querySelector('[data-btr-mse-active="true"]')) {
         codecFailures.blocked += 1;
-        codecFailures.last = String(key);
         return;
       }
       return setItem.apply(this, arguments);
@@ -385,10 +382,10 @@
     let preferredCodec = normalizeCodec(options.preferredCodec);
     const preferredAudio = normalizeAudio(options.preferredAudio);
     let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec, preferredAudio);
-    let selectedVideo = selection.preferred;
     // The two representation objects the running session downloads from. Its resolvers keep
     // reading them, so fresh addresses always go into these two and never into a newer
     // selection's copies.
+    let selectedVideo = selection.preferred;
     let selectedAudio = selection.audio;
     let sessionStarts = 0;
     let sessionRequests = 0;
@@ -409,9 +406,18 @@
     let lastSeekMs = 0;
     let stallsAfterSeek = 0;
     let endedAt = 0;
-    // The initialization segment and the index of a representation never change, and a seek
-    // outside the buffer starts a new session for the same one. Asking for them again cost
-    // every such seek a round trip to the CDN before any media could be requested.
+    function noteSeekSettled() {
+      if (!seekStartedAt) return;
+      lastSeekMs = performance.now() - seekStartedAt;
+      seekStartedAt = 0;
+      seekSettledAt = performance.now();
+      stallsAfterSeek = 0;
+      options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
+    }
+    // The initialization segment and the index of a representation never change, and a later
+    // session often plays the same one again (a replay after the end, another audio track, a
+    // switch back to an earlier quality or codec). Asking for them again cost every such
+    // start a round trip to the CDN before any media could be requested.
     const trackHeaders = new Map();
     const timeline = [];
     function note(what, detail = "") {
@@ -493,9 +499,10 @@
           track.sourceBuffer.appendBuffer(bytes);
         } catch (error) {
           // The browser caps how much a SourceBuffer holds (about 150 MB of video in
-          // Chromium), which a 4K video reaches within the 45 second window. Freeing
-          // played data and asking for less ahead keeps the video playing; failing the
-          // append here would hand the whole video back to Bilibili.
+          // Chromium), which a 4K video can reach at the default 45 seconds ahead
+          // (预缓冲时长), and lower qualities at 90 or 180. Freeing played data and asking
+          // for less ahead keeps the video playing; failing the append here would hand the
+          // whole video back to Bilibili.
           if (error?.name !== "QuotaExceededError") throw error;
           const current = Number(video.currentTime) || 0;
           const ahead = Math.max(0, bufferedEndAt(track.sourceBuffer, current) - current);
@@ -562,8 +569,8 @@
         startupScheduled: false,
         followupScheduled: false,
         prefetches: new Map(),
-        // The prefetched segments that are in, whole and not yet written: a seek keeps those
-        // still ahead of it, and only the others count as downloads on their way.
+        // The prefetched segments that are in, whole and not yet written: with 二级缓冲 on, a
+        // seek keeps those still ahead of it; only the others count as downloads on their way.
         ready: new Set(),
         operation: Promise.resolve()
       };
@@ -595,15 +602,12 @@
     function segmentDownload(candidate, track, segment, index, downloadOptions = {}) {
       // Read again at every check of the downloader: a new playback rate, or the playhead
       // standing still during a stall, moves the deadline of pieces already on their way.
-      const deadlineAt = Number.isFinite(Number(downloadOptions.deadlineAt))
-        ? Number(downloadOptions.deadlineAt)
-        : () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
+      const deadlineAt = () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
       return downloader.downloadRange(segment, track.resolver, {
         signal: generationSignal(candidate),
         parallel: true,
         kind: track.kind,
         priority: downloadOptions.priority,
-        hurry: downloadOptions.hurry === true,
         deadlineAt,
         startup: downloadOptions.startup === true,
         onStartupScheduled: downloadOptions.onStartupScheduled,
@@ -644,19 +648,19 @@
         track.followupScheduled = true;
         const segment = track.sidx.segments[index];
         if (segment) track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
-          priority: 70,
-          hurry: true
+          priority: 70
         }));
       }
       ensureBuffer(candidate);
     }
 
     // How far ahead this session may buffer: the setting, brought down each time the
-    // browser's own buffer quota was hit.
+    // browser's own buffer quota was hit, and to ten seconds while Bilibili's controls load.
     function aheadTarget(candidate) {
       // Controls and thumbnails still need bandwidth while the native UI loads (#28).
       // Keep enough media for startup without filling the whole forward window yet.
-      // Stop checking once ready; an upstream layout change cannot cap buffering forever.
+      // Stop checking once ready, and stop waiting after NATIVE_UI_WAIT_MS: an upstream
+      // layout change cannot cap buffering forever.
       if (!nativeUiReady) nativeUiReady = performance.now() >= uiWaitUntil || Boolean(options.isNativeUiReady());
       uiBufferLimit = nativeUiReady ? 0 : NATIVE_UI_BUFFER_SECONDS;
       return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity, uiBufferLimit || Infinity);
@@ -673,11 +677,14 @@
     // the downloads stop where the buffer does, as they always did.
     function downloadTarget(candidate) {
       const settings = core.normalizeSettings(getSettings());
+      // Called in either case: it also refreshes uiBufferLimit, read below.
       const buffer = aheadTarget(candidate);
       return settings.secondaryBuffer ? Math.min(settings.bufferAheadSeconds, uiBufferLimit || Infinity) : buffer;
     }
 
-    // Bytes of the segments downloaded or on their way and not yet written, both tracks.
+    // Bytes of the segments downloaded or on their way and not yet written, both tracks, the
+    // ordinary window included; a segment held back by a full buffer (track.held) is not
+    // counted.
     function reserveBytes(candidate) {
       let bytes = 0;
       for (const track of candidate.tracks) {
@@ -686,14 +693,16 @@
       return bytes;
     }
 
+    // How many segments of a track are on their way at once, once it has started.
+    const fillWindow = (track) => (track.kind === "video" ? 3 : 4);
+
     function scheduleReserve(candidate, track, current) {
       const target = downloadTarget(candidate);
       const limit = reserveLimitBytes();
       // A few at a time, like the window that fills the buffer, behind its segments.
-      const window = track.kind === "video" ? 3 : 4;
       let onTheirWay = 0;
       for (const index of track.prefetches.keys()) if (!track.ready.has(index)) onTheirWay += 1;
-      for (let index = track.nextIndex; onTheirWay < window; index += 1) {
+      for (let index = track.nextIndex; onTheirWay < fillWindow(track); index += 1) {
         const segment = track.sidx.segments[index];
         if (!segment || segment.startTime - current >= target) break;
         if (track.prefetches.has(index) || track.held?.index === index) continue;
@@ -727,7 +736,7 @@
           }
           // A sliding window: the next segment starts as soon as one has been appended. Waiting
           // for a whole batch left the connections idle until its slowest segment arrived.
-          const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
+          const windowSize = track.started ? fillWindow(track) : 1;
           let projectedEnd = bufferedEndAt(track.sourceBuffer, current);
           for (let offset = 0; offset < windowSize; offset += 1) {
             const index = track.nextIndex + offset;
@@ -738,9 +747,6 @@
             const startup = !track.startupComplete && index === track.startupIndex;
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
-              // With under ten seconds buffered a late segment is a stall, so the downloader
-              // spreads its pieces and copies a slow one sooner.
-              hurry: segment.startTime - current < 10,
               startup,
               onStartupScheduled: startup ? () => {
                 track.startupScheduled = true;
@@ -892,13 +898,7 @@
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
       note("ready to play", `needed ${required.toFixed(1)} s buffered`);
-      if (seekStartedAt) {
-        lastSeekMs = performance.now() - seekStartedAt;
-        seekStartedAt = 0;
-        seekSettledAt = performance.now();
-        stallsAfterSeek = 0;
-        options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
-      }
+      noteSeekSettled();
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
@@ -942,13 +942,7 @@
           // where the panel's "how long did the jump take" is measured.
           if (candidate.seekPending) {
             candidate.seekPending = false;
-            if (seekStartedAt) {
-              lastSeekMs = performance.now() - seekStartedAt;
-              seekStartedAt = 0;
-              seekSettledAt = performance.now();
-              stallsAfterSeek = 0;
-              options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
-            }
+            noteSeekSettled();
           }
           options.onLog?.("缓冲补好了，可以继续播放", `已经备好接下来 ${ahead.toFixed(1)} 秒的数据。`, "success", "buffer");
           candidate.playAttempted = false;
@@ -1295,9 +1289,7 @@
       };
     }
 
-    // A refreshed playinfo names the same files with fresh signatures. The resolvers of a
-    // running session keep reading their representation objects, so those objects receive
-    // the new addresses; nothing else about the session changes.
+    // The expiry (seconds since the epoch) in an address's signature; 0 when it has none.
     function deadlineOf(representation) {
       try { return Number(new URL(representationUrl(representation)).searchParams.get("deadline")) || 0; }
       catch (_error) { return 0; }
@@ -1316,6 +1308,9 @@
       });
     }
 
+    // A refreshed playinfo names the same files with fresh signatures. The resolvers of a
+    // running session keep reading their representation objects, so those objects receive
+    // the new addresses; nothing else about the session changes.
     function refreshRepresentationUrls(target, source) {
       if (!target || !source || target === source) return;
       // Bilibili's page and the timed refresh both bring addresses, and the answer that
@@ -1513,7 +1508,8 @@
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
-        // 二级缓冲: the seconds of video waiting in memory, and the bytes held or on their way.
+        // 二级缓冲: the seconds of video waiting in memory, and the bytes downloaded or on
+        // their way and not yet written (see reserveBytes).
         reserve: session?.tracks?.length ? {
           seconds: Math.round([...(session.tracks.find((track) => track.kind === "video")?.ready || [])]
             .reduce((sum, index) => sum + (Number(session.tracks.find((track) => track.kind === "video").sidx.segments[index]?.durationSeconds) || 0), 0) * 10) / 10,

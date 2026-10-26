@@ -1,11 +1,11 @@
 // Builds the userscript: the header from user_scripts/adapter/meta.json, the page code (its
-// pageFiles, in that order) wrapped in pageCode(), and the loader around it. The version is
+// pageFiles, in that order) wrapped in pageCode(), and the loader after it. The version is
 // written in here and nowhere else: the source files carry the __BTR_VERSION__ placeholder,
 // and __BTR_CHANNEL__ for which of the two scripts this is ("stable" or "canary").
 //
 //   node scripts/build.mjs                        development build into dist/, with the
 //                                                 version of the latest tag
-//   node scripts/build.mjs --canary               the same as a Canary build, into dist/
+//   node scripts/build.mjs --canary               the same, built as the Canary, into dist/
 //   node scripts/build.mjs --release 2026.9.26.1  the file users install and update from;
 //                                                 only scripts/release.mjs does this
 //
@@ -56,11 +56,12 @@ export function buildUserscript(version, { channel = "stable", updateUrl = canar
   const fill = (text) => text.split(PLACEHOLDER).join(version).split(CHANNEL_PLACEHOLDER).join(channel);
   let text = ["// ==UserScript==", ...header, "// ==/UserScript==", "", "// 这个文件由 scripts/build.mjs 生成，不要直接修改。"].join("\n");
   text += "\n(function () {\n\"use strict\";\n\nfunction pageCode() {\n\"use strict\";\n";
-  // The live player sits in a live.bilibili.com iframe (/blanc/…), so frames get the script
-  // too; every other bilibili iframe (comments, events) leaves at once.
-  text += "if (window.top !== window && !/^live\\.bilibili\\.com$/i.test(location.hostname)) return;\n";
   text += "if (document.documentElement?.hasAttribute(\"data-btr-userscript\")) return;\n";
   text += "document.documentElement?.setAttribute(\"data-btr-userscript\", \"\");\n";
+  // The live player sits in a live.bilibili.com iframe (/blanc/…), so frames get the script
+  // too; every other bilibili iframe (comments, events) leaves at once. It is marked as
+  // started first all the same: without the mark the loader takes the start for failed.
+  text += "if (window.top !== window && !/^live\\.bilibili\\.com$/i.test(location.hostname)) return;\n";
   for (const file of meta.pageFiles) text += `\n/* ${file} */\n${fill(source(file))}\n`;
   text += "}\n";
   text += `\n/* ${meta.loader} */\n${fill(source(meta.loader))}\n`;

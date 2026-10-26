@@ -2,8 +2,8 @@
 // /en/bangumi/play/…, /ja/list/watchlater, or with ?site=OVERSEAS&lang=…, and a home page
 // without the channel bar. The user_site cookie (CN or OVERSEAS) tells both Bilibili's
 // server and its page code which site to show. page-hook.js reads addresses with the language
-// taken off; bridge.js keeps viewers on the domestic site while 阻止使用国际版 is on (off unless
-// switched on).
+// taken off; bridge.js keeps viewers on the domestic site while BTR and 阻止使用国际版 are both
+// on (阻止使用国际版 is off unless switched on).
 //
 // The languages keep growing, so one is recognised by its form and by the browser knowing it
 // as a language, besides the ones the site has today (Chrome knows fewer languages than Node).

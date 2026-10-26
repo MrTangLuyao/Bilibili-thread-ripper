@@ -9,7 +9,8 @@
 // 4. Builds user_scripts/bilibili-thread-ripper.user.js and runs dev/run-tests.js.
 // 5. Commits "release 2026.9.26.1" and tags it.
 // 6. Prints this release's CHANGELOG section and the push commands. It does not push: the
-//    file on main is what every user's script manager downloads.
+//    file on main is what every user's script manager downloads. Pushing the tag makes
+//    .github/workflows/release.yml publish the GitHub Release.
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -80,7 +81,7 @@ git("tag", version);
 
 // ---- 6. What to do next ----
 console.log(`\n已提交并打好 tag：${version}\n`);
-console.log("GitHub release 的说明（可以直接复制）：\n");
+console.log("这一版的更新说明（推送 tag 后 Actions 会用它建 GitHub Release）：\n");
 console.log(section.slice(heading.length).trim());
 console.log("\n确认没问题后推送（推送到 main 就等于发给所有用户）：\n");
 console.log("  git push origin main");

@@ -1,5 +1,5 @@
-// This small stand-in keeps the parts of the chrome.* API that bridge.js uses: storage,
-// and runtime.lastError for its callbacks.
+// This small stand-in keeps the part of the chrome.* API that bridge.js uses: storage. Its
+// callbacks also get runtime.lastError, as in the extension, though bridge.js does not read it.
 //
 // The settings live in the script manager's storage, which every bilibili subdomain shares.
 // Only the manager's side of the script (loader.js) can reach it, so this page code asks it

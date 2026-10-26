@@ -23,11 +23,6 @@
     "cn-hk-eq-01-03.bilivideo.com"
   ]);
 
-  const GLOBAL_HOSTS = Object.freeze([
-    ...OVERSEAS_HOSTS,
-    ...MAINLAND_HOSTS
-  ]);
-
   function isAkamaiUrl(value) {
     try { return new URL(value).hostname.toLowerCase().endsWith(".akamaized.net"); }
     catch (_error) { return false; }
@@ -61,7 +56,8 @@
     if (core.normalizeCdnHost(host) !== host) return null;
     try {
       const url = new URL(rawUrl);
-      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      // Setting only the host name would keep a non-standard port, such as a peer CDN's
+      // :4483, so the port is cleared too.
       url.hostname = host;
       url.port = "";
       return url.href;
@@ -70,8 +66,8 @@
     }
   }
 
-  // The custom mode uses only the servers picked in the settings. Without any, it works like
-  // the mainland mode.
+  // The custom mode uses only the servers picked in the settings. Without any, it uses the
+  // mainland node list.
   function customServers(mode, customHosts) {
     return mode === "custom" && Array.isArray(customHosts) ? customHosts.map(core.normalizeCdnHost).filter(Boolean) : [];
   }
@@ -94,7 +90,8 @@
     // those signatures too, so only in that case the akamaized.net addresses are the donors.
     // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
     // works, so each of them is tried; the ban list drops the refused one. Node-major order
-    // keeps the first requests spread over several nodes.
+    // puts every address in the first few requests, so one that every node refuses cannot
+    // take all of them.
     const synthetic = (donor
       ? hosts.map((host) => swapOrdinaryHost(donor, host))
       : hosts.flatMap((host) => ordinary.map((url) => swapOrdinaryHost(url, host, true))))
@@ -241,8 +238,8 @@
       return representationUrls(representation, getMode?.(), getCustomHosts?.() || []);
     }
 
-    // Banned nodes are left out. If every node is banned, keep using them rather
-    // than leaving the video with no download address at all.
+    // Banned nodes, addresses and node/address pairs are left out. If everything is banned,
+    // keep using the full list rather than leaving the video with no download address at all.
     function unbanned(list) {
       if (!bans) return list;
       const allowed = list.filter(bans.allows);
@@ -386,7 +383,6 @@
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
-    GLOBAL_HOSTS,
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
     createBanList,

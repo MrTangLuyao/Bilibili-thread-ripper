@@ -1,14 +1,15 @@
 (function installLiveCore(root) {
   "use strict";
 
-  // The parts of the live module that carry logic: playinfo parsing, playlist parsing,
-  // P2P/proxy URL handling and the host pool. No DOM and no timers, so dev tests can run
-  // all of it in Node.
+  // The parts of the live module that carry logic: playlist parsing, P2P/proxy URL handling
+  // and the host pool, plus a room playinfo parser that only the tests use. No DOM and no
+  // timers, so dev tests can run all of it in Node.
 
   // fMP4 HLS nodes that accept each other's signatures, verified by probing real streams
   // (2026-09): a segment signed for one of them downloads from all of them with HTTP 206,
-  // while FLV-line (ov-gotcha07) and TS-line (gotcha105) nodes answer 403. The pool probes
-  // each candidate once per stream before trusting it.
+  // while FLV-line (ov-gotcha07) and TS-line (gotcha105) nodes answer 403. The live module
+  // probes each candidate before trusting it, again with later playlists until it passes or
+  // is banned.
   const KNOWN_FMP4_HOSTS = Object.freeze([
     "d1--cn-gotcha204.bilivideo.com",
     "d1--cn-gotcha208.bilivideo.com",
@@ -114,13 +115,14 @@
 
   // Node health for one live stream. Live pieces are one second long, so the pool acts
   // fast: it ranks by first-byte time, blocks a failing node briefly, and bans one that
-  // twice sent nothing. An unproven candidate must pass a probe before it enters ranking.
+  // twice sent nothing. Proven nodes rank first; unproven candidates follow them until a
+  // probe or a download proves them.
   function createHostPool(options = {}) {
-    const health = new Map(); // host -> {fbMs, bps, failures, blockedUntil, lastSuccessAt, proven}
+    const health = new Map(); // host -> {fbMs, bps, failures, blockedUntil, proven, emptyReplies, banned}
     const now = () => (options.now ? options.now() : Date.now());
 
     function entry(host) {
-      if (!health.has(host)) health.set(host, { fbMs: 0, bps: 0, failures: 0, blockedUntil: 0, lastSuccessAt: 0, proven: false, emptyReplies: 0, banned: false });
+      if (!health.has(host)) health.set(host, { fbMs: 0, bps: 0, failures: 0, blockedUntil: 0, proven: false, emptyReplies: 0, banned: false });
       return health.get(host);
     }
 
@@ -136,7 +138,6 @@
         item.emptyReplies = 0;
         item.failures = 0;
         item.blockedUntil = 0;
-        item.lastSuccessAt = now();
         if (Number(fbMs) > 0) item.fbMs = item.fbMs ? item.fbMs * 0.6 + fbMs * 0.4 : fbMs;
         if (Number(bps) > 0) item.bps = item.bps ? item.bps * 0.6 + bps * 0.4 : bps;
       },
@@ -158,9 +159,8 @@
         const time = now();
         const all = [...health.entries()];
         const open = all.filter(([, item]) => !item.banned && item.blockedUntil <= time);
-        const pool = (open.length ? open : all.filter(([, item]) => !item.banned)).length
-          ? (open.length ? open : all.filter(([, item]) => !item.banned))
-          : all;
+        const unbanned = all.filter(([, item]) => !item.banned);
+        const pool = open.length ? open : unbanned.length ? unbanned : all;
         const ranked = pool.sort(([, a], [, b]) =>
           Number(b.proven) - Number(a.proven)
           || (a.fbMs || 9e9) - (b.fbMs || 9e9)
