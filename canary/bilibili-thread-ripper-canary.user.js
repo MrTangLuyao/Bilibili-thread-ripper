@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.25.2
+// @version      2026.10.26.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -338,7 +338,11 @@ const chrome = (() => {
       stallTimeoutMs: 4000,
       attemptTimeoutMs: 15000,
       hedgeDelayMs: 900,
-      bufferAheadSeconds: 45
+      // 全接管预缓冲时长: how far ahead the full takeover buffers, one of a few choices.
+      bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
+      // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
+      // Experimental, off unless switched on.
+      secondaryBuffer: source.secondaryBuffer === true
     };
   }
 
@@ -2183,6 +2187,11 @@ const chrome = (() => {
   const QUOTA_FATAL_AHEAD_SECONDS = 10;
   // A video whose buffer stays full through this many waits is given up after all.
   const QUOTA_MAX_WAITS = 8;
+  // 二级缓冲: segments the browser's buffer has no room for wait in memory, at most this much
+  // for both tracks together; 64 MB for each GB the browser reports, 4 GB when it reports none.
+  const RESERVE_MAX_MB = 512;
+  const RESERVE_MB_PER_GB = 64;
+  const reserveLimitBytes = () => Math.min(RESERVE_MAX_MB, (Number(root.navigator?.deviceMemory) || 4) * RESERVE_MB_PER_GB) * 1024 * 1024;
 
   function playbackDeadlineAt(segmentStart, currentTime, playbackRate, now = performance.now()) {
     const rate = Math.max(0.25, Math.abs(Number(playbackRate) || 1));
@@ -2721,6 +2730,9 @@ const chrome = (() => {
         startupScheduled: false,
         followupScheduled: false,
         prefetches: new Map(),
+        // The prefetched segments that are in, whole and not yet written: a seek keeps those
+        // still ahead of it, and only the others count as downloads on their way.
+        ready: new Set(),
         operation: Promise.resolve()
       };
       await append(candidate, track, header.initialization, candidate.generation);
@@ -2765,7 +2777,10 @@ const chrome = (() => {
         onStartupScheduled: downloadOptions.onStartupScheduled,
         onOrderedChunk: downloadOptions.onOrderedChunk || null
       }).then(
-        (result) => ({ index, result }),
+        (result) => {
+          if (!result.streamed) track.ready.add(index);
+          return { index, result };
+        },
         (error) => ({ error, index })
       );
     }
@@ -2821,6 +2836,45 @@ const chrome = (() => {
       return Math.min(seconds, Math.max(0.5, aheadTarget(candidate) - 2));
     }
 
+    // 二级缓冲: once the browser's buffer holds what it can, further segments are downloaded up
+    // to the whole 预缓冲时长 and wait in memory, written as playback makes room. Without it
+    // the downloads stop where the buffer does, as they always did.
+    function downloadTarget(candidate) {
+      const settings = core.normalizeSettings(getSettings());
+      const buffer = aheadTarget(candidate);
+      return settings.secondaryBuffer ? Math.min(settings.bufferAheadSeconds, uiBufferLimit || Infinity) : buffer;
+    }
+
+    // Bytes of the segments downloaded or on their way and not yet written, both tracks.
+    function reserveBytes(candidate) {
+      let bytes = 0;
+      for (const track of candidate.tracks) {
+        for (const index of track.prefetches.keys()) bytes += Number(track.sidx.segments[index]?.length) || 0;
+      }
+      return bytes;
+    }
+
+    function scheduleReserve(candidate, track, current) {
+      const target = downloadTarget(candidate);
+      const limit = reserveLimitBytes();
+      // A few at a time, like the window that fills the buffer, behind its segments.
+      const window = track.kind === "video" ? 3 : 4;
+      let onTheirWay = 0;
+      for (const index of track.prefetches.keys()) if (!track.ready.has(index)) onTheirWay += 1;
+      for (let index = track.nextIndex; onTheirWay < window; index += 1) {
+        const segment = track.sidx.segments[index];
+        if (!segment || segment.startTime - current >= target) break;
+        if (track.prefetches.has(index) || track.held?.index === index) continue;
+        if (reserveBytes(candidate) + (Number(segment.length) || 0) > limit) break;
+        onTheirWay += 1;
+        track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 20 }).then((settled) => {
+          // The next one starts as soon as this one is in, not at the next check.
+          if (!settled.error && sessionIsCurrent(candidate)) ensureBuffer(candidate);
+          return settled;
+        }));
+      }
+    }
+
     async function fillTrack(candidate, track) {
       // The lock carries its generation: a loop cancelled by a seek must not unlock the loop
       // that replaced it, which would leave two loops downloading the same segments.
@@ -2835,7 +2889,10 @@ const chrome = (() => {
             track.complete = true;
             break;
           }
-          if (bufferedEndAt(track.sourceBuffer, current) - current >= aheadTarget(candidate)) break;
+          if (bufferedEndAt(track.sourceBuffer, current) - current >= aheadTarget(candidate)) {
+            if (core.normalizeSettings(getSettings()).secondaryBuffer) scheduleReserve(candidate, track, current);
+            break;
+          }
           // A sliding window: the next segment starts as soon as one has been appended. Waiting
           // for a whole batch left the connections idle until its slowest segment arrived.
           const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
@@ -2873,7 +2930,10 @@ const chrome = (() => {
           const pending = track.held ? null : track.prefetches.get(track.nextIndex);
           if (!track.held && !pending) break;
           const settled = track.held || await pending;
-          if (!track.held) track.prefetches.delete(settled.index);
+          if (!track.held) {
+            track.prefetches.delete(settled.index);
+            track.ready.delete(settled.index);
+          }
           if (settled.error) throw settled.error;
           if (!sessionIsCurrent(candidate) || generation !== candidate.generation || signal.aborted) break;
           if (!settled.result.streamed) {
@@ -3211,17 +3271,27 @@ const chrome = (() => {
       candidate.ending = false;
       clearTimeout(candidate.endRetryTimer);
       candidate.quotaWaits = 0;
+      const keepReady = core.normalizeSettings(getSettings()).secondaryBuffer;
       for (const track of candidate.tracks) {
         // Queued, so it runs after whatever write is in progress and before the new
         // position's first one: the parser forgets any half-written segment.
         queuedSourceOperation(candidate, track, async () => {
           if (candidate.mediaSource.readyState === "open") track.sourceBuffer.abort();
         }).catch(() => {});
+        const index = sidxTools.segmentIndexAt(track.sidx.segments, target);
+        // 二级缓冲: segments already in memory past the new position are used, not downloaded
+        // again; the ones still on their way were cancelled with the old generation.
+        const kept = keepReady ? [...track.prefetches].filter(([at]) => at >= index && track.ready.has(at)) : [];
         track.prefetches.clear();
+        track.ready.clear();
+        for (const [at, entry] of kept) {
+          track.prefetches.set(at, entry);
+          track.ready.add(at);
+        }
         track.held = null;
         track.complete = false;
         track.started = false;
-        track.nextIndex = track.startupIndex = sidxTools.segmentIndexAt(track.sidx.segments, target);
+        track.nextIndex = track.startupIndex = index;
       }
       // Media buffered far from the target only takes room the new position needs.
       const duration = Number(candidate.mediaSource.duration);
@@ -3586,7 +3656,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.25.2",
+        version: "2026.10.26.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3611,6 +3681,13 @@ const chrome = (() => {
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
+        // 二级缓冲: the seconds of video waiting in memory, and the bytes held or on their way.
+        reserve: session?.tracks?.length ? {
+          seconds: Math.round([...(session.tracks.find((track) => track.kind === "video")?.ready || [])]
+            .reduce((sum, index) => sum + (Number(session.tracks.find((track) => track.kind === "video").sidx.segments[index]?.durationSeconds) || 0), 0) * 10) / 10,
+          bytes: reserveBytes(session),
+          limitBytes: reserveLimitBytes()
+        } : null,
         uiBufferLimit,
         urlDeadline: urlDeadlineSeconds(),
         // Errors from Bilibili's idle core that were kept out of the page's console.
@@ -4393,6 +4470,7 @@ const chrome = (() => {
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
   const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128];
+  const BUFFER_OPTIONS = [30, 45, 90, 180];
   const MAX_CUSTOM_HOSTS = 32;
   const HOST_GROUPS = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
   const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
@@ -4456,7 +4534,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.25.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.26.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4469,94 +4547,149 @@ const chrome = (() => {
       <p id="also-running" class="also-running" role="alert" hidden></p>
       <p id="disabled-note" class="disabled-note" role="status" hidden>线程撕裂者已关闭，打开右上角的开关即可启用。</p>
 
-      <section class="takeover-select" data-needs-enabled aria-label="接管方式">
-        <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
-        <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
-      </section>
-      <p class="takeover-note" data-needs-enabled>Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+      <div class="view-main">
+        <div class="block" data-needs-enabled>
+          <h2 class="block-title">接管方式</h2>
+          <section class="takeover-select" aria-label="接管方式">
+            <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
+            <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
+          </section>
+          <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+        </div>
+        <div class="block" data-needs-enabled>
+          <h2 class="block-title">运行状态</h2>
+          <section class="current-threads" aria-live="polite">
+            <span>目前总线程</span>
+            <b id="active-count">0</b>
+          </section>
+        </div>
+      </div>
 
       <details id="advanced" class="advanced">
         <summary>
           <span class="advanced-title">高级设置${CHEVRON_ICON}</span>
           <small>默认设置在绝大多数场景就是表现最优的。如果你遇到了问题，修改这里的一些设置可能有帮助。</small>
         </summary>
-        <div class="advanced-body">
-          <section class="mode-select" aria-label="CDN 模式" data-needs-enabled>
-            <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
-            <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
-            <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
-          </section>
-
-          <section id="custom-hosts" class="custom-hosts" aria-label="自定义服务器" data-needs-enabled hidden>
-            <div class="custom-head"><span>自定义服务器</span><b id="custom-count">0</b></div>
-            <p id="custom-empty" class="custom-note">还没选服务器，暂时按大陆 CDN 下载。</p>
-            <div id="known-hosts"></div>
-            <fieldset class="host-group">
-              <legend>手动添加</legend>
-              <div id="manual-hosts" class="manual-hosts"></div>
-              <form id="host-form" class="host-form">
-                <input id="host-input" type="text" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址">
-                <button type="submit">添加</button>
-              </form>
-              <p id="host-error" class="host-error" role="alert"></p>
-            </fieldset>
-            <p class="custom-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</p>
-          </section>
-
-          <section class="controls" data-needs-enabled>
-            <div class="control-title">
-              <label for="concurrency">线程加载数</label>
-              <output id="thread-value" for="concurrency">8</output>
+        <div class="advanced-page">
+          <div class="page-bar">
+            <button id="advanced-back" class="page-back" type="button" aria-label="返回">${CHEVRON_ICON}</button>
+            <span class="page-title">高级设置</span>
+          </div>
+          <div class="tabs" role="tablist" aria-label="高级设置">
+            <button id="tab-network" type="button" role="tab" data-tab="network" aria-controls="panel-network" aria-selected="true">网络</button>
+            <button id="tab-buffer" type="button" role="tab" data-tab="buffer" aria-controls="panel-buffer" aria-selected="false" tabindex="-1">缓冲</button>
+            <button id="tab-features" type="button" role="tab" data-tab="features" aria-controls="panel-features" aria-selected="false" tabindex="-1">功能</button>
+            <button id="tab-interface" type="button" role="tab" data-tab="interface" aria-controls="panel-interface" aria-selected="false" tabindex="-1">界面</button>
+          </div>
+          <div id="panel-network" class="tab-panel" role="tabpanel" aria-labelledby="tab-network" data-tab-panel="network">
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">CDN 模式</h2>
+              <section class="mode-select" aria-label="CDN 模式">
+                <label><input type="radio" name="mode" value="mainland"><span>大陆</span></label>
+                <label><input type="radio" name="mode" value="overseas"><span>海外</span></label>
+                <label><input type="radio" name="mode" value="custom"><span>自定义</span></label>
+              </section>
+              <section id="custom-hosts" class="custom-hosts" aria-label="自定义服务器" hidden>
+                <div class="custom-head"><span>自定义服务器</span><b id="custom-count">0</b></div>
+                <p id="custom-empty" class="custom-note">还没选服务器，暂时按大陆 CDN 下载。</p>
+                <div id="known-hosts"></div>
+                <fieldset class="host-group">
+                  <legend>手动添加</legend>
+                  <div id="manual-hosts" class="manual-hosts"></div>
+                  <form id="host-form" class="host-form">
+                    <input id="host-input" type="text" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址">
+                    <button type="submit">添加</button>
+                  </form>
+                  <p id="host-error" class="host-error" role="alert"></p>
+                </fieldset>
+                <p class="custom-note">只能填 B 站的视频服务器（bilivideo.com、akamaized.net 等），视频的下载地址不会发给别的网站。</p>
+              </section>
             </div>
-            <label class="auto-row" for="auto-concurrency"><span class="row-text">自动线程数（推荐）<small>BTR将智能选择需要的线程数。</small></span><span class="switch"><input id="auto-concurrency" type="checkbox" aria-label="自动线程数"><span></span></span></label>
-            <div class="slider">
-              <div id="slider-fill" class="slider-fill" aria-hidden="true"></div>
-              <input id="concurrency" type="range" min="0" max="5" step="1" value="1" aria-label="线程加载数" aria-valuetext="8">
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">线程</h2>
+              <section class="controls">
+                <div class="control-title">
+                  <label for="concurrency">线程加载数</label>
+                  <output id="thread-value" for="concurrency">8</output>
+                </div>
+                <label class="auto-row" for="auto-concurrency"><span class="row-text">自动线程数（推荐）<small>BTR将智能选择需要的线程数。</small></span><span class="switch"><input id="auto-concurrency" type="checkbox" aria-label="自动线程数"><span></span></span></label>
+                <div class="slider">
+                  <div id="slider-fill" class="slider-fill" aria-hidden="true"></div>
+                  <input id="concurrency" type="range" min="0" max="5" step="1" value="1" aria-label="线程加载数" aria-valuetext="8">
+                </div>
+                <div class="scale" aria-hidden="true">
+                  <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
+                </div>
+              </section>
             </div>
-            <div class="scale" aria-hidden="true">
-              <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
+          </div>
+          <div id="panel-buffer" class="tab-panel" role="tabpanel" aria-labelledby="tab-buffer" data-tab-panel="buffer" hidden>
+            <div class="block" data-needs-enabled>
+              <section class="controls buffer-controls" aria-label="缓冲">
+                <div class="control-title">
+                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>可能受到浏览器150MiB限制</small></label>
+                  <output id="buffer-value" for="buffer-ahead">45s</output>
+                </div>
+                <div class="slider">
+                  <div id="buffer-fill" class="slider-fill" aria-hidden="true"></div>
+                  <input id="buffer-ahead" type="range" min="0" max="3" step="1" value="1" aria-label="全接管预缓冲时长" aria-valuetext="45 秒">
+                </div>
+                <div class="scale" aria-hidden="true">
+                  <span>30s</span><span>45s</span><span>90s</span><span>180s</span>
+                </div>
+                <label class="auto-row" for="secondary-buffer"><span class="row-text">开启二级缓冲（实验性）<small>尝试绕过浏览器视频缓冲容量限制</small></span><span class="switch"><input id="secondary-buffer" type="checkbox" aria-label="开启二级缓冲（实验性）"><span></span></span></label>
+              </section>
             </div>
-          </section>
-
-          <section class="accel-controls" aria-label="加速范围" data-needs-enabled>
-            <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
-            <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
-          </section>
-
-          <section class="site-controls" aria-label="网页版本" data-needs-enabled>
-            <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
-          </section>
-
-          <section class="notice-controls" aria-label="提示设置">
-            <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
-            <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
-            <label class="notice-row" for="floating-button"><span class="row-text">悬浮按钮</span><span class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></span></label>
-            <fieldset id="debug-filters" class="debug-filters" hidden>
-              <legend>显示哪些 Debug 消息</legend>
-              <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
-              <div class="debug-filter-options">
-                <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
-                <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
-                <label><input type="checkbox" data-debug-category="download">下载线程</label>
-                <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
-                <label><input type="checkbox" data-debug-category="settings">设置变化</label>
-                <label><input type="checkbox" data-debug-category="other">其他日志</label>
-              </div>
-              <div class="debug-copy">
-                <button id="debug-copy" type="button">复制诊断信息</button>
-                <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
-              </div>
-              <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
-              <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
-            </fieldset>
-          </section>
+          </div>
+          <div id="panel-features" class="tab-panel" role="tabpanel" aria-labelledby="tab-features" data-tab-panel="features" hidden>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">加速范围</h2>
+              <section class="accel-controls" aria-label="加速范围">
+                <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
+                <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
+              </section>
+            </div>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">网页版本</h2>
+              <section class="site-controls" aria-label="网页版本">
+                <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
+              </section>
+            </div>
+            <div class="block">
+              <h2 class="block-title">调试</h2>
+              <section class="notice-controls" aria-label="提示设置">
+                <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
+                <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
+                <fieldset id="debug-filters" class="debug-filters" hidden>
+                  <legend>显示哪些 Debug 消息</legend>
+                  <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
+                  <div class="debug-filter-options">
+                    <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
+                    <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
+                    <label><input type="checkbox" data-debug-category="download">下载线程</label>
+                    <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
+                    <label><input type="checkbox" data-debug-category="settings">设置变化</label>
+                    <label><input type="checkbox" data-debug-category="other">其他日志</label>
+                  </div>
+                  <div class="debug-copy">
+                    <button id="debug-copy" type="button">复制诊断信息</button>
+                    <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
+                  </div>
+                  <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
+                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
+                </fieldset>
+              </section>
+            </div>
+          </div>
+          <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
+            <div class="block">
+              <section class="interface-controls" aria-label="界面">
+                <label class="notice-row" for="floating-button"><span class="row-text">悬浮按钮</span><span class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></span></label>
+              </section>
+            </div>
+          </div>
         </div>
       </details>
-
-      <section class="current-threads" aria-live="polite" data-needs-enabled>
-        <span>目前总线程</span>
-        <b id="active-count">0</b>
-      </section>
     </main>`;
 
   const PANEL_CSS = `
@@ -4565,21 +4698,25 @@ const chrome = (() => {
       --border: #30343d; --divider: #343943; --control-border: #444b57;
       --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
       --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
-      --error: #f28b85; --success: #9fd9a8; --focus: #fff;
+      --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943;
+      --shadow: 0 24px 60px rgba(0, 0, 0, .5), 0 2px 10px rgba(0, 0, 0, .3);
     }
     .btr-popup[data-theme="light"] {
       --scheme: light; --bg: #fff; --surface: #f4f5f8; --hover: #e8ebf0;
       --border: #d6dae2; --divider: #d6dae2; --control-border: #aeb6c4;
       --text: #202532; --label: #363f50; --button-text: #363f50;
       --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
-      --error: #b42318; --success: #227536; --focus: #244e9b;
+      --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff;
+      --shadow: 0 24px 60px rgba(15, 23, 42, .18), 0 2px 10px rgba(15, 23, 42, .08);
     }
     * { box-sizing: border-box; }
     .btr-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .35); }
-    .btr-popup { position: fixed; top: 72px; right: 24px; width: 320px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .45); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; user-select: none; -webkit-user-select: none; }
+    .btr-popup { position: fixed; top: 72px; right: 24px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; border: 0; border-radius: 16px; box-shadow: var(--shadow); color-scheme: var(--scheme); font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: normal; text-align: left; user-select: none; -webkit-user-select: none; }
     input, textarea { user-select: text; -webkit-user-select: text; }
-    main { padding: 18px 16px; }
-    header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 22px; }
+    /* The panel takes the focus when it opens, for the keyboard; it is no control to outline. */
+    .btr-popup:focus { outline: none; }
+    main { padding: 18px 18px 14px; }
+    header { display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 11px; margin-bottom: 18px; }
     .logo { display: block; width: 42px; height: 42px; }
     h1 { margin: 0; font-size: 17px; letter-spacing: .2px; }
     .name { display: grid; gap: 2px; min-width: 0; }
@@ -4606,20 +4743,22 @@ const chrome = (() => {
     .switch input:checked + span { background: #fb7299; }
     .switch input:checked + span::after { transform: translateX(18px); }
     .switch input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 3px; }
-    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--border); }
+    .mode-select { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .mode-select label { position: relative; }
     .mode-select input { position: absolute; opacity: 0; }
-    .mode-select span { display: block; padding: 10px 6px; color: var(--muted); background: var(--surface); font-size: 12px; text-align: center; cursor: pointer; }
+    .mode-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .mode-select input:not(:checked) + span:hover { color: var(--text); }
     .mode-select input:checked + span { color: #fff; background: #fb7299; }
     .mode-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
-    .takeover-select { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; margin-bottom: 8px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--border); }
+    .takeover-select { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; margin-bottom: 8px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .takeover-select label { position: relative; }
     .takeover-select input { position: absolute; opacity: 0; }
-    .takeover-select span { display: block; padding: 10px 6px; color: var(--muted); background: var(--surface); font-size: 12px; text-align: center; cursor: pointer; }
+    .takeover-select span { display: block; padding: 8px 6px; border-radius: 7px; color: var(--muted); background: transparent; font-size: 12px; text-align: center; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .takeover-select input:not(:checked) + span:hover { color: var(--text); }
     .takeover-select input:checked + span { color: #fff; background: #fb7299; }
     .takeover-select input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: -3px; }
-    .takeover-note { margin: 0 0 12px; padding: 0 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
-    .custom-hosts { margin-bottom: 12px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .takeover-note { margin: 0; padding: 0 2px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
+    .custom-hosts { margin-top: 8px; padding: 14px 16px; border-radius: 12px; background: var(--surface); }
     .custom-hosts[hidden] { display: none; }
     .custom-head { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
     .custom-head b { min-width: 28px; padding: 2px 8px; border-radius: 5px; background: #fb7299; color: #fff; font-size: 12px; text-align: center; }
@@ -4637,12 +4776,12 @@ const chrome = (() => {
     .host-error { min-height: 0; margin: 6px 0 0; color: var(--error); font-size: 11px; }
     .host-error:empty { display: none; }
     .host-form input:focus-visible, .host-form button:focus-visible, .manual-host button:focus-visible, .host-option input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .controls { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .controls { padding: 12px 16px; border-radius: 12px; background: var(--surface); }
     .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
     .control-title label { color: var(--label); font-size: 13px; }
     /* A switch row is pressed as a whole: it reaches to near the edge of its block, and its
        padding stands in for the space the rows used to keep between them. */
-    .auto-row, .accel-row, .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 -10px; padding: 7px 10px; border-radius: 6px; color: var(--label); font-size: 13px; cursor: pointer; transition: background 160ms ease; }
+    .auto-row, .accel-row, .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 -10px; padding: 6px 10px; border-radius: 6px; color: var(--label); font-size: 13px; cursor: pointer; transition: background 160ms ease; }
     .auto-row:hover, .accel-row:hover, .notice-row:hover { background: var(--hover); }
     .auto-row { margin-bottom: 7px; }
     .auto-row .switch, .accel-row .switch, .notice-row .switch { flex: none; }
@@ -4660,7 +4799,7 @@ const chrome = (() => {
     .scale span { width: 24px; text-align: center; }
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
-    .accel-controls, .site-controls, .notice-controls { margin-top: 12px; padding: 7px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+    .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
     .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
     .debug-filters[hidden] { display: none; }
     .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
@@ -4680,23 +4819,44 @@ const chrome = (() => {
     .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .current-threads { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--label); font-size: 13px; }
+    .current-threads { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
     .current-threads b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 32px); margin: 0 16px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
     .btr-close:hover { background: #565e6c; }
     /* Solid, for the content scrolling under it. */
     .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
     .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
     .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .advanced > summary { display: block; padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); list-style: none; cursor: pointer; transition: background 160ms ease; }
+    .advanced > summary { display: block; padding: 14px 16px; border-radius: 12px; background: var(--surface); list-style: none; cursor: pointer; transition: background 160ms ease; }
     .advanced > summary::-webkit-details-marker { display: none; }
     .advanced > summary:hover { background: var(--hover); }
     .advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .advanced-title { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
     .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); transition: transform 160ms ease; }
-    .advanced[open] .advanced-title svg { transform: rotate(180deg); }
     .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
-    .advanced-body { margin-top: 12px; }
+    .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
+    .view-main { margin-bottom: 14px; }
+    .tab-panel[hidden] { display: none; }
+    .block { min-width: 0; }
+    .block-title { margin: 0 0 6px 2px; color: var(--subtle); font-size: 11px; font-weight: 600; line-height: 1.4; }
+    .control-title small { display: block; margin-top: 2px; color: var(--subtle); font-size: 11px; }
+    .buffer-controls .scale span { width: auto; }
+    .buffer-controls .auto-row { margin: 10px -10px 0; }
+    /* 高级设置 is a page of its own: its entry leads in, its bar back, and its tabs keep each
+       part short enough for one screen. */
+    main.is-advanced .view-main, main.is-advanced .advanced > summary { display: none; }
+    .advanced > summary .advanced-title svg { transform: rotate(-90deg); }
+    .page-bar { display: flex; align-items: center; gap: 4px; margin: -4px 0 12px -6px; }
+    .page-back { display: grid; flex: none; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .page-back:hover { background: var(--hover); color: var(--text); }
+    .page-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .page-back svg { width: 18px; height: 18px; transform: rotate(90deg); }
+    .page-title { color: var(--text); font-size: 15px; font-weight: 600; }
+    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 14px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    .tabs button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
+    .tabs button:hover { color: var(--text); }
+    .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
+    .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
     .host-option, .debug-filter-options label { border-radius: 4px; }
     .btr-popup { --ripple: rgba(251, 114, 153, .35); }
     .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
@@ -4728,7 +4888,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.25.2",
+        BTR: "2026.10.26.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -4758,6 +4918,8 @@ const chrome = (() => {
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
   // 高级设置 starts folded. Unfolded once, it stays so for the rest of this page.
   let advancedOpen = false;
+  // The tab of 高级设置 last shown, for the rest of this page too.
+  let advancedTab = "network";
 
   function open(options = {}) {
     if (current) return;
@@ -4801,8 +4963,72 @@ const chrome = (() => {
       alsoRunning.hidden = false;
     }
     const advanced = $("advanced");
-    advanced.open = advancedOpen || options.advanced === true;
+    const panelMain = panel.querySelector("main");
+    const tabs = [...panel.querySelectorAll('[role="tab"]')];
+    const tabPanels = [...panel.querySelectorAll("[data-tab-panel]")];
+    const still = () => root.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const EASE = "cubic-bezier(.2, .8, .2, 1)";
+    // The panel's height glides to what it shows next instead of jumping there.
+    const resize = (change) => {
+      const from = panel.offsetHeight;
+      change();
+      const to = panel.offsetHeight;
+      if (still() || Math.abs(to - from) < 2) return;
+      panel.style.overflow = "hidden";
+      panel.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 240, easing: EASE }).finished
+        .finally(() => { panel.style.overflow = ""; }).catch(() => {});
+    };
+    const enter = (node, from) => {
+      if (node && !still()) node.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
+    };
+    const selectTab = (name) => {
+      advancedTab = name;
+      for (const tab of tabs) {
+        tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
+        tab.tabIndex = tab.dataset.tab === name ? 0 : -1;
+      }
+      for (const part of tabPanels) part.hidden = part.dataset.tabPanel !== name;
+    };
+    const showAdvanced = (show, animate = true) => {
+      const change = () => {
+        advanced.open = show;
+        panelMain.classList.toggle("is-advanced", show);
+      };
+      if (!animate) return change();
+      clearRipples(panel);
+      resize(change);
+      enter(panel.querySelector(show ? ".advanced-page" : ".view-main"), show ? "translateX(18px)" : "translateX(-18px)");
+    };
+    // "自定义" in the gear menu opens it on the custom servers, under 网络.
+    selectTab(options.advanced === true ? "network" : advancedTab);
+    showAdvanced(advancedOpen || options.advanced === true, false);
     advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });
+    advanced.querySelector("summary").addEventListener("click", (event) => {
+      event.preventDefault();
+      showAdvanced(true);
+      // From the keyboard, the focus follows to the page's way back.
+      if (event.detail === 0) $("advanced-back").focus();
+    });
+    $("advanced-back").addEventListener("click", (event) => {
+      showAdvanced(false);
+      if (event.detail === 0) advanced.querySelector("summary").focus();
+    });
+    for (const tab of tabs) {
+      tab.addEventListener("click", () => {
+        if (tab.dataset.tab === advancedTab) return;
+        resize(() => selectTab(tab.dataset.tab));
+        enter(tabPanels.find((part) => !part.hidden), "translateY(6px)");
+      });
+    }
+    // The arrow keys go from tab to tab, as in any tab list.
+    panel.querySelector(".tabs").addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      const next = tabs[(tabs.findIndex((tab) => tab.dataset.tab === advancedTab) + step + tabs.length) % tabs.length];
+      next.focus();
+      next.click();
+    });
     // A press ripples over a whole switch row, the colored part of any other switch or of a
     // choice, otherwise over the control itself.
     panel.addEventListener("pointerdown", (event) => {
@@ -4833,6 +5059,10 @@ const chrome = (() => {
     systemTheme.addEventListener("change", applyTheme);
     const threadValue = $("thread-value");
     const sliderFill = $("slider-fill");
+    const bufferAhead = $("buffer-ahead");
+    const bufferValue = $("buffer-value");
+    const bufferFill = $("buffer-fill");
+    const secondaryBuffer = $("secondary-buffer");
     const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
@@ -4857,6 +5087,15 @@ const chrome = (() => {
       threadValue.value = autoConcurrency.checked ? "自动" : String(THREAD_OPTIONS[safe]);
       concurrency.setAttribute("aria-valuetext", String(THREAD_OPTIONS[safe]));
       sliderFill.style.width = `${safe / (THREAD_OPTIONS.length - 1) * 100}%`;
+    }
+
+    function setBufferSlider(seconds) {
+      const index = BUFFER_OPTIONS.indexOf(Number(seconds));
+      const safe = index < 0 ? 1 : index;
+      bufferAhead.value = String(safe);
+      bufferValue.value = `${BUFFER_OPTIONS[safe]}s`;
+      bufferAhead.setAttribute("aria-valuetext", `${BUFFER_OPTIONS[safe]} 秒`);
+      bufferFill.style.width = `${safe / (BUFFER_OPTIONS.length - 1) * 100}%`;
     }
 
     function setMode(mode) {
@@ -4917,6 +5156,8 @@ const chrome = (() => {
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
       setSlider(settings.concurrency);
+      setBufferSlider(settings.bufferAheadSeconds);
+      secondaryBuffer.checked = settings.secondaryBuffer === true;
       concurrency.disabled = autoConcurrency.checked;
       concurrency.closest(".controls").classList.toggle("auto", autoConcurrency.checked);
       setMode(settings.mode);
@@ -4954,6 +5195,12 @@ const chrome = (() => {
       save({ concurrency: threads });
     });
     autoConcurrency.addEventListener("change", () => save({ autoConcurrency: autoConcurrency.checked }));
+    bufferAhead.addEventListener("input", () => {
+      const seconds = BUFFER_OPTIONS[Number(bufferAhead.value)];
+      setBufferSlider(seconds);
+      save({ bufferAheadSeconds: seconds });
+    });
+    secondaryBuffer.addEventListener("change", () => save({ secondaryBuffer: secondaryBuffer.checked }));
     for (const radio of shadow.querySelectorAll('input[name="mode"]')) {
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
@@ -5348,7 +5595,7 @@ const chrome = (() => {
   });
 
   const stats = {
-    version: "2026.10.25.2",
+    version: "2026.10.26.1",
     architecture: "bilibili-native-ui-progressive-mse-0.8-core",
     mode: settings.mode,
     playerState: "waiting",
@@ -7038,7 +7285,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.25.2"
+      version: "2026.10.26.1"
     })
   });
   publish();
@@ -7292,7 +7539,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.25.2",
+    version: "2026.10.26.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7756,7 +8003,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.25.2"
+      version: "2026.10.26.1"
     })
   });
   publish();
@@ -8073,12 +8320,12 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.25.2";
+  const VERSION = "2026.10.26.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
   // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
   // of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
@@ -8096,6 +8343,8 @@ const chrome = (() => {
       liveEnabled: input?.liveEnabled === true,
       episodeEnabled: input?.episodeEnabled !== false,
       blockInternational: input?.blockInternational === true,
+      bufferAheadSeconds: [30, 45, 90, 180].includes(Number(input?.bufferAheadSeconds)) ? Number(input.bufferAheadSeconds) : 45,
+      secondaryBuffer: input?.secondaryBuffer === true,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
