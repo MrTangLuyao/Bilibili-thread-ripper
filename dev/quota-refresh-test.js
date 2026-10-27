@@ -180,7 +180,7 @@
     audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000, deadline)]
   } } });
 
-  function startPlayer(startAt, setup, errors, logs = []) {
+  function startPlayer(startAt, setup, errors, logs = [], resume = false) {
     clock = startAt;
     playCalls = 0;
     removals = [];
@@ -192,7 +192,7 @@
       container: document.querySelector(".bpx-player-container"),
       playinfo: playinfoAt(1000),
       initialTime: startAt,
-      initialResume: false,
+      initialResume: resume,
       getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 8 }),
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState() {},
@@ -344,6 +344,37 @@
     return {
       errors, started, playsBefore, playCalls, after,
       pass: !errors.length && started && playCalls === playsBefore && !after.includes("缓冲补好了，可以继续播放")
+    };
+  }
+
+  // While the player waits for the data of a video the viewer means to play, the element is
+  // paused, and Bilibili's play button, which reads video.paused, showed ▶ until the wait was
+  // over. To the page it reads as playing. A pause() from the page during the wait is the
+  // viewer's: the page hears of it and the video does not start. Destroyed, the player leaves
+  // the element as it found it.
+  async function reportsTheViewersIntentWhileLoading() {
+    const errors = [];
+    const logs = [];
+    downloadDelayMs = 300;
+    const player = startPlayer(2, {}, errors, logs, true);
+    await sleep(60);
+    const readsPlaying = video.paused === false;
+    const reallyPaused = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "paused").get.call(video);
+    let pauseEvents = 0;
+    const count = () => { pauseEvents += 1; };
+    video.addEventListener("pause", count);
+    video.pause();
+    video.removeEventListener("pause", count);
+    const readsPausedAfter = video.paused === true;
+    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    await sleep(200);
+    const playsAfter = playCalls;
+    player.destroy({ resumeNative: false });
+    const released = !Object.prototype.hasOwnProperty.call(video, "paused") && !Object.prototype.hasOwnProperty.call(video, "pause");
+    downloadDelayMs = 20;
+    return {
+      errors, readsPlaying, reallyPaused, pauseEvents, readsPausedAfter, started, playsAfter, released,
+      pass: !errors.length && readsPlaying && reallyPaused && pauseEvents === 1 && readsPausedAfter && started && playsAfter === 0 && released
     };
   }
 
@@ -573,7 +604,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }
