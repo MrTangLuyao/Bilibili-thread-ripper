@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.27.1
+// @version      2026.10.27.2
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2616,6 +2616,51 @@ const chrome = (() => {
       currentTime: Number(video.currentTime) || 0,
       wasPaused: video.paused
     };
+
+    // Bilibili's play button reads video.paused. While the element waits for data the viewer
+    // means to play (the start, a refill, a drag), BTR holds it paused, and the button showed
+    // ▶ until the wait was over. To the page the element reads as playing then; BTR itself
+    // always reads the real state (elementPaused). A pause() from the page during such a wait
+    // would find the element paused already and change nothing, so it records the viewer's
+    // pause and tells the page.
+    // What the element answers now (its own, or one the page already put in place) is what
+    // BTR reads and what comes back when the player goes.
+    const ownPaused = Object.getOwnPropertyDescriptor(video, "paused");
+    const ownPause = Object.getOwnPropertyDescriptor(video, "pause");
+    let pausedSource = null;
+    for (let target = video; target && !pausedSource; target = Object.getPrototypeOf(target)) {
+      pausedSource = Object.getOwnPropertyDescriptor(target, "paused") || null;
+    }
+    const realPaused = pausedSource?.get;
+    const realPause = video.pause;
+    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function"
+      && ownPaused?.configurable !== false && ownPause?.configurable !== false;
+    const elementPaused = () => (reportsIntent ? realPaused.call(video) : video.paused);
+    const pauseElement = () => (reportsIntent ? realPause.call(video) : video.pause());
+    function holdingForPlay() {
+      const candidate = session;
+      return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.externalSourceDetected
+        && (!candidate.playbackActivated || candidate.recovering) && candidate.resumeWanted && elementPaused());
+    }
+    if (reportsIntent) {
+      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !holdingForPlay() });
+      Object.defineProperty(video, "pause", {
+        configurable: true,
+        writable: true,
+        value() {
+          if (!holdingForPlay()) return pauseElement();
+          session.resumeWanted = false;
+          video.dispatchEvent(new Event("pause"));
+        }
+      });
+    }
+    function releaseElement() {
+      if (!reportsIntent) return;
+      if (ownPaused) Object.defineProperty(video, "paused", ownPaused);
+      else delete video.paused;
+      if (ownPause) Object.defineProperty(video, "pause", ownPause);
+      else delete video.pause;
+    }
     const downloader = downloaderFactory.createDownloader({
       getSettings,
       nativeFetch: options.nativeFetch,
@@ -3037,8 +3082,8 @@ const chrome = (() => {
     // Pauses the element to wait for data. Its "pause" event comes later and only if it was
     // playing; counting those keeps it from being read as the viewer's pause.
     function pauseForData(candidate) {
-      if (!video.paused) candidate.ownPauses += 1;
-      video.pause();
+      if (!elementPaused()) candidate.ownPauses += 1;
+      pauseElement();
     }
 
     function attemptAutoplay(candidate) {
@@ -3076,11 +3121,15 @@ const chrome = (() => {
     }
 
     // Whether a wait for this many seconds of buffer would end at once: both tracks hold the
-    // playhead and as much ahead as the wait asks for (or as the tracks can still reach).
+    // playhead and as much ahead as the wait asks for (or as the tracks can still reach). A
+    // track written to its end has nothing more to come: its last segment can end a little
+    // before the duration, and a wait for that last bit never ended near the end of a video.
     function waitIsOver(candidate, seconds) {
       const current = Number(video.currentTime) || candidate.startTime;
       if (!candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current))) return false;
-      const ahead = Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current;
+      const loading = candidate.tracks.filter((track) => !track.complete);
+      if (!loading.length) return true;
+      const ahead = Math.min(...loading.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current;
       const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + seconds) - current);
       return ahead >= Math.min(reachableSeconds(candidate, seconds), remaining);
     }
@@ -3098,7 +3147,7 @@ const chrome = (() => {
       // (#45). Protect steady playback too, not only the first twenty seconds of a session.
       const lowWater = Math.max(0.5, Math.abs(Number(video.playbackRate) || 1));
       const remaining = Number(candidate.mediaSource.duration) - current;
-      if (candidate.playbackActivated && !candidate.recovering && !video.paused && !video.seeking && !video.ended
+      if (candidate.playbackActivated && !candidate.recovering && !elementPaused() && !video.seeking && !video.ended
         && candidate.tracks.some((track) => !track.complete) && remaining > lowWater + 0.25 && ahead < lowWater) {
         candidate.recovering = true;
         candidate.resumeWanted = true;
@@ -3146,7 +3195,7 @@ const chrome = (() => {
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
       if (detach && video.src === candidate.objectUrl) {
-        video.pause();
+        pauseElement();
         video.removeAttribute("src");
         video.load();
       }
@@ -3208,7 +3257,7 @@ const chrome = (() => {
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
-      video.pause();
+      pauseElement();
       video.src = objectUrl;
       video.load();
       video.volume = candidate.volume;
@@ -3363,7 +3412,7 @@ const chrome = (() => {
         options.onLog?.("挡住了 B 站播放器的回跳", `B 站的播放内核想跳回 ${target.toFixed(1)} 秒，保持在你选的 ${candidate.startTime.toFixed(1)} 秒。`, "info", "buffer");
         setCurrentTimeInternal(candidate, candidate.startTime);
         // Its restore also plays or pauses as things were back then; the viewer's intent wins.
-        if (!candidate.resumeWanted && !video.paused) video.pause();
+        if (!candidate.resumeWanted && !elementPaused()) pauseElement();
         return;
       }
       seekRequestedAt = performance.now();
@@ -3383,7 +3432,7 @@ const chrome = (() => {
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.tracks.length && core.normalizeSettings(getSettings()).autoConcurrency) {
         const current = Number(video.currentTime) || 0;
         const ahead = Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current);
-        downloaderFactory.autoConcurrency?.buffer(ahead, !video.paused && !video.seeking);
+        downloaderFactory.autoConcurrency?.buffer(ahead, !elementPaused() && !video.seeking);
       }
     }, { signal: eventController.signal });
     video.addEventListener("waiting", () => {
@@ -3397,7 +3446,7 @@ const chrome = (() => {
         // once and the element waited again, thousands of times a minute, and more threads do
         // not decode any faster.
         const dataMissing = !waitIsOver(candidate, recoveryTarget);
-        if (dataMissing && !video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
+        if (dataMissing && !video.seeking && !elementPaused() && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
         if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
           candidate.recovering = true;
@@ -3439,7 +3488,7 @@ const chrome = (() => {
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
-      return !video.paused;
+      return !elementPaused();
     }
 
     // Where the viewer is in the video. A session that is still starting has just given the
@@ -3579,6 +3628,7 @@ const chrome = (() => {
       const state = playbackState();
       const time = playbackPosition() || original.currentTime;
       destroyed = true;
+      releaseElement();
       clearTimeout(seekTimer);
       eventController.abort();
       sourceObserver.disconnect();
@@ -3664,7 +3714,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.27.1",
+        version: "2026.10.27.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4543,7 +4593,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.27.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.27.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4899,7 +4949,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.27.1",
+        BTR: "2026.10.27.2",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5609,7 +5659,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.27.1",
+    version: "2026.10.27.2",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7303,7 +7353,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.27.1"
+      version: "2026.10.27.2"
     })
   });
   publish();
@@ -7557,7 +7607,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.27.1",
+    version: "2026.10.27.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8025,7 +8075,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.27.1"
+      version: "2026.10.27.2"
     })
   });
   publish();
