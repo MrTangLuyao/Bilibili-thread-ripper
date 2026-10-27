@@ -909,6 +909,16 @@
       attemptAutoplay(candidate);
     }
 
+    // Whether a wait for this many seconds of buffer would end at once: both tracks hold the
+    // playhead and as much ahead as the wait asks for (or as the tracks can still reach).
+    function waitIsOver(candidate, seconds) {
+      const current = Number(video.currentTime) || candidate.startTime;
+      if (!candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current))) return false;
+      const ahead = Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current;
+      const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + seconds) - current);
+      return ahead >= Math.min(reachableSeconds(candidate, seconds), remaining);
+    }
+
     function ensureBuffer(candidate = session) {
       noteViewer();
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || !candidate.tracks.length) return;
@@ -935,8 +945,7 @@
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
       if (candidate.recovering && ready) {
-        const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + candidate.recoveryTargetSeconds) - current);
-        if (ahead >= Math.min(reachableSeconds(candidate, candidate.recoveryTargetSeconds), remaining)) {
+        if (waitIsOver(candidate, candidate.recoveryTargetSeconds)) {
           candidate.recovering = false;
           // A seek inside the session waits here instead of in activateWhenReady, so this is
           // where the panel's "how long did the jump take" is measured.
@@ -1216,13 +1225,19 @@
       note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
-        if (!video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
+        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+        // With that much already buffered ahead the element waits for its decoder, not for
+        // data: a device that decodes the stream too slowly (#58). Pausing for data ended at
+        // once and the element waited again, thousands of times a minute, and more threads do
+        // not decode any faster.
+        const dataMissing = !waitIsOver(candidate, recoveryTarget);
+        if (dataMissing && !video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
-        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking) {
+        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
           candidate.recovering = true;
           candidate.resumeWanted = true;
           candidate.playAttempted = false;
-          candidate.recoveryTargetSeconds = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+          candidate.recoveryTargetSeconds = recoveryTarget;
           pauseForData(candidate);
         }
         ensureBuffer(candidate);

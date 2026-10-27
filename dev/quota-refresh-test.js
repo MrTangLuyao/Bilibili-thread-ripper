@@ -299,7 +299,9 @@
     await until(() => quotaThrows >= 2, 8000);
     await sleep(900);
     const limit = player.getDebug().bufferAheadLimit;
-    clock = 2.3; // 8.2 seconds ahead: above the limit, so nothing more is written
+    // 5.2 seconds ahead: a real stall, and the wait may only ask for what the lowered limit
+    // can still reach (six seconds), not ten.
+    clock = 5.3;
     video.dispatchEvent(new Event("waiting"));
     const recovered = await until(() => logs.includes("缓冲补好了，可以继续播放"), 4000);
     player.destroy({ resumeNative: false });
@@ -321,6 +323,28 @@
     player.destroy({ resumeNative: false });
     downloadDelayMs = 20;
     return { errors, failed, logs: logs.slice(-3), pass: failed && errors.length === 1 };
+  }
+
+  // A device that decodes the stream too slowly (#58): the element waits although both tracks
+  // hold far more than any wait asks for. Pausing for data used to end at once, the video was
+  // started again and the element waited again, thousands of times. Nothing is missing, so the
+  // element is left alone.
+  async function decoderStallWithDataAhead() {
+    const errors = [];
+    const logs = [];
+    const player = startPlayer(2, {}, errors, logs);
+    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    await sleep(100);
+    const playsBefore = playCalls;
+    const logsBefore = logs.length;
+    for (let round = 0; round < 5; round += 1) video.dispatchEvent(new Event("waiting"));
+    await sleep(400);
+    const after = logs.slice(logsBefore);
+    player.destroy({ resumeNative: false });
+    return {
+      errors, started, playsBefore, playCalls, after,
+      pass: !errors.length && started && playCalls === playsBefore && !after.includes("缓冲补好了，可以继续播放")
+    };
   }
 
   // An answer that arrives late must not put back addresses that expire sooner.
@@ -549,7 +573,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }
