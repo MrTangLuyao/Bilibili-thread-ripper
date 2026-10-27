@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.26.2
+// @version      2026.10.27.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3075,6 +3075,16 @@ const chrome = (() => {
       attemptAutoplay(candidate);
     }
 
+    // Whether a wait for this many seconds of buffer would end at once: both tracks hold the
+    // playhead and as much ahead as the wait asks for (or as the tracks can still reach).
+    function waitIsOver(candidate, seconds) {
+      const current = Number(video.currentTime) || candidate.startTime;
+      if (!candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current))) return false;
+      const ahead = Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current;
+      const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + seconds) - current);
+      return ahead >= Math.min(reachableSeconds(candidate, seconds), remaining);
+    }
+
     function ensureBuffer(candidate = session) {
       noteViewer();
       if (!candidate || !sessionIsCurrent(candidate) || candidate.fatal || !candidate.tracks.length) return;
@@ -3101,8 +3111,7 @@ const chrome = (() => {
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
       if (candidate.recovering && ready) {
-        const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + candidate.recoveryTargetSeconds) - current);
-        if (ahead >= Math.min(reachableSeconds(candidate, candidate.recoveryTargetSeconds), remaining)) {
+        if (waitIsOver(candidate, candidate.recoveryTargetSeconds)) {
           candidate.recovering = false;
           // A seek inside the session waits here instead of in activateWhenReady, so this is
           // where the panel's "how long did the jump take" is measured.
@@ -3382,13 +3391,19 @@ const chrome = (() => {
       note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
-        if (!video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
+        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+        // With that much already buffered ahead the element waits for its decoder, not for
+        // data: a device that decodes the stream too slowly (#58). Pausing for data ended at
+        // once and the element waited again, thousands of times a minute, and more threads do
+        // not decode any faster.
+        const dataMissing = !waitIsOver(candidate, recoveryTarget);
+        if (dataMissing && !video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
-        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking) {
+        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
           candidate.recovering = true;
           candidate.resumeWanted = true;
           candidate.playAttempted = false;
-          candidate.recoveryTargetSeconds = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+          candidate.recoveryTargetSeconds = recoveryTarget;
           pauseForData(candidate);
         }
         ensureBuffer(candidate);
@@ -3649,7 +3664,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.26.2",
+        version: "2026.10.27.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4528,7 +4543,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.26.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.27.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4884,7 +4899,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.26.2",
+        BTR: "2026.10.27.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5594,7 +5609,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.26.2",
+    version: "2026.10.27.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7288,7 +7303,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.26.2"
+      version: "2026.10.27.1"
     })
   });
   publish();
@@ -7542,7 +7557,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.26.2",
+    version: "2026.10.27.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8010,7 +8025,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.26.2"
+      version: "2026.10.27.1"
     })
   });
   publish();
