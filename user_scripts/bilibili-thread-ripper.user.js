@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.26.1
+// @version      2026.10.28.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -28,13 +28,13 @@
 
 function pageCode() {
 "use strict";
-if (window.top !== window && !/^live\.bilibili\.com$/i.test(location.hostname)) return;
 if (document.documentElement?.hasAttribute("data-btr-userscript")) return;
 document.documentElement?.setAttribute("data-btr-userscript", "");
+if (window.top !== window && !/^live\.bilibili\.com$/i.test(location.hostname)) return;
 
 /* user_scripts/adapter/storage-shim.js */
-// This small stand-in keeps the parts of the chrome.* API that bridge.js uses: storage,
-// and runtime.lastError for its callbacks.
+// This small stand-in keeps the part of the chrome.* API that bridge.js uses: storage. Its
+// callbacks also get runtime.lastError, as in the extension, though bridge.js does not read it.
 //
 // The settings live in the script manager's storage, which every bilibili subdomain shares.
 // Only the manager's side of the script (loader.js) can reach it, so this page code asks it
@@ -319,8 +319,7 @@ const chrome = (() => {
         .map(normalizeCdnHost)
         .filter((host, index, all) => host && all.indexOf(host) === index)
         .slice(0, 32),
-      // The round button in the page corner that opens the settings panel, and where the
-      // viewer dragged it: which side, and how far down as a share of the window height.
+      // The round button in the page corner that opens the settings panel.
       floatingButton: source.floatingButton !== false,
       // Where the viewer dragged it, as shares of the window (0 = flush left, 1 = flush
       // right); null when it was never moved.
@@ -331,7 +330,8 @@ const chrome = (() => {
       debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
-      // `concurrency` above is only what the viewer set by hand. Off unless asked for.
+      // `concurrency` above is only what the viewer set by hand. Off when the value is
+      // missing here; the userscript's stored settings (bridge.js) default it to on.
       autoConcurrency: source.autoConcurrency === true,
       minChunkBytes: 64 * 1024,
       firstByteTimeoutMs: 5500,
@@ -363,8 +363,8 @@ const chrome = (() => {
 // /en/bangumi/play/…, /ja/list/watchlater, or with ?site=OVERSEAS&lang=…, and a home page
 // without the channel bar. The user_site cookie (CN or OVERSEAS) tells both Bilibili's
 // server and its page code which site to show. page-hook.js reads addresses with the language
-// taken off; bridge.js keeps viewers on the domestic site while 阻止使用国际版 is on (off unless
-// switched on).
+// taken off; bridge.js keeps viewers on the domestic site while BTR and 阻止使用国际版 are both
+// on (阻止使用国际版 is off unless switched on).
 //
 // The languages keep growing, so one is recognised by its form and by the browser knowing it
 // as a language, besides the ones the site has today (Chrome knows fewer languages than Node).
@@ -465,11 +465,6 @@ const chrome = (() => {
     "cn-hk-eq-01-03.bilivideo.com"
   ]);
 
-  const GLOBAL_HOSTS = Object.freeze([
-    ...OVERSEAS_HOSTS,
-    ...MAINLAND_HOSTS
-  ]);
-
   function isAkamaiUrl(value) {
     try { return new URL(value).hostname.toLowerCase().endsWith(".akamaized.net"); }
     catch (_error) { return false; }
@@ -503,7 +498,8 @@ const chrome = (() => {
     if (core.normalizeCdnHost(host) !== host) return null;
     try {
       const url = new URL(rawUrl);
-      // Assigning url.host alone keeps a non-standard port, such as a peer CDN's :4483.
+      // Setting only the host name would keep a non-standard port, such as a peer CDN's
+      // :4483, so the port is cleared too.
       url.hostname = host;
       url.port = "";
       return url.href;
@@ -512,8 +508,8 @@ const chrome = (() => {
     }
   }
 
-  // The custom mode uses only the servers picked in the settings. Without any, it works like
-  // the mainland mode.
+  // The custom mode uses only the servers picked in the settings. Without any, it uses the
+  // mainland node list.
   function customServers(mode, customHosts) {
     return mode === "custom" && Array.isArray(customHosts) ? customHosts.map(core.normalizeCdnHost).filter(Boolean) : [];
   }
@@ -536,7 +532,8 @@ const chrome = (() => {
     // those signatures too, so only in that case the akamaized.net addresses are the donors.
     // Bilibili may hand out an address that every node refuses (HTTP 403) next to one that
     // works, so each of them is tried; the ban list drops the refused one. Node-major order
-    // keeps the first requests spread over several nodes.
+    // puts every address in the first few requests, so one that every node refuses cannot
+    // take all of them.
     const synthetic = (donor
       ? hosts.map((host) => swapOrdinaryHost(donor, host))
       : hosts.flatMap((host) => ordinary.map((url) => swapOrdinaryHost(url, host, true))))
@@ -683,8 +680,8 @@ const chrome = (() => {
       return representationUrls(representation, getMode?.(), getCustomHosts?.() || []);
     }
 
-    // Banned nodes are left out. If every node is banned, keep using them rather
-    // than leaving the video with no download address at all.
+    // Banned nodes, addresses and node/address pairs are left out. If everything is banned,
+    // keep using the full list rather than leaving the video with no download address at all.
     function unbanned(list) {
       if (!bans) return list;
       const allowed = list.filter(bans.allows);
@@ -828,7 +825,6 @@ const chrome = (() => {
   }
 
   root.__BILI_CDN_RESOLVER_FACTORY__ = Object.freeze({
-    GLOBAL_HOSTS,
     MAINLAND_HOSTS,
     OVERSEAS_HOSTS,
     createBanList,
@@ -965,6 +961,8 @@ const chrome = (() => {
 
   const PIECE_ROUNDS = 3;
   const PIECE_RETRY_WINDOW_MS = 25000;
+  // The pause before a piece's next round of addresses: half a second, doubling, at most two.
+  const roundPause = (round) => Math.min(2000, 500 * (2 ** (round - 1)));
   // Below this a resumed request saves less than its own round trip costs.
   const RESUME_MIN_BYTES = 32 * 1024;
   // Hedging a piece with a playback deadline (see hedgeDue): a first copy projected to finish
@@ -1075,7 +1073,6 @@ const chrome = (() => {
         signal?.addEventListener("abort", entry.cancel, { once: true });
         this.queue.push(entry);
         this.drain();
-        this.onChange?.(this.active, this.limit, this.queue.length);
       });
     }
   }
@@ -1095,6 +1092,10 @@ const chrome = (() => {
   // ahead, the count steps back down to the level the page had before. A sign of not keeping
   // up meanwhile climbs as usual and ends the start there; so does half a minute without
   // catching up. From then on the rules above carry on.
+  //
+  // Stalls, the buffer and new starts come from the player (stall, buffer, newSession); a
+  // caller that reports none of them (the userscript's compatibility mode) gets only the
+  // slow-first-byte climb and the refusals.
   const AUTO_LADDER = Object.freeze([8, 12, 16, 24, 32, 48, 64]);
   const AUTO_STARTUP_LEVEL = 2;
   const AUTO_STARTUP_COMFORT_SECONDS = 15;
@@ -1328,8 +1329,8 @@ const chrome = (() => {
     const nativeFetch = options.nativeFetch || root.fetch.bind(root);
     const getSettings = options.getSettings;
     const onTransfer = typeof options.onTransfer === "function" ? options.onTransfer : () => null;
-    // The page replaces its settings object when something changes, so the reference
-    // tells whether the previous normalization is still valid.
+    // getSettings returns a new object whenever something changes (the userscript's page
+    // does), so the reference tells whether the previous normalization is still valid.
     let rawSettings = null;
     let normalizedSettings = null;
     let autoView = null;
@@ -1389,13 +1390,14 @@ const chrome = (() => {
     // - No data yet, or nothing new for a whole delay (stopped): copy.
     // - A deadline it meets with time to spare at its speed so far: no copy yet, the bandwidth
     //   goes to pieces needed sooner.
-    // - The copy's node known to be clearly faster: copy.
-    // - Slower than connections usually are: copy.
-    // - On pace: a copy on a node known to be no faster only takes the next piece's connection
-    //   and bandwidth; one on a node not measured yet is tried, as the chance of a faster one.
-    //   A piece that will miss its deadline even so may spend one of the range's rescue slots
-    //   on that node anyway: its measurement can be stale (a node that was slow a minute ago
-    //   may have recovered), and waiting for the request to time out costs far more.
+    // - The copy's node known to be clearly faster (HEDGE_FASTER times): copy.
+    // - Slower than connections usually are, or no usual speed measured yet: copy.
+    // - On pace: a copy on a node not known to be HEDGE_FASTER times faster only takes the
+    //   next piece's connection and bandwidth; one on a node not measured yet is tried, as
+    //   the chance of a faster one. A piece that will miss its deadline even so may spend one
+    //   of the range's rescue slots on that node anyway: its measurement can be stale (a node
+    //   that was slow a minute ago may have recovered), and waiting for the request to time
+    //   out costs far more.
     function hedgeDue(first, delayMs, deadlineAt, copyBps, rescue) {
       const now = performance.now(), ran = now - first.startedAt;
       const got = first.recorder.bytes;
@@ -1438,9 +1440,9 @@ const chrome = (() => {
     }
 
     // Only measured per-request progress can spend this bounded rescue budget. The second
-    // budget is for pieces that will miss their deadline while their copy's node is measured
-    // as no faster: that measurement can be stale, and a bounded number of such copies per
-    // range is far cheaper than waiting for a timeout.
+    // budget is for pieces that will miss their deadline while their copy's node is not
+    // measured as HEDGE_FASTER times faster: that measurement can be stale, and a bounded
+    // number of such copies per range is far cheaper than waiting for a timeout.
     function createEarlyHedge(limit) {
       return {
         progressRemaining: Math.max(0, limit),
@@ -1688,7 +1690,7 @@ const chrome = (() => {
       for (let round = 0; round < PIECE_ROUNDS; round += 1) {
         if (round) {
           if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
-          await pause(Math.min(2000, 500 * (2 ** (round - 1))), signal);
+          await pause(roundPause(round), signal);
         }
         const candidates = pieceCandidates(piece, resolver, preferredUrls, round);
         const limit = Math.min(8, candidates.length);
@@ -1725,7 +1727,8 @@ const chrome = (() => {
               ? deadlineDeficitSamples + 1
               : 0;
             // A clearly slow node is rescued immediately. If the whole route is slow,
-            // two consecutive deficit samples may spend the same one-per-range budget.
+            // two consecutive deficit samples may spend the same per-range rescue budget
+            // (createEarlyHedge).
             if (Number.isFinite(deadlineAt)
               && ((missesDeadline && slowerThanPeers) || deadlineDeficitSamples >= 2)) {
               firstBecameStraggler();
@@ -1749,7 +1752,8 @@ const chrome = (() => {
               const copyBps = () => (typeof resolver.speed === "function" ? resolver.speed(url) || 0 : 0);
               // A playback-deadline request decides once its first copy has a connection (see
               // hedgeDue); one without a deadline (compatibility mode, the desktop client)
-              // keeps main's delay from the moment the piece asked, queue time included.
+              // keeps the fixed hedge delay (hedgeDelayMs), counted from the moment the piece
+              // asked, queue time included.
               const check = () => {
                 if (settled) return;
                 if (contexts[0] && hedgeDue(contexts[0], delay, deadlineNow(), copyBps(), earlyHedge)) return finish(resolve);
@@ -1943,6 +1947,29 @@ const chrome = (() => {
       return primary ? [primary, ...urls.filter((url) => url !== primary)] : urls;
     }
 
+    // Hands the finished pieces to onOrderedChunk in order: each one as soon as every piece
+    // before it has been handed over. done() waits for what has been handed over so far.
+    function orderedDelivery(pieces, onOrderedChunk) {
+      const ordered = new Array(pieces.length);
+      let next = 0;
+      let operation = Promise.resolve();
+      return {
+        add(index, result) {
+          ordered[index] = result;
+          operation = operation.then(async () => {
+            while (ordered[next]) {
+              const item = ordered[next];
+              ordered[next] = null;
+              await onOrderedChunk(item.bytes, pieces[next], item.total);
+              next += 1;
+            }
+          });
+          return operation;
+        },
+        done: () => operation
+      };
+    }
+
     async function downloadStartupRange(range, resolver, options) {
       semaphore.setLimit(config().concurrency);
       const piece = { index: 0, start: range.start, end: range.end, length: range.length };
@@ -1953,7 +1980,7 @@ const chrome = (() => {
       for (let round = 0; round < PIECE_ROUNDS; round += 1) {
         if (round) {
           if (performance.now() - startedAt > PIECE_RETRY_WINDOW_MS) break;
-          await pause(Math.min(2000, 500 * (2 ** (round - 1))), options.signal);
+          await pause(roundPause(round), options.signal);
         }
         let candidates = (typeof resolver.startupCandidates === "function" ? resolver.startupCandidates() : resolver.urls())
           .filter((url, index, all) => all.indexOf(url) === index)
@@ -2023,23 +2050,11 @@ const chrome = (() => {
         pieceBudget,
         adaptiveMinChunk(settings, range.end - head.end, pieceBudget, candidateUrls.length)
       ).map((piece, index) => ({ ...piece, index: index + 1 }));
-      const ordered = new Array(pieces.length);
-      let nextOrderedIndex = 0;
-      let flushOperation = Promise.resolve();
-      const flushOrdered = () => {
-        flushOperation = flushOperation.then(async () => {
-          while (ordered[nextOrderedIndex]) {
-            const item = ordered[nextOrderedIndex];
-            ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
-            nextOrderedIndex += 1;
-          }
-        });
-        return flushOperation;
-      };
+      const delivery = orderedDelivery(pieces, options.onOrderedChunk);
       // The probe measured at least its own winner, so the pieces spread over the nodes by
-      // speed at once; the proven address stays each piece's first fallback. Only addresses
-      // that have delivered carry the first segment: a node whose probe never finished would
+      // speed at once; the proven address is among each piece's fallbacks, which
+      // pieceCandidates orders by measured speed. Only the probe's winner and nodes with a
+      // speed measurement carry the first segment: a node whose probe never finished would
       // otherwise get a share of it and hold up the start. The others stay available for
       // rescue, and later ranges try them.
       const measured = typeof resolver.speed === "function" ? (url) => resolver.speed(url) > 0 : () => false;
@@ -2058,13 +2073,12 @@ const chrome = (() => {
           options.deadline,
           earlyHedge
         );
-        ordered[orderedIndex] = result;
-        await flushOrdered();
+        await delivery.add(orderedIndex, result);
         return result;
       });
       options.onStartupScheduled?.();
       const results = await Promise.all(pendingPieces);
-      await flushOperation;
+      await delivery.done();
       const totals = [headResult, ...results].map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
@@ -2114,20 +2128,7 @@ const chrome = (() => {
       const primaries = parallel ? assignPrimaries(preferredUrls, resolver, pieces.length) : [];
       const earlyHedge = createEarlyHedge(rescueReserve);
       const progressive = typeof options.onOrderedChunk === "function";
-      const ordered = new Array(pieces.length);
-      let nextOrderedIndex = 0;
-      let flushOperation = Promise.resolve();
-      const flushOrdered = () => {
-        flushOperation = flushOperation.then(async () => {
-          while (ordered[nextOrderedIndex]) {
-            const item = ordered[nextOrderedIndex];
-            ordered[nextOrderedIndex] = null;
-            await options.onOrderedChunk(item.bytes, pieces[nextOrderedIndex], item.total);
-            nextOrderedIndex += 1;
-          }
-        });
-        return flushOperation;
-      };
+      const delivery = orderedDelivery(pieces, options.onOrderedChunk);
       const results = await Promise.all(pieces.map(async (piece) => {
         const result = await downloadPiece(
           piece,
@@ -2140,13 +2141,10 @@ const chrome = (() => {
           deadline,
           earlyHedge
         );
-        if (progressive) {
-          ordered[piece.index] = result;
-          await flushOrdered();
-        }
+        if (progressive) await delivery.add(piece.index, result);
         return result;
       }));
-      if (progressive) await flushOperation;
+      if (progressive) await delivery.done();
       const totals = results.map((item) => item.total).filter(Number.isSafeInteger);
       if (totals.length && totals.some((value) => value !== totals[0])) throw new Error("不同 CDN 返回的文件总长度不一致");
       return {
@@ -2185,7 +2183,8 @@ const chrome = (() => {
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
   const QUOTA_FATAL_AHEAD_SECONDS = 10;
-  // A video whose buffer stays full through this many waits is given up after all.
+  // A session that finds its buffer full more than this many times (since it started or
+  // last seeked, both tracks together) is given up after all.
   const QUOTA_MAX_WAITS = 8;
   // 二级缓冲: segments the browser's buffer has no room for wait in memory, at most this much
   // for both tracks together; 64 MB for each GB the browser reports, 4 GB when it reports none.
@@ -2202,7 +2201,8 @@ const chrome = (() => {
   // quality switch, or the retry it makes once BTR replaced the source) and seeks back to
   // it every time the element reports new metadata, until the video ends or the page
   // moves on. Every BTR session starts with new metadata, so after one such reload every
-  // drag of the progress bar and every quality switch ended up back at that old position.
+  // drag of the progress bar (each one then started a new session) and every quality switch
+  // ended up back at that old position.
   // The moment of its last reload is known here, so its seek can be told from a viewer's
   // and undone. Kept across players: the retake after a fallback is a new player.
   let nativeRestore = { key: "", time: 0 };
@@ -2217,10 +2217,6 @@ const chrome = (() => {
 
   function dashBody(playinfo) {
     return playinfo?.data?.dash ? playinfo.data : playinfo?.result?.dash ? playinfo.result : playinfo;
-  }
-
-  function dashData(playinfo) {
-    return dashBody(playinfo)?.dash || null;
   }
 
   function mimeFor(representation, fallbackKind) {
@@ -2517,7 +2513,7 @@ const chrome = (() => {
   // off for the rest of the tab (sessionStorage) or, when its server asks for it, for days
   // (localStorage). While a takeover is active those records are not written.
   const CODEC_FAILURE_KEYS = new Set(["enableHEVCError", "enableAV1Error", "decodeHEVCError", "decodeAV1Error", "bilibili_decode_error_obj"]);
-  const codecFailures = { blocked: 0, last: "" };
+  const codecFailures = { blocked: 0 };
   let codecFailureGuardInstalled = false;
   function installCodecFailureGuard() {
     const storage = root.Storage?.prototype;
@@ -2527,7 +2523,6 @@ const chrome = (() => {
     storage.setItem = function (key, value) {
       if (CODEC_FAILURE_KEYS.has(String(key)) && document.querySelector('[data-btr-mse-active="true"]')) {
         codecFailures.blocked += 1;
-        codecFailures.last = String(key);
         return;
       }
       return setItem.apply(this, arguments);
@@ -2553,10 +2548,10 @@ const chrome = (() => {
     let preferredCodec = normalizeCodec(options.preferredCodec);
     const preferredAudio = normalizeAudio(options.preferredAudio);
     let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec, preferredAudio);
-    let selectedVideo = selection.preferred;
     // The two representation objects the running session downloads from. Its resolvers keep
     // reading them, so fresh addresses always go into these two and never into a newer
     // selection's copies.
+    let selectedVideo = selection.preferred;
     let selectedAudio = selection.audio;
     let sessionStarts = 0;
     let sessionRequests = 0;
@@ -2577,9 +2572,18 @@ const chrome = (() => {
     let lastSeekMs = 0;
     let stallsAfterSeek = 0;
     let endedAt = 0;
-    // The initialization segment and the index of a representation never change, and a seek
-    // outside the buffer starts a new session for the same one. Asking for them again cost
-    // every such seek a round trip to the CDN before any media could be requested.
+    function noteSeekSettled() {
+      if (!seekStartedAt) return;
+      lastSeekMs = performance.now() - seekStartedAt;
+      seekStartedAt = 0;
+      seekSettledAt = performance.now();
+      stallsAfterSeek = 0;
+      options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
+    }
+    // The initialization segment and the index of a representation never change, and a later
+    // session often plays the same one again (a replay after the end, another audio track, a
+    // switch back to an earlier quality or codec). Asking for them again cost every such
+    // start a round trip to the CDN before any media could be requested.
     const trackHeaders = new Map();
     const timeline = [];
     function note(what, detail = "") {
@@ -2612,6 +2616,51 @@ const chrome = (() => {
       currentTime: Number(video.currentTime) || 0,
       wasPaused: video.paused
     };
+
+    // Bilibili's play button reads video.paused. While the element waits for data the viewer
+    // means to play (the start, a refill, a drag), BTR holds it paused, and the button showed
+    // ▶ until the wait was over. To the page the element reads as playing then; BTR itself
+    // always reads the real state (elementPaused). A pause() from the page during such a wait
+    // would find the element paused already and change nothing, so it records the viewer's
+    // pause and tells the page.
+    // What the element answers now (its own, or one the page already put in place) is what
+    // BTR reads and what comes back when the player goes.
+    const ownPaused = Object.getOwnPropertyDescriptor(video, "paused");
+    const ownPause = Object.getOwnPropertyDescriptor(video, "pause");
+    let pausedSource = null;
+    for (let target = video; target && !pausedSource; target = Object.getPrototypeOf(target)) {
+      pausedSource = Object.getOwnPropertyDescriptor(target, "paused") || null;
+    }
+    const realPaused = pausedSource?.get;
+    const realPause = video.pause;
+    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function"
+      && ownPaused?.configurable !== false && ownPause?.configurable !== false;
+    const elementPaused = () => (reportsIntent ? realPaused.call(video) : video.paused);
+    const pauseElement = () => (reportsIntent ? realPause.call(video) : video.pause());
+    function holdingForPlay() {
+      const candidate = session;
+      return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.externalSourceDetected
+        && (!candidate.playbackActivated || candidate.recovering) && candidate.resumeWanted && elementPaused());
+    }
+    if (reportsIntent) {
+      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !holdingForPlay() });
+      Object.defineProperty(video, "pause", {
+        configurable: true,
+        writable: true,
+        value() {
+          if (!holdingForPlay()) return pauseElement();
+          session.resumeWanted = false;
+          video.dispatchEvent(new Event("pause"));
+        }
+      });
+    }
+    function releaseElement() {
+      if (!reportsIntent) return;
+      if (ownPaused) Object.defineProperty(video, "paused", ownPaused);
+      else delete video.paused;
+      if (ownPause) Object.defineProperty(video, "pause", ownPause);
+      else delete video.pause;
+    }
     const downloader = downloaderFactory.createDownloader({
       getSettings,
       nativeFetch: options.nativeFetch,
@@ -2661,9 +2710,10 @@ const chrome = (() => {
           track.sourceBuffer.appendBuffer(bytes);
         } catch (error) {
           // The browser caps how much a SourceBuffer holds (about 150 MB of video in
-          // Chromium), which a 4K video reaches within the 45 second window. Freeing
-          // played data and asking for less ahead keeps the video playing; failing the
-          // append here would hand the whole video back to Bilibili.
+          // Chromium), which a 4K video can reach at the default 45 seconds ahead
+          // (预缓冲时长), and lower qualities at 90 or 180. Freeing played data and asking
+          // for less ahead keeps the video playing; failing the append here would hand the
+          // whole video back to Bilibili.
           if (error?.name !== "QuotaExceededError") throw error;
           const current = Number(video.currentTime) || 0;
           const ahead = Math.max(0, bufferedEndAt(track.sourceBuffer, current) - current);
@@ -2730,8 +2780,8 @@ const chrome = (() => {
         startupScheduled: false,
         followupScheduled: false,
         prefetches: new Map(),
-        // The prefetched segments that are in, whole and not yet written: a seek keeps those
-        // still ahead of it, and only the others count as downloads on their way.
+        // The prefetched segments that are in, whole and not yet written: with 二级缓冲 on, a
+        // seek keeps those still ahead of it; only the others count as downloads on their way.
         ready: new Set(),
         operation: Promise.resolve()
       };
@@ -2763,15 +2813,12 @@ const chrome = (() => {
     function segmentDownload(candidate, track, segment, index, downloadOptions = {}) {
       // Read again at every check of the downloader: a new playback rate, or the playhead
       // standing still during a stall, moves the deadline of pieces already on their way.
-      const deadlineAt = Number.isFinite(Number(downloadOptions.deadlineAt))
-        ? Number(downloadOptions.deadlineAt)
-        : () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
+      const deadlineAt = () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
       return downloader.downloadRange(segment, track.resolver, {
         signal: generationSignal(candidate),
         parallel: true,
         kind: track.kind,
         priority: downloadOptions.priority,
-        hurry: downloadOptions.hurry === true,
         deadlineAt,
         startup: downloadOptions.startup === true,
         onStartupScheduled: downloadOptions.onStartupScheduled,
@@ -2812,19 +2859,19 @@ const chrome = (() => {
         track.followupScheduled = true;
         const segment = track.sidx.segments[index];
         if (segment) track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
-          priority: 70,
-          hurry: true
+          priority: 70
         }));
       }
       ensureBuffer(candidate);
     }
 
     // How far ahead this session may buffer: the setting, brought down each time the
-    // browser's own buffer quota was hit.
+    // browser's own buffer quota was hit, and to ten seconds while Bilibili's controls load.
     function aheadTarget(candidate) {
       // Controls and thumbnails still need bandwidth while the native UI loads (#28).
       // Keep enough media for startup without filling the whole forward window yet.
-      // Stop checking once ready; an upstream layout change cannot cap buffering forever.
+      // Stop checking once ready, and stop waiting after NATIVE_UI_WAIT_MS: an upstream
+      // layout change cannot cap buffering forever.
       if (!nativeUiReady) nativeUiReady = performance.now() >= uiWaitUntil || Boolean(options.isNativeUiReady());
       uiBufferLimit = nativeUiReady ? 0 : NATIVE_UI_BUFFER_SECONDS;
       return Math.min(core.normalizeSettings(getSettings()).bufferAheadSeconds, candidate.bufferAheadLimit || Infinity, uiBufferLimit || Infinity);
@@ -2841,11 +2888,14 @@ const chrome = (() => {
     // the downloads stop where the buffer does, as they always did.
     function downloadTarget(candidate) {
       const settings = core.normalizeSettings(getSettings());
+      // Called in either case: it also refreshes uiBufferLimit, read below.
       const buffer = aheadTarget(candidate);
       return settings.secondaryBuffer ? Math.min(settings.bufferAheadSeconds, uiBufferLimit || Infinity) : buffer;
     }
 
-    // Bytes of the segments downloaded or on their way and not yet written, both tracks.
+    // Bytes of the segments downloaded or on their way and not yet written, both tracks, the
+    // ordinary window included; a segment held back by a full buffer (track.held) is not
+    // counted.
     function reserveBytes(candidate) {
       let bytes = 0;
       for (const track of candidate.tracks) {
@@ -2854,14 +2904,16 @@ const chrome = (() => {
       return bytes;
     }
 
+    // How many segments of a track are on their way at once, once it has started.
+    const fillWindow = (track) => (track.kind === "video" ? 3 : 4);
+
     function scheduleReserve(candidate, track, current) {
       const target = downloadTarget(candidate);
       const limit = reserveLimitBytes();
       // A few at a time, like the window that fills the buffer, behind its segments.
-      const window = track.kind === "video" ? 3 : 4;
       let onTheirWay = 0;
       for (const index of track.prefetches.keys()) if (!track.ready.has(index)) onTheirWay += 1;
-      for (let index = track.nextIndex; onTheirWay < window; index += 1) {
+      for (let index = track.nextIndex; onTheirWay < fillWindow(track); index += 1) {
         const segment = track.sidx.segments[index];
         if (!segment || segment.startTime - current >= target) break;
         if (track.prefetches.has(index) || track.held?.index === index) continue;
@@ -2895,7 +2947,7 @@ const chrome = (() => {
           }
           // A sliding window: the next segment starts as soon as one has been appended. Waiting
           // for a whole batch left the connections idle until its slowest segment arrived.
-          const windowSize = track.started ? (track.kind === "video" ? 3 : 4) : 1;
+          const windowSize = track.started ? fillWindow(track) : 1;
           let projectedEnd = bufferedEndAt(track.sourceBuffer, current);
           for (let offset = 0; offset < windowSize; offset += 1) {
             const index = track.nextIndex + offset;
@@ -2906,9 +2958,6 @@ const chrome = (() => {
             const startup = !track.startupComplete && index === track.startupIndex;
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
-              // With under ten seconds buffered a late segment is a stall, so the downloader
-              // spreads its pieces and copies a slow one sooner.
-              hurry: segment.startTime - current < 10,
               startup,
               onStartupScheduled: startup ? () => {
                 track.startupScheduled = true;
@@ -3033,8 +3082,8 @@ const chrome = (() => {
     // Pauses the element to wait for data. Its "pause" event comes later and only if it was
     // playing; counting those keeps it from being read as the viewer's pause.
     function pauseForData(candidate) {
-      if (!video.paused) candidate.ownPauses += 1;
-      video.pause();
+      if (!elementPaused()) candidate.ownPauses += 1;
+      pauseElement();
     }
 
     function attemptAutoplay(candidate) {
@@ -3060,13 +3109,7 @@ const chrome = (() => {
       if (Math.min(...ends) - target < Math.max(0.5, Math.min(required, remaining))) return;
       candidate.playbackActivated = true;
       note("ready to play", `needed ${required.toFixed(1)} s buffered`);
-      if (seekStartedAt) {
-        lastSeekMs = performance.now() - seekStartedAt;
-        seekStartedAt = 0;
-        seekSettledAt = performance.now();
-        stallsAfterSeek = 0;
-        options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
-      }
+      noteSeekSettled();
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
@@ -3075,6 +3118,20 @@ const chrome = (() => {
       video.playbackRate = candidate.playbackRate;
       clearNativeErrorOverlay();
       attemptAutoplay(candidate);
+    }
+
+    // Whether a wait for this many seconds of buffer would end at once: both tracks hold the
+    // playhead and as much ahead as the wait asks for (or as the tracks can still reach). A
+    // track written to its end has nothing more to come: its last segment can end a little
+    // before the duration, and a wait for that last bit never ended near the end of a video.
+    function waitIsOver(candidate, seconds) {
+      const current = Number(video.currentTime) || candidate.startTime;
+      if (!candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, current))) return false;
+      const loading = candidate.tracks.filter((track) => !track.complete);
+      if (!loading.length) return true;
+      const ahead = Math.min(...loading.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current;
+      const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + seconds) - current);
+      return ahead >= Math.min(reachableSeconds(candidate, seconds), remaining);
     }
 
     function ensureBuffer(candidate = session) {
@@ -3090,7 +3147,7 @@ const chrome = (() => {
       // (#45). Protect steady playback too, not only the first twenty seconds of a session.
       const lowWater = Math.max(0.5, Math.abs(Number(video.playbackRate) || 1));
       const remaining = Number(candidate.mediaSource.duration) - current;
-      if (candidate.playbackActivated && !candidate.recovering && !video.paused && !video.seeking && !video.ended
+      if (candidate.playbackActivated && !candidate.recovering && !elementPaused() && !video.seeking && !video.ended
         && candidate.tracks.some((track) => !track.complete) && remaining > lowWater + 0.25 && ahead < lowWater) {
         candidate.recovering = true;
         candidate.resumeWanted = true;
@@ -3103,20 +3160,13 @@ const chrome = (() => {
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
       if (candidate.recovering && ready) {
-        const remaining = Math.max(0.5, (Number(candidate.mediaSource.duration) || current + candidate.recoveryTargetSeconds) - current);
-        if (ahead >= Math.min(reachableSeconds(candidate, candidate.recoveryTargetSeconds), remaining)) {
+        if (waitIsOver(candidate, candidate.recoveryTargetSeconds)) {
           candidate.recovering = false;
           // A seek inside the session waits here instead of in activateWhenReady, so this is
           // where the panel's "how long did the jump take" is measured.
           if (candidate.seekPending) {
             candidate.seekPending = false;
-            if (seekStartedAt) {
-              lastSeekMs = performance.now() - seekStartedAt;
-              seekStartedAt = 0;
-              seekSettledAt = performance.now();
-              stallsAfterSeek = 0;
-              options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
-            }
+            noteSeekSettled();
           }
           options.onLog?.("缓冲补好了，可以继续播放", `已经备好接下来 ${ahead.toFixed(1)} 秒的数据。`, "success", "buffer");
           candidate.playAttempted = false;
@@ -3145,7 +3195,7 @@ const chrome = (() => {
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
       if (detach && video.src === candidate.objectUrl) {
-        video.pause();
+        pauseElement();
         video.removeAttribute("src");
         video.load();
       }
@@ -3207,7 +3257,7 @@ const chrome = (() => {
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
-      video.pause();
+      pauseElement();
       video.src = objectUrl;
       video.load();
       video.volume = candidate.volume;
@@ -3362,7 +3412,7 @@ const chrome = (() => {
         options.onLog?.("挡住了 B 站播放器的回跳", `B 站的播放内核想跳回 ${target.toFixed(1)} 秒，保持在你选的 ${candidate.startTime.toFixed(1)} 秒。`, "info", "buffer");
         setCurrentTimeInternal(candidate, candidate.startTime);
         // Its restore also plays or pauses as things were back then; the viewer's intent wins.
-        if (!candidate.resumeWanted && !video.paused) video.pause();
+        if (!candidate.resumeWanted && !elementPaused()) pauseElement();
         return;
       }
       seekRequestedAt = performance.now();
@@ -3382,7 +3432,7 @@ const chrome = (() => {
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.tracks.length && core.normalizeSettings(getSettings()).autoConcurrency) {
         const current = Number(video.currentTime) || 0;
         const ahead = Math.max(0, Math.min(...candidate.tracks.map((track) => bufferedEndAt(track.sourceBuffer, current))) - current);
-        downloaderFactory.autoConcurrency?.buffer(ahead, !video.paused && !video.seeking);
+        downloaderFactory.autoConcurrency?.buffer(ahead, !elementPaused() && !video.seeking);
       }
     }, { signal: eventController.signal });
     video.addEventListener("waiting", () => {
@@ -3390,13 +3440,19 @@ const chrome = (() => {
       note("waiting", candidate?.playbackActivated ? "after start" : "before start");
       if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated) {
         candidate.startupWaitingEvents += 1;
-        if (!video.seeking && !video.paused && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
+        const recoveryTarget = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+        // With that much already buffered ahead the element waits for its decoder, not for
+        // data: a device that decodes the stream too slowly (#58). Pausing for data ended at
+        // once and the element waited again, thousands of times a minute, and more threads do
+        // not decode any faster.
+        const dataMissing = !waitIsOver(candidate, recoveryTarget);
+        if (dataMissing && !video.seeking && !elementPaused() && core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("播放卡了一下");
         if (seekSettledAt && performance.now() - seekSettledAt < 15000 && !video.seeking) stallsAfterSeek += 1;
-        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking) {
+        if (performance.now() - candidate.playbackActivatedAt <= STARTUP_PROTECTION_MS && !candidate.recovering && !video.seeking && dataMissing) {
           candidate.recovering = true;
           candidate.resumeWanted = true;
           candidate.playAttempted = false;
-          candidate.recoveryTargetSeconds = Math.min(STARTUP_BUFFER_MAX_SECONDS, Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds + 2));
+          candidate.recoveryTargetSeconds = recoveryTarget;
           pauseForData(candidate);
         }
         ensureBuffer(candidate);
@@ -3432,7 +3488,7 @@ const chrome = (() => {
       const candidate = session;
       if (candidate?.externalSourceDetected) return lastSeen.playing;
       if (candidate && sessionIsCurrent(candidate) && (!candidate.playbackActivated || candidate.recovering)) return Boolean(candidate.resumeWanted);
-      return !video.paused;
+      return !elementPaused();
     }
 
     // Where the viewer is in the video. A session that is still starting has just given the
@@ -3463,9 +3519,7 @@ const chrome = (() => {
       };
     }
 
-    // A refreshed playinfo names the same files with fresh signatures. The resolvers of a
-    // running session keep reading their representation objects, so those objects receive
-    // the new addresses; nothing else about the session changes.
+    // The expiry (seconds since the epoch) in an address's signature; 0 when it has none.
     function deadlineOf(representation) {
       try { return Number(new URL(representationUrl(representation)).searchParams.get("deadline")) || 0; }
       catch (_error) { return 0; }
@@ -3484,6 +3538,9 @@ const chrome = (() => {
       });
     }
 
+    // A refreshed playinfo names the same files with fresh signatures. The resolvers of a
+    // running session keep reading their representation objects, so those objects receive
+    // the new addresses; nothing else about the session changes.
     function refreshRepresentationUrls(target, source) {
       if (!target || !source || target === source) return;
       // Bilibili's page and the timed refresh both bring addresses, and the answer that
@@ -3571,6 +3628,7 @@ const chrome = (() => {
       const state = playbackState();
       const time = playbackPosition() || original.currentTime;
       destroyed = true;
+      releaseElement();
       clearTimeout(seekTimer);
       eventController.abort();
       sourceObserver.disconnect();
@@ -3656,7 +3714,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.26.1",
+        version: "2026.10.28.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3681,7 +3739,8 @@ const chrome = (() => {
         startupBufferSeconds: session?.startupTargetSeconds || 0,
         startupWaitingEvents: session?.startupWaitingEvents || 0,
         bufferAheadLimit: session?.bufferAheadLimit || 0,
-        // 二级缓冲: the seconds of video waiting in memory, and the bytes held or on their way.
+        // 二级缓冲: the seconds of video waiting in memory, and the bytes downloaded or on
+        // their way and not yet written (see reserveBytes).
         reserve: session?.tracks?.length ? {
           seconds: Math.round([...(session.tracks.find((track) => track.kind === "video")?.ready || [])]
             .reduce((sum, index) => sum + (Number(session.tracks.find((track) => track.kind === "video").sidx.segments[index]?.durationSeconds) || 0), 0) * 10) / 10,
@@ -4198,10 +4257,10 @@ const chrome = (() => {
       if (owner.disposed) return;
       sampleQuality();
       if (owner.disposed) return;
-      const rendered = tracks.find(track => track.kind === "video" && Number(track.representation.id) === Number(qualityState.split("/")[0]))?.representation;
+      const playing = tracks.find(track => track.kind === "video" && Number(track.representation.id) === Number(qualityState.split("/")[0]))?.representation;
       options.onState?.({ playerState: video.error ? "error" : video.ended ? "ended" : video.readyState >= 3 ? "ready" : "buffering",
         lastError: video.error ? video.error.message || `媒体错误 ${video.error.code}` : lastError,
-        mode: settings().mode, quality: rendered ? root.__BILI_NATIVE_MSE_PLAYER_FACTORY__?.qualityLabel?.(rendered) || String(rendered.id) : "原生画质",
+        mode: settings().mode, quality: playing ? root.__BILI_NATIVE_MSE_PLAYER_FACTORY__?.qualityLabel?.(playing) || String(playing.id) : "原生画质",
         bufferedAhead: bufferedAhead(), cdnHosts: [...cache.values()].flatMap(resolver => resolver.status()) });
     };
     function bufferedAhead() {
@@ -4489,10 +4548,10 @@ const chrome = (() => {
 
   // The ripple on everything that can be pressed, the same one as on louie1.com: a circle that
   // grows from where the press landed and fades out. A timer removes each circle after its run,
-  // not only animationend: an animation does not run while its element is hidden (a section
-  // folded away, the floating button taken off the page while the panel is open), so
-  // animationend would never come, and the leftover circle would play again as soon as the
-  // element showed up.
+  // not only animationend: an animation does not run while its element is hidden (a page or
+  // tab of the panel not shown, the floating button taken off the page while the panel is
+  // open), so animationend would never come, and the leftover circle would play again as
+  // soon as the element showed up.
   const RIPPLE_MS = 600;
   const RIPPLE_CSS = `
     .btr-ripple-host { overflow: hidden; }
@@ -4534,7 +4593,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.26.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.28.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4657,7 +4716,7 @@ const chrome = (() => {
             </div>
             <div class="block">
               <h2 class="block-title">调试</h2>
-              <section class="notice-controls" aria-label="提示设置">
+              <section class="notice-controls" aria-label="调试">
                 <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
                 <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
                 <fieldset id="debug-filters" class="debug-filters" hidden>
@@ -4695,7 +4754,7 @@ const chrome = (() => {
   const PANEL_CSS = `
     .btr-popup {
       --scheme: dark; --bg: #17191f; --surface: #20232a; --hover: #292d35;
-      --border: #30343d; --divider: #343943; --control-border: #444b57;
+      --divider: #343943; --control-border: #444b57;
       --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
       --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
       --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943;
@@ -4703,7 +4762,7 @@ const chrome = (() => {
     }
     .btr-popup[data-theme="light"] {
       --scheme: light; --bg: #fff; --surface: #f4f5f8; --hover: #e8ebf0;
-      --border: #d6dae2; --divider: #d6dae2; --control-border: #aeb6c4;
+      --divider: #d6dae2; --control-border: #aeb6c4;
       --text: #202532; --label: #363f50; --button-text: #363f50;
       --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
       --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff;
@@ -4723,7 +4782,8 @@ const chrome = (() => {
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
     /* With the master switch off the panel says so, and what only works with BTR on fades out
-       and cannot be used: not the notices, the debug log or the floating button, which still apply. */
+       and cannot be used: not 调试 (the notices and the diagnostic copy) or the floating button,
+       which still apply. */
     .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
     [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
     main.is-off [data-needs-enabled] { opacity: .38; filter: grayscale(1); pointer-events: none; user-select: none; }
@@ -4832,7 +4892,7 @@ const chrome = (() => {
     .advanced > summary:hover { background: var(--hover); }
     .advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .advanced-title { display: flex; align-items: center; justify-content: space-between; color: var(--label); font-size: 13px; }
-    .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); transition: transform 160ms ease; }
+    .advanced-title svg { flex: none; width: 16px; height: 16px; color: var(--muted); }
     .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
     .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .view-main { margin-bottom: 14px; }
@@ -4877,6 +4937,7 @@ const chrome = (() => {
   let current = null;
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
+  let latestStats = null;
   // The debug notices shown on this page, newest last, for the diagnostic copy.
   const noticeHistory = [];
 
@@ -4888,7 +4949,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.26.1",
+        BTR: "2026.10.28.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -4914,9 +4975,9 @@ const chrome = (() => {
     const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
-  let latestStats = null;
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
-  // 高级设置 starts folded. Unfolded once, it stays so for the rest of this page.
+  // The panel opens on its main page, or on 高级设置 when it was closed there, for the rest
+  // of this page.
   let advancedOpen = false;
   // The tab of 高级设置 last shown, for the rest of this page too.
   let advancedTab = "network";
@@ -5040,7 +5101,6 @@ const chrome = (() => {
     });
     const enabled = $("enabled");
     const disabledNote = $("disabled-note");
-    const main = panel.querySelector("main");
     const needsEnabled = [...panel.querySelectorAll("[data-needs-enabled]")];
     const concurrency = $("concurrency");
     const autoConcurrency = $("auto-concurrency");
@@ -5151,7 +5211,7 @@ const chrome = (() => {
       showTheme(settings.theme);
       enabled.checked = settings.enabled;
       disabledNote.hidden = settings.enabled !== false;
-      main.classList.toggle("is-off", settings.enabled === false);
+      panelMain.classList.toggle("is-off", settings.enabled === false);
       for (const node of needsEnabled) node.inert = settings.enabled === false;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
       autoConcurrency.checked = settings.autoConcurrency === true;
@@ -5300,7 +5360,9 @@ const chrome = (() => {
     (document.body || document.documentElement).append(dialog);
     try { dialog.showModal(); }
     catch (_error) { dialog.setAttribute("open", ""); }
-    render(latestSettings || core.normalizeSettings({}));
+    // Until bridge.js sends the stored settings, its defaults: 自动线程数 is on there, while
+    // normalizeSettings on its own leaves it off.
+    render(latestSettings || core.normalizeSettings({ autoConcurrency: true }));
     post("get-settings");
     refresh();
     panel.focus();
@@ -5311,7 +5373,8 @@ const chrome = (() => {
   // The button in the corner of every bilibili page. The userscript manager's menu is not
   // obvious (and on the home page people do not find it at all), so the panel needs a way in
   // that is always visible.
-  // It hides while the video is fullscreen and while the panel itself is open.
+  // It hides while the video is fullscreen, while the panel itself is open, and when 悬浮按钮
+  // is switched off.
   const launcher = (() => {
     if (root.top !== root) return null;
     const MARGIN = 12;
@@ -5319,7 +5382,7 @@ const chrome = (() => {
     const DRAG_SLOP = 4;
     // Let go this close to the left or right edge and it snaps flush to it; let go anywhere
     // else and it simply stays where it was put.
-    const SNAP_MS = 72;
+    const SNAP_PX = 72;
     let host = null;
     let button = null;
     let wanted = true;
@@ -5413,8 +5476,8 @@ const chrome = (() => {
       // edge rather than the pixel, so it stays there whatever the window size. Dropped
       // anywhere else: it stays exactly where it was put.
       const width = root.innerWidth || 1;
-      if (left <= SNAP_MS) leftRatio = 0;
-      else if (left + size >= width - SNAP_MS) leftRatio = 1;
+      if (left <= SNAP_PX) leftRatio = 0;
+      else if (left + size >= width - SNAP_PX) leftRatio = 1;
       else leftRatio = clamp(left / width, 0, 1);
       topRatio = clamp(top / (root.innerHeight || 1), 0, 1);
       place();
@@ -5468,9 +5531,8 @@ const chrome = (() => {
         host?.remove();
         return;
       }
+      // Bilibili replaces large parts of the page when you navigate; mount puts it back if it went.
       mount();
-      // Bilibili replaces large parts of the page when you navigate; put it back if it went.
-      if (!host.isConnected) (document.body || document.documentElement).append(host);
       if (!dragging) place();
     }
 
@@ -5530,8 +5592,8 @@ const chrome = (() => {
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
   // The userscript runs on every bilibili.com page. The video takeover belongs to the video
-  // pages only: the live site has its
-  // own module (live-hook.js), and elsewhere only the settings panel is wanted.
+  // pages only: the live site has its own module (live-hook.js), and elsewhere only the
+  // settings panel is wanted.
   const pageHost = root.location?.hostname || "";
   if (/(^|\.)bilibili\.com$/i.test(pageHost) && !/^(www|m)\.bilibili\.com$/i.test(pageHost)) return;
 
@@ -5546,7 +5608,8 @@ const chrome = (() => {
   let settingsLoaded = false;
   let player = null;
   let playerRoute = "";
-  // A CDN node that twice sends nothing is skipped until the page moves to another video.
+  // A CDN node that twice sends nothing, and a download address the nodes keep refusing, is
+  // skipped until the page moves to another video.
   // Restarting the takeover for the same video keeps the list.
   let cdnBanRoute = "";
   const cdnBans = root.__BILI_CDN_RESOLVER_FACTORY__?.createBanList({
@@ -5594,9 +5657,10 @@ const chrome = (() => {
     schedulePublish();
   });
 
+  const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.26.1",
-    architecture: "bilibili-native-ui-progressive-mse-0.8-core",
+    version: "2026.10.28.1",
+    architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
     quality: "",
@@ -5905,7 +5969,8 @@ const chrome = (() => {
     const podVideoKey = podBvid ? podBvid.toLowerCase() : "";
     // During an ordinary SPA navigation the previous collection DOM may stay
     // mounted for a moment. Only let a collection item override the URL when
-    // it is the item captured from the current click transaction.
+    // it is the item captured from the current click transaction, or the one
+    // the last collection switch took over (trustedPodVideoKey).
     const usePodBvid = Boolean(podBvid && (
       podVideoKey === pathVideoKey
       || (pendingPodSwitch?.targetVideoKey && podVideoKey === pendingPodSwitch.targetVideoKey)
@@ -5925,7 +5990,7 @@ const chrome = (() => {
   // An interactive video (互动视频) plays its branches as separate CIDs under the same BVID
   // and address; the player itself knows which branch is on. The first branch keeps the
   // ordinary route key, so the takeover does not start over when the player reports it.
-  // Returns the CID of the branch playing now when it is not the first one, otherwise 0.
+  // The first branch's CID, or 0 when this is not an interactive video.
   function interactiveFirstCid(videoKey, part) {
     try {
       const state = root.__INITIAL_STATE__;
@@ -5936,6 +6001,7 @@ const chrome = (() => {
     }
   }
 
+  // The CID of the branch playing now when it is not the first one, otherwise 0.
   function interactiveNode(videoKey, part) {
     const first = interactiveFirstCid(videoKey, part);
     if (!first) return 0;
@@ -6047,8 +6113,8 @@ const chrome = (() => {
         return root.__playinfo__;
       }
     } catch (_error) {}
-    const scripts = Array.from(document.scripts || []).reverse();
     if (identity?.key !== bootRouteKey) return null;
+    const scripts = Array.from(document.scripts || []).reverse();
     for (const script of scripts) {
       const text = script.textContent || "";
       if (!text.includes("__playinfo__") || !text.includes("__INITIAL_STATE__")) continue;
@@ -6485,7 +6551,8 @@ const chrome = (() => {
 
   // Stopping the full takeover without handing the video back takes our MediaSource off the
   // element, which then reads zero. A full takeover of the same video right after (重新接管,
-  // the debug restart, a switch of the takeover mode) started it over from there. It goes on
+  // a switch to the compatibility mode where Bilibili's core is missing) started it over
+  // from there. It goes on
   // where the viewer was instead, on the same element, playing or paused as before. The same
   // when Bilibili's player put a new source for the same video in place: that source reads
   // zero and paused too, and taking it over from there played a paused video from its start
@@ -6564,7 +6631,6 @@ const chrome = (() => {
       : pendingPodSwitch?.resume ?? (nativeVideo ? !nativeVideo.paused : true);
     pendingPodSwitch = {
       fromRoute: identity?.key || playerRoute || pendingPodSwitch?.fromRoute || "",
-      itemKey,
       targetVideoKey,
       resume,
       readyAt: Date.now() + 650,
@@ -6700,8 +6766,9 @@ const chrome = (() => {
   // seeking and quality switches wake them, they download the same segments in parallel with
   // ours (an 8K stream doubles the bandwidth bill), and their appends then crash forever on
   // the long-detached SourceBuffers — the endless "reading 'updating' of null" TypeErrors.
-  // While the takeover is active the controllers are stopped, and stopped again on every
-  // native wake-up; handing the video back to Bilibili starts them again.
+  // While the takeover is active the controllers are stopped: when it starts, every second,
+  // and every 150 ms during a quality switch. Handing the video back to Bilibili starts them
+  // again.
   function nativeStreamProcessors() {
     try { return root.player?.__core?.()?.getCorePlayer?.()?.getActiveStream?.()?.getProcessors?.() || []; }
     catch (_error) { return []; }
@@ -6710,14 +6777,14 @@ const chrome = (() => {
   const stoppedSchedulers = new WeakSet();
 
   // Stopping the controllers once a second still let them download: every seek or play woke
-  // them before the next stop, each time for several megabytes at 4K under their own ten
-  // seconds. Those downloads failed often enough for the core to show 错误码 6006 and reload
-  // the video (#49), and in a background tab the stop came only once a minute. Bilibili's
-  // dash core asks one question before it downloads anything: its schedule controller
-  // refuses to start, and stops scheduling, once the buffer controller says buffering is
-  // completed. While BTR plays the video, every native buffer controller says so, and the
-  // core asks its nodes for nothing; the original answer comes back with the video. A core
-  // without this method keeps the stop above.
+  // them before the next stop, each time for several megabytes at 4K toward their own
+  // ten-second buffer. Those downloads failed often enough for the core to show 错误码 6006
+  // and reload the video (#49), and in a background tab the stop came only once a minute.
+  // Bilibili's dash core asks one question before it downloads anything: its schedule
+  // controller refuses to start, and stops scheduling, once the buffer controller says
+  // buffering is completed. While BTR plays the video, every native buffer controller says
+  // so, and the core asks its nodes for nothing; the original answer comes back with the
+  // video. A core without this method still gets the stop in suppressNativeSchedulers below.
   const lockedBuffers = new Map();
   function lockNativeBuffers() {
     for (const processor of nativeStreamProcessors()) {
@@ -7115,7 +7182,7 @@ const chrome = (() => {
       }
       player = nextPlayer;
       remember("took over", `${route}${nextPlayer.nativeTransport ? " (兼容模式)" : ""}`);
-      stats.architecture = nextPlayer.nativeTransport ? "native-player-range-transport" : "bilibili-native-ui-progressive-mse-0.8-core";
+      stats.architecture = nextPlayer.nativeTransport ? "native-player-range-transport" : FULL_ARCHITECTURE;
       playerRoute = route;
       playerContainer = container;
       suppressNativeSchedulers();
@@ -7187,9 +7254,10 @@ const chrome = (() => {
         restartPlayer(true);
       }
       else {
-        // The download lists read the CDN mode and servers for every request, so a new choice
-        // applies to the next downloads. Restarting the player used to send the video back to
-        // its start.
+        // Everything else applies in place: the download lists read the CDN mode and servers
+        // for every request, the downloads the thread count for every range, and the full
+        // takeover its buffer settings whenever it tops the buffer up (applySettings does that
+        // at once). Restarting the player used to send the video back to its start.
         if (hadLoadedSettings && (previous.mode !== settings.mode || serversChanged) && playerRoute) preconnectCdnNodes(playerRoute);
         player?.applySettings?.(settings);
         startPlayer();
@@ -7285,7 +7353,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.26.1"
+      version: "2026.10.28.1"
     })
   });
   publish();
@@ -7295,14 +7363,15 @@ const chrome = (() => {
 (function installLiveCore(root) {
   "use strict";
 
-  // The parts of the live module that carry logic: playinfo parsing, playlist parsing,
-  // P2P/proxy URL handling and the host pool. No DOM and no timers, so dev tests can run
-  // all of it in Node.
+  // The parts of the live module that carry logic: playlist parsing, P2P/proxy URL handling
+  // and the host pool, plus a room playinfo parser that only the tests use. No DOM and no
+  // timers, so dev tests can run all of it in Node.
 
   // fMP4 HLS nodes that accept each other's signatures, verified by probing real streams
   // (2026-09): a segment signed for one of them downloads from all of them with HTTP 206,
-  // while FLV-line (ov-gotcha07) and TS-line (gotcha105) nodes answer 403. The pool probes
-  // each candidate once per stream before trusting it.
+  // while FLV-line (ov-gotcha07) and TS-line (gotcha105) nodes answer 403. The live module
+  // probes each candidate before trusting it, again with later playlists until it passes or
+  // is banned.
   const KNOWN_FMP4_HOSTS = Object.freeze([
     "d1--cn-gotcha204.bilivideo.com",
     "d1--cn-gotcha208.bilivideo.com",
@@ -7408,13 +7477,14 @@ const chrome = (() => {
 
   // Node health for one live stream. Live pieces are one second long, so the pool acts
   // fast: it ranks by first-byte time, blocks a failing node briefly, and bans one that
-  // twice sent nothing. An unproven candidate must pass a probe before it enters ranking.
+  // twice sent nothing. Proven nodes rank first; unproven candidates follow them until a
+  // probe or a download proves them.
   function createHostPool(options = {}) {
-    const health = new Map(); // host -> {fbMs, bps, failures, blockedUntil, lastSuccessAt, proven}
+    const health = new Map(); // host -> {fbMs, bps, failures, blockedUntil, proven, emptyReplies, banned}
     const now = () => (options.now ? options.now() : Date.now());
 
     function entry(host) {
-      if (!health.has(host)) health.set(host, { fbMs: 0, bps: 0, failures: 0, blockedUntil: 0, lastSuccessAt: 0, proven: false, emptyReplies: 0, banned: false });
+      if (!health.has(host)) health.set(host, { fbMs: 0, bps: 0, failures: 0, blockedUntil: 0, proven: false, emptyReplies: 0, banned: false });
       return health.get(host);
     }
 
@@ -7430,7 +7500,6 @@ const chrome = (() => {
         item.emptyReplies = 0;
         item.failures = 0;
         item.blockedUntil = 0;
-        item.lastSuccessAt = now();
         if (Number(fbMs) > 0) item.fbMs = item.fbMs ? item.fbMs * 0.6 + fbMs * 0.4 : fbMs;
         if (Number(bps) > 0) item.bps = item.bps ? item.bps * 0.6 + bps * 0.4 : bps;
       },
@@ -7452,9 +7521,8 @@ const chrome = (() => {
         const time = now();
         const all = [...health.entries()];
         const open = all.filter(([, item]) => !item.banned && item.blockedUntil <= time);
-        const pool = (open.length ? open : all.filter(([, item]) => !item.banned)).length
-          ? (open.length ? open : all.filter(([, item]) => !item.banned))
-          : all;
+        const unbanned = all.filter(([, item]) => !item.banned);
+        const pool = open.length ? open : unbanned.length ? unbanned : all;
         const ranked = pool.sort(([, a], [, b]) =>
           Number(b.proven) - Number(a.proven)
           || (a.fbMs || 9e9) - (b.fbMs || 9e9)
@@ -7517,9 +7585,9 @@ const chrome = (() => {
 
   let settings = rangeCore.normalizeSettings({});
   let settingsLoaded = false;
-  // Off until the saved settings have arrived: a viewer who switched the module off must
-  // not be taken over during the first second of the page.
-  const liveOn = () => settingsLoaded && settings.enabled && settings.liveEnabled !== false;
+  // Off until the saved settings have arrived, and then only if the viewer switched it on
+  // (liveEnabled is off by default).
+  const liveOn = () => settingsLoaded && settings.enabled && settings.liveEnabled;
 
   // Bilibili's web player loads P2P SDKs that pull pieces from other viewers over WebRTC.
   // Overseas there are few viewers nearby, so P2P only adds stalls; the mocks keep the
@@ -7539,7 +7607,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.26.1",
+    version: "2026.10.28.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -7581,7 +7649,8 @@ const chrome = (() => {
   }
 
   // ---- one live stream: the playlist currently being played ----
-  // context: { key, playlistUrl, pool, cache: Map(url -> {promise, at, hit}), lastNum, mapUrl, probing }
+  // context: { key, pool, cache: Map(url -> {promise, at, hit}), lastNum, mapUrl, probing,
+  //   speculativeMisses, prefetchQueue, inflightPrefetch, urgentInflight, abort }
   let context = null;
   // The stream the player asked for most recently. A playlist answer that arrives late,
   // after the player moved on to another stream, must not bring the old one back.
@@ -7599,10 +7668,7 @@ const chrome = (() => {
 
   function contextFor(playlistUrl) {
     const key = directoryOf(playlistUrl);
-    if (context?.key === key) {
-      context.playlistUrl = playlistUrl;
-      return context;
-    }
+    if (context?.key === key) return context;
     dropContext();
     const pool = core.createHostPool({
       onBan(host) { notices?.log("已停用一个直播节点", `${host} 两次没有返回数据，这个直播接下来不再使用它。`, "error", "", "live", "download"); }
@@ -7614,15 +7680,16 @@ const chrome = (() => {
     if (origin && !core.isP2pUrl(playlistUrl)) pool.add(origin, true);
     const extra = settings.mode === "custom" ? settings.customHosts : core.KNOWN_FMP4_HOSTS;
     for (const host of extra) if (host !== origin) pool.add(host, false);
-    context = { key, playlistUrl, pool, cache: new Map(), lastNum: 0, mapUrl: "", probing: false, speculativeMisses: 0, prefetchQueue: [], inflightPrefetch: 0, urgentInflight: 0, abort: new AbortController() };
+    context = { key, pool, cache: new Map(), lastNum: 0, mapUrl: "", probing: false, speculativeMisses: 0, prefetchQueue: [], inflightPrefetch: 0, urgentInflight: 0, abort: new AbortController() };
     stats.playerState = "ready";
     notices?.log("已接管这个直播", "直播分片改为多节点竞速下载，并提前缓存即将播放的分片。", "success", "", "live", "takeover");
     schedulePublish();
     return context;
   }
 
-  // Candidate nodes must prove they serve this stream before ranking uses them: the
-  // signature is shared within the fMP4 node group, but a node may still lack the stream.
+  // Candidates are probed so that ranking can trust them: the signature is shared within the
+  // fMP4 node group, but a node may still lack the stream. Until proven they rank behind the
+  // proven nodes and can still get a hedge copy.
   function probeCandidates(ctx, sampleUrl) {
     if (ctx.probing) return;
     const unproven = ctx.pool.unproven();
@@ -7698,7 +7765,10 @@ const chrome = (() => {
           chunks.push(value);
           received += value.byteLength;
           const item = activeTransfers.get(transferId);
-          if (item) item.bps = received * 1000 / Math.max(1, performance.now() - startedAt);
+          if (item) {
+            item.bps = received * 1000 / Math.max(1, performance.now() - startedAt);
+            item.at = Date.now();
+          }
         }
         clearTimeout(firstByteTimer);
       } else {
@@ -7727,9 +7797,10 @@ const chrome = (() => {
     }
   }
 
-  // One segment: the best node first, a hedge copy on the second-best when the first is
-  // slow to produce bytes. 404 means "not born yet" for a speculative fetch and is not a
-  // node failure.
+  // One segment: the best node first, a hedge copy on the second-best if the first has not
+  // finished after a short delay (shorter when the player is waiting, longer for a
+  // speculative fetch) or fails. A 404 is never counted against a node: for a speculative
+  // fetch it means the segment is not born yet.
   async function downloadSegment(ctx, url, { speculative = false, urgent = false } = {}) {
     const hosts = ctx.pool.pick(2);
     if (!hosts.length) throw new Error("没有可用直播节点");
@@ -7816,9 +7887,9 @@ const chrome = (() => {
     pumpPrefetch(ctx);
   }
 
-  // What a new playlist drives: prefetch the announced-but-uncached tail, the init map,
-  // and — once everything announced is in hand — one speculative future segment, whose
-  // 404 only means the encoder has not produced it yet.
+  // What a new playlist drives: the init map, every announced segment not yet cached, and —
+  // once all announced segments are cached or downloading — one speculative future segment,
+  // whose 404 only means the encoder has not produced it yet.
   function onPlaylist(playlistUrl, text, requestedKey) {
     if (!liveOn() || requestedKey !== latestPlaylistKey) return;
     // Only fMP4 media playlists: a master playlist or a TS stream is not the module's business.
@@ -7909,8 +7980,8 @@ const chrome = (() => {
     try { return new Request(url, input); } catch (_error) { return url; }
   }
 
-  // P2P and relay-wrapped URLs route back to the best official node; without a pool yet,
-  // an smtcdns wrapper at least unwraps to the node it fronts.
+  // An smtcdns wrapper unwraps to the official node it fronts. A P2P segment (.m4s) URL moves
+  // to the best official node once a stream's pool exists; other P2P URLs pass through.
   function rewriteUrl(url) {
     const unwrapped = core.unwrapProxyUrl(url) || url;
     if (!core.isP2pUrl(unwrapped)) return unwrapped;
@@ -7946,8 +8017,9 @@ const chrome = (() => {
     return nativeFetch(input, init);
   };
 
-  // A player that loads media over XMLHttpRequest gets the URL rewrite (P2P removal and
-  // best-node routing); synthesizing full XHR responses is not worth the risk here.
+  // A player that loads media over XMLHttpRequest gets only the URL rewrite: relay
+  // unwrapping, P2P segments moved to the best node, and segments of a banned node moved to
+  // the best one; synthesizing full XHR responses is not worth the risk here.
   const xhrPrototype = root.XMLHttpRequest?.prototype;
   if (xhrPrototype) {
     const nativeOpen = xhrPrototype.open;
@@ -8003,7 +8075,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.26.1"
+      version: "2026.10.28.1"
     })
   });
   publish();
@@ -8068,8 +8140,9 @@ const chrome = (() => {
     const ordered = allCards();
     for (const card of ordered) card.height = card.wrapper.offsetHeight;
     const errors = ordered.filter(card => card.isError).reverse();
-    // Red messages occupy a protected lane at the top of the notification
-    // column. Ordinary traffic cannot evict them or push them offscreen.
+    // Red messages occupy a protected lane above the ordinary ones, starting at
+    // most 560px above the bottom of the column. Ordinary traffic cannot evict
+    // them or push them offscreen.
     let top = Math.max(2, stack.clientHeight - 560);
     for (const card of errors) {
       moveUp(card, Math.min(card.y, top));
@@ -8099,8 +8172,9 @@ const chrome = (() => {
     const height = `${Math.max(0, innerHeight - bottom - 14)}px`;
     if (host.style.height === height) return;
     host.style.setProperty("height", height, "important");
-    // A cleared error or taller viewport may offer more space below. Existing
-    // messages keep their positions; only newly created messages use that space.
+    // When the takeover error notice below closes, or the viewport grows, there
+    // is more space below. Existing messages keep their positions; only newly
+    // created messages use that space.
     trimErrors();
     packUpwards();
   }
@@ -8219,8 +8293,8 @@ const chrome = (() => {
     card.fade?.cancel();
     card.motion?.cancel();
     card.wrapper.remove();
-    // Absolute positions intentionally leave a gap. Removing a bubble must not
-    // pull older bubbles down to refill a bottom-aligned flex layout.
+    // A removed bubble leaves its gap on purpose: older bubbles never move down
+    // to fill it.
   }
 
   function retire(card) {
@@ -8320,14 +8394,13 @@ const chrome = (() => {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const VERSION = "2026.10.26.1";
   const notices = globalThis.__BTR_NOTIFICATION_VIEW__;
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
   const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, debugNotices: false, errorNotices: false, debugCategories: {} };
-  // Settings of the old ArtPlayer version, of the removed compatibility modes, and the flag
-  // of the first-run guide that 0.9.4.2 removed.
+  // Settings of the old ArtPlayer version, of the compatibility modes removed before today's
+  // 兼容模式 (that one is `takeover`), and the flag of the first-run guide that 0.9.4.2 removed.
   const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
@@ -8717,8 +8790,6 @@ function inject() {
   if (!injected()) console.error("BTR: 无法在页面里启动线程撕裂者");
 }
 
-// The page code reads this mark once, when it starts, to know whether its settings go
-// through the manager ("live": the manager also reports other tabs' changes).
 function start() {
   // The released script and the Canary may both be installed and switched on. Only the one
   // that starts first runs: two would answer every settings request from two different
@@ -8728,6 +8799,8 @@ function start() {
     return;
   }
   if (manager) serveStorage();
+  // The page code reads this mark once, when it starts, to know whether its settings go
+  // through the manager ("live": the manager also reports other tabs' changes).
   if (manager) document.documentElement.setAttribute(STORAGE_MARK, managerReportsChanges ? "manager live" : "manager");
   const described = describeManager();
   if (described) document.documentElement.setAttribute(MANAGER_MARK, described);
@@ -8745,7 +8818,7 @@ else {
   observer.observe(document, { childList: true });
 }
 
-// The script now runs in live-site iframes too; the manager menu entry stays one per tab.
+// The script runs in bilibili's iframes too; the manager menu entry stays one per tab.
 let topLevelFrame = true;
 try { topLevelFrame = window.self === window.top; } catch (_error) {}
 if (typeof GM_registerMenuCommand === "function" && topLevelFrame) {
