@@ -210,9 +210,14 @@
     owner.jobs.add(controller);
     let received = 0, total = null;
     const chunks = [];
+    // Only a start gets the startup treatment (racing the head on every node, copying each
+    // piece early): the first media of a track, a seek, a retry. The segment that follows
+    // the last one delivered is an ordinary download; treating every request as a start
+    // cost a third to half of each segment's time and a fifth of the traffic.
+    const following = Boolean(track.warmEnd) && range.start === track.warmEnd;
     try {
       const result = await owner.downloader.downloadRange(range, owner.resolver(plan.url, track), {
-        signal: controller.signal, parallel: true, startup: true, kind: track.kind,
+        signal: controller.signal, parallel: true, startup: !following, kind: track.kind,
         onOrderedChunk(bytes, piece, fileTotal) {
           if (controller.signal.aborted) throw controller.signal.reason;
           if (piece.start !== range.start + received || bytes.byteLength !== piece.length
@@ -227,6 +232,8 @@
       if (controller.signal.aborted) throw controller.signal.reason;
       if (received !== range.length || result.total !== total) throw new Error("媒体 Range 长度不符");
       const bytes = core.concatChunks(chunks, received);
+      // The init segment and the index are small and come first; media follows them.
+      if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
       owner.delivered(track, result);
       return { bytes, headers: new Headers({
         "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
@@ -234,6 +241,7 @@
         "Accept-Ranges": "bytes"
       }) };
     } catch (error) {
+      track.warmEnd = 0;
       if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {

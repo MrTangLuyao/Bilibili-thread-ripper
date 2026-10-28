@@ -947,9 +947,8 @@
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
-      video.playbackRate = candidate.playbackRate;
+      // The volume, mute and speed are the element's own by now: whatever the viewer or
+      // another script (记忆倍速, #60) set while the start was loading stands.
       clearNativeErrorOverlay();
       attemptAutoplay(candidate);
     }
@@ -1091,11 +1090,14 @@
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
+      // The speed the element has now, which may have changed while this start waited for
+      // Bilibili's source buffers; the values passed in were read earlier. The load below
+      // resets the speed to the default, so it is written back. The volume and mute survive
+      // a load and are left alone.
+      candidate.playbackRate = video.playbackRate || candidate.playbackRate;
       pauseElement();
       video.src = objectUrl;
       video.load();
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
       video.playbackRate = candidate.playbackRate;
       video.dataset.btrMediaEngine = "progressive-mse-0.8-core";
       options.container.dataset.btrMseActive = "true";
@@ -1480,7 +1482,8 @@
         video.src = original.src;
         video.volume = original.volume;
         video.muted = original.muted;
-        video.playbackRate = original.playbackRate;
+        // At the speed the viewer has now, not the one from before the takeover.
+        video.playbackRate = state.playbackRate;
         video.load();
         try { video.currentTime = time; } catch (_error) {}
         // A video the viewer paused stays paused. One that was playing goes on once there is

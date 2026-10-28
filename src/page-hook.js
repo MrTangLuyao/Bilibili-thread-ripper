@@ -60,6 +60,8 @@
   let takeoverFailureRoute = "";
   let takeoverFailureCount = 0;
   let takeoverFailureStartedAt = 0;
+  // The next try of a playlist request that failed, per route (see startPlayer).
+  let playinfoRetry = { route: "", at: 0, count: 0 };
   let takeoverErrorSequence = 1;
   let autoRetakeTimer = null;
   let autoRetakeRoute = "";
@@ -140,6 +142,7 @@
     takeoverFailureRoute = "";
     takeoverFailureCount = 0;
     takeoverFailureStartedAt = 0;
+    playinfoRetry = { route: "", at: 0, count: 0 };
     stats.takeoverError = null;
   }
 
@@ -1464,6 +1467,11 @@
     let playinfo = currentPlayinfo(identity);
     notices?.log("准备接管这个视频", playinfo ? "已经有下载地址，可以继续准备播放。" : "还没有下载地址，正在向 B 站请求。", "info", "", route, "takeover");
     if (!playinfo) {
+      // A request that keeps failing (an episode Bilibili will not serve here, its risk
+      // control) is asked again after a growing pause, up to a minute. The loop that calls
+      // startPlayer every second would otherwise ask once a second for as long as the page
+      // stays open.
+      if (playinfoRetry.route === route && Date.now() < playinfoRetry.at) return;
       startingRoute = route;
       routeRequestController?.abort();
       const controller = new AbortController();
@@ -1472,10 +1480,14 @@
       schedulePublish();
       try {
         playinfo = await fetchRoutePlayinfo(identity, controller.signal);
+        playinfoRetry = { route: "", at: 0, count: 0 };
       } catch (error) {
         if (error?.name !== "AbortError" && generation === routeGeneration && routeIdentity()?.key === route) {
           recordTakeoverFailure(route, "playinfo", error);
-          restartTimer = setTimeout(startPlayer, stats.takeoverError?.route === route ? 2500 : 700);
+          const count = playinfoRetry.route === route ? playinfoRetry.count + 1 : 1;
+          const delay = Math.min(60000, 700 * (2 ** (count - 1)));
+          playinfoRetry = { route, at: Date.now() + delay, count };
+          restartTimer = setTimeout(startPlayer, delay);
         }
         return;
       } finally {

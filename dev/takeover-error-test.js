@@ -21,13 +21,17 @@
   };
 
   const result = document.getElementById("takeover-error-result");
-  root.addEventListener("message", (event) => {
-    if (event.source !== root || event.data?.channel !== CHANNEL || event.data.type !== "stats") return;
-    const stats = event.data.payload || {};
+  // A request that keeps failing is asked again after a growing pause (0.7, 1.4, 2.8, 5.6 s…),
+  // not once a second: at most four requests in the first six and a half seconds.
+  let requestsInWindow = null;
+  let latest = {};
+  const render = () => {
+    const stats = latest;
     const output = {
       version: stats.version || "",
       playerState: stats.playerState || "",
       takeoverError: stats.takeoverError || null,
+      requestsInWindow,
       requests
     };
     output.pass = output.version === "__BTR_VERSION__"
@@ -35,9 +39,16 @@
       && output.takeoverError?.stage === "playinfo"
       && /HTTP 404/.test(output.takeoverError?.message || "")
       && requests.length > 0
-      && requests.every((url) => new URL(url).origin === "https://api.bilibili.com");
+      && requests.every((url) => new URL(url).origin === "https://api.bilibili.com")
+      && requestsInWindow !== null && requestsInWindow >= 2 && requestsInWindow <= 4;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
+  };
+  root.addEventListener("message", (event) => {
+    if (event.source !== root || event.data?.channel !== CHANNEL || event.data.type !== "stats") return;
+    latest = event.data.payload || {};
+    if (requestsInWindow === null && requests.length === 1) setTimeout(() => { requestsInWindow = requests.length; render(); }, 6500);
+    render();
   });
   // The fixture loads before page-hook.js. A zero-delay timer can fire while
   // that external script is still loading and lose the only settings message.

@@ -378,6 +378,29 @@
     };
   }
 
+  // A speed or volume set while the start is still loading, by the viewer or by another
+  // script's remembered speed (#60), must survive the start: the player used to write the
+  // values from the start of the session back when playback was activated.
+  async function speedSetWhileLoadingIsKept() {
+    const errors = [];
+    const logs = [];
+    downloadDelayMs = 300;
+    video.playbackRate = 1;
+    video.volume = 1;
+    const player = startPlayer(2, {}, errors, logs, true);
+    await sleep(60);
+    video.playbackRate = 1.5;
+    video.volume = 0.3;
+    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    await sleep(100);
+    const rate = video.playbackRate, volume = video.volume;
+    player.destroy({ resumeNative: false });
+    downloadDelayMs = 20;
+    video.playbackRate = 1;
+    video.volume = 1;
+    return { errors, started, rate, volume, pass: !errors.length && started && rate === 1.5 && Math.abs(volume - 0.3) < 0.001 };
+  }
+
   // An answer that arrives late must not put back addresses that expire sooner.
   async function olderAnswerKeepsNewerAddresses() {
     const errors = [];
@@ -604,7 +627,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }
