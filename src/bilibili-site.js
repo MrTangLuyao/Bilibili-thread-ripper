@@ -7,6 +7,9 @@
 //
 // The languages keep growing, so one is recognised by its form and by the browser knowing it
 // as a language, besides the ones the site has today (Chrome knows fewer languages than Node).
+//
+// A video's address can also name it by its av number (/video/av170001: an old link, or an
+// address another script rewrote); avToBv gives the BV number of the same video.
 (function installBilibiliSite(root) {
   "use strict";
 
@@ -75,5 +78,23 @@
     } catch (_error) { return false; }
   }
 
-  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect });
+  // Bilibili's published conversion, for every av number below 2^51; "" for anything else.
+  function avToBv(aid) {
+    const text = String(aid ?? "").trim();
+    if (!/^\d{1,16}$/.test(text)) return "";
+    const number = BigInt(text);
+    if (number < 1n || number >= 1n << 51n) return "";
+    const table = "FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf";
+    const chars = ["B", "V", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0"];
+    let value = ((1n << 51n) | number) ^ 23442827791579n;
+    for (let index = chars.length - 1; value > 0n; index -= 1) {
+      chars[index] = table[Number(value % 58n)];
+      value /= 58n;
+    }
+    [chars[3], chars[9]] = [chars[9], chars[3]];
+    [chars[4], chars[7]] = [chars[7], chars[4]];
+    return chars.join("");
+  }
+
+  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect, avToBv });
 })(globalThis);

@@ -362,7 +362,9 @@
     // bilibili-site.js); without it the address is the same page.
     const path = root.__BTR_BILIBILI_SITE__?.withoutLanguage(location.pathname) ?? location.pathname;
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(path);
-    if (match) return match[1];
+    // An av address is the same video as its BV address (another script may turn one into
+    // the other while it plays), so it is read as the BV number.
+    if (match) return /^av/i.test(match[1]) ? root.__BTR_BILIBILI_SITE__?.avToBv(match[1].slice(2)) || match[1] : match[1];
 
     const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(path);
     if (episode) return episode[1];
@@ -548,12 +550,12 @@
     return null;
   }
 
+  // Bilibili's own player names the video by its BV number (and its av number). A request
+  // with only the av number comes from another script, such as Bilibili Evolved's download
+  // panel asking for another quality or dub, and says nothing about what is playing.
   function requestedVideoKey(url) {
     try {
-      const parsed = new URL(String(url), location.href);
-      const bvid = String(parsed.searchParams.get("bvid") || "");
-      const aid = Number(parsed.searchParams.get("avid") || parsed.searchParams.get("aid")) || 0;
-      return bvid ? bvid.toLowerCase() : aid ? `av${aid}` : "";
+      return String(new URL(String(url), location.href).searchParams.get("bvid") || "").toLowerCase();
     } catch (_error) {
       return "";
     }

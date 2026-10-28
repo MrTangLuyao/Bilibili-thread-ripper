@@ -25,6 +25,7 @@
   URL.createObjectURL = () => `${location.origin}/fake-media-source`;
   URL.revokeObjectURL = () => {};
 
+  // ranges: what the buffer holds before anything is written, empty unless given.
   // quotaPlan: scripted answers, true = the append throws QuotaExceededError.
   // capacitySeconds: the buffer holds that much media, like a browser's byte quota.
   // evictsPlayed: before it refuses, it drops what lies behind the playhead on its own, the
@@ -35,7 +36,7 @@
       const setup = bufferSetup?.[kind] || {};
       this.kind = kind;
       this.updating = false;
-      this.ranges = (setup.ranges || [[0, 34]]).map((range) => range.slice());
+      this.ranges = (setup.ranges || []).map((range) => range.slice());
       this.quotaPlan = (setup.quotaPlan || []).slice();
       this.capacitySeconds = setup.capacitySeconds || Infinity;
       this.evictsPlayed = setup.evictsPlayed === true;
@@ -54,6 +55,18 @@
       this.ranges = this.ranges
         .map(([from, to]) => (to <= start || from >= end ? [from, to] : from >= start && to <= end ? null : from < start ? [from, start] : [end, to]))
         .filter(Boolean);
+    }
+
+    // A segment lands at its own place in the timeline, joined with whatever it touches, as
+    // a browser's buffer reports it.
+    insert(segment) {
+      const merged = [];
+      for (const [from, to] of [...this.ranges, [segment * SEGMENT_SECONDS, (segment + 1) * SEGMENT_SECONDS]].sort((a, b) => a[0] - b[0])) {
+        const last = merged.at(-1);
+        if (last && from <= last[1] + 0.01) last[1] = Math.max(last[1], to);
+        else merged.push([from, to]);
+      }
+      this.ranges = merged;
     }
 
     finish(change) {
@@ -84,18 +97,11 @@
       if (lastMediaSource?.readyState === "ended") lastMediaSource.readyState = "open";
       if (media && heldWrite && heldWrite.kind === this.kind && heldWrite.segment === mark - 1000) {
         this.updating = true;
-        heldWrite.release = () => this.finish(() => {
-          const last = this.ranges.at(-1);
-          if (last) last[1] += SEGMENT_SECONDS;
-          else this.ranges.push([clock, clock + SEGMENT_SECONDS]);
-        });
+        heldWrite.release = () => this.finish(() => this.insert(mark - 1000));
         return;
       }
       this.finish(() => {
-        if (!media) return;
-        const last = this.ranges.at(-1);
-        if (last) last[1] += SEGMENT_SECONDS;
-        else this.ranges.push([clock, clock + SEGMENT_SECONDS]);
+        if (media) this.insert(mark - 1000);
       });
     }
 
@@ -180,7 +186,7 @@
     audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000, deadline)]
   } } });
 
-  function startPlayer(startAt, setup, errors, logs = [], resume = false) {
+  function startPlayer(startAt, setup, errors, logs = [], resume = false, settings = {}) {
     clock = startAt;
     playCalls = 0;
     removals = [];
@@ -193,7 +199,7 @@
       playinfo: playinfoAt(1000),
       initialTime: startAt,
       initialResume: resume,
-      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 8 }),
+      getSettings: () => ({ enabled: true, mode: "mainland", concurrency: 8, ...settings }),
       nativeFetch: () => Promise.reject(new Error("no network in this test")),
       onState() {},
       onLog(title) { logs.push(title); },
@@ -206,7 +212,7 @@
   // The video buffer refuses two appends once each; freeing played data lets each retry in.
   async function scriptedQuota() {
     const errors = [];
-    const player = startPlayer(30, { video: { quotaPlan: [true, false, true, false] } }, errors);
+    const player = startPlayer(30, { video: { ranges: [[0, 30]], quotaPlan: [true, false, true, false] } }, errors);
     await until(() => quotaThrows >= 2 && videoBuffer().appended.length >= 2, 8000);
     await sleep(200);
     const debug = player.getDebug();
@@ -399,6 +405,56 @@
     video.playbackRate = 1;
     video.volume = 1;
     return { errors, started, rate, volume, pass: !errors.length && started && rate === 1.5 && Math.abs(volume - 0.3) < 0.001 };
+  }
+
+  // A drag back into the gap before what is still buffered: the new position is downloaded
+  // up to the kept range, the segments that range already holds are not downloaded again,
+  // and once playback wants more, the downloads go on from where that range ends.
+  async function backwardSeekKeepsBufferedRange() {
+    const errors = [];
+    const player = startPlayer(50, {}, errors);
+    // Paused at 50 s, both tracks buffer 45 seconds ahead: segments 25 to 47.
+    const filled = await until(() => buffers.length === 2 && buffers.every((buffer) => buffer.ranges.some(([start, end]) => start <= 50 && end >= 95)), 6000);
+    await sleep(200);
+    const sessions = player.getDebug().sessionStarts;
+    const from = downloadedUrls.length;
+    clock = 44;
+    video.dispatchEvent(new Event("seeking"));
+    const joined = await until(() => buffers.every((buffer) => buffer.ranges.some(([start, end]) => start <= 44 && end >= 95)), 6000);
+    await sleep(300);
+    const afterSeek = downloadedUrls.length;
+    clock = 60;
+    video.dispatchEvent(new Event("timeupdate"));
+    await until(() => ["video", "audio"].every((kind) => downloadedUrls.slice(afterSeek).some((item) => item.kind === kind && item.segment >= 48)), 6000);
+    await sleep(200);
+    const keptSession = player.getDebug().sessionStarts === sessions;
+    player.destroy({ resumeNative: false });
+    const segments = (kind, list) => list.filter((item) => item.kind === kind).map((item) => item.segment);
+    const tracks = ["video", "audio"].map((kind) => {
+      const seek = segments(kind, downloadedUrls.slice(from, afterSeek));
+      const more = segments(kind, downloadedUrls.slice(afterSeek));
+      return { kind, seek, more: more.slice(0, 6), pass: seek.join() === "22,23,24" && more[0] === 48 && consecutive(more) };
+    });
+    return { errors, filled, joined, keptSession, tracks, pass: !errors.length && filled && joined && keptSession && tracks.every((track) => track.pass) };
+  }
+
+  // The same with 二级缓冲 on and 90 seconds ahead, which buffers to the end of the video:
+  // passing over what is kept finishes both tracks, and the stream is ended again.
+  async function backwardSeekKeptToTheEnd() {
+    const errors = [];
+    endOfStreamCalls = 0;
+    const player = startPlayer(50, {}, errors, [], false, { secondaryBuffer: true, bufferAheadSeconds: 90 });
+    const filled = await until(() => endOfStreamCalls === 1, 6000);
+    await sleep(100);
+    const from = downloadedUrls.length;
+    clock = 44;
+    video.dispatchEvent(new Event("seeking"));
+    const ended = await until(() => endOfStreamCalls === 2, 6000);
+    await sleep(300);
+    const after = downloadedUrls.slice(from);
+    player.destroy({ resumeNative: false });
+    const seek = Object.fromEntries(["video", "audio"].map((kind) => [kind, after.filter((item) => item.kind === kind).map((item) => item.segment)]));
+    return { errors, filled, ended, seek, pass: !errors.length && filled && ended && seek.video.join() === "22,23,24" && seek.audio.join() === "22,23,24" };
   }
 
   // An answer that arrives late must not put back addresses that expire sooner.
@@ -627,7 +683,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }

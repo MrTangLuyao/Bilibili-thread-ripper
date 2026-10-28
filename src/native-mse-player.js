@@ -556,6 +556,7 @@
           options.onLog?.("浏览器缓冲区满了", `已释放播放过的数据，这个视频接下来最多提前缓冲 ${candidate.bufferAheadLimit.toFixed(0)} 秒。`, "info", "buffer");
           const behindEnd = Math.max(0, current - 5);
           if (behindEnd > 0 && bufferedStart(track.sourceBuffer, behindEnd) < behindEnd) {
+            forgetWritten(track, 0, behindEnd);
             track.sourceBuffer.remove(0, behindEnd);
             await waitEvent(track.sourceBuffer, "updateend", "error", candidate.controller.signal);
           }
@@ -574,8 +575,32 @@
       });
     }
 
+    // A segment a removal takes out, even in part, has to be downloaded again.
+    function forgetWritten(track, start, end) {
+      for (const index of track.written) {
+        const segment = track.sidx.segments[index];
+        if (segment.startTime < end && segment.endTime > start) track.written.delete(index);
+      }
+    }
+
+    // Whether the buffer still holds the whole of a segment this session wrote. Only whole
+    // writes count: one cut short by a drag, or cut into since, is downloaded again. With
+    // B-frames a video range starts a few frames after the time the index gives (0.1 s for
+    // AVC at 30 frames a second).
+    function alreadyBuffered(track, index) {
+      if (!track.written.has(index)) return false;
+      const segment = track.sidx.segments[index];
+      let ranges;
+      try { ranges = track.sourceBuffer.buffered; } catch (_error) { return false; }
+      for (let at = 0; at < ranges.length; at += 1) {
+        if (ranges.start(at) <= segment.startTime + 0.25 && ranges.end(at) >= segment.endTime - 0.1) return true;
+      }
+      return false;
+    }
+
     function removeRange(candidate, track, start, end) {
       if (end <= start || candidate.mediaSource.readyState !== "open") return Promise.resolve();
+      forgetWritten(track, start, end);
       return queuedSourceOperation(candidate, track, async () => {
         if (!sessionIsCurrent(candidate) || candidate.mediaSource.readyState !== "open") return;
         track.sourceBuffer.remove(start, end);
@@ -617,6 +642,8 @@
         // The prefetched segments that are in, whole and not yet written: with 二级缓冲 on, a
         // seek keeps those still ahead of it; only the others count as downloads on their way.
         ready: new Set(),
+        // The segments written whole in this session (see alreadyBuffered).
+        written: new Set(),
         operation: Promise.resolve()
       };
       await append(candidate, track, header.initialization, candidate.generation);
@@ -741,6 +768,18 @@
     // How many segments of a track are on their way at once, once it has started.
     const fillWindow = (track) => (track.kind === "video" ? 3 : 4);
 
+    // A drag back into the gap before what is still buffered restarts the track there; once
+    // it meets the kept range, the segments the buffer already holds are passed over instead
+    // of downloaded and written again (a minute back at 4K was hundreds of MB).
+    function skipBuffered(track) {
+      while (!track.held && track.nextIndex < track.sidx.segments.length && alreadyBuffered(track, track.nextIndex)) {
+        track.prefetches.delete(track.nextIndex);
+        track.ready.delete(track.nextIndex);
+        track.nextIndex += 1;
+        track.started = true;
+      }
+    }
+
     function scheduleReserve(candidate, track, current) {
       const target = downloadTarget(candidate);
       const limit = reserveLimitBytes();
@@ -750,7 +789,7 @@
       for (let index = track.nextIndex; onTheirWay < fillWindow(track); index += 1) {
         const segment = track.sidx.segments[index];
         if (!segment || segment.startTime - current >= target) break;
-        if (track.prefetches.has(index) || track.held?.index === index) continue;
+        if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
         if (reserveBytes(candidate) + (Number(segment.length) || 0) > limit) break;
         onTheirWay += 1;
         track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 20 }).then((settled) => {
@@ -771,6 +810,7 @@
       try {
         while (sessionIsCurrent(candidate) && generation === candidate.generation && !signal.aborted) {
           const current = Number(video.currentTime) || candidate.startTime;
+          skipBuffered(track);
           if (track.nextIndex >= track.sidx.segments.length) {
             track.complete = true;
             break;
@@ -788,7 +828,7 @@
             const segment = track.sidx.segments[index];
             if (!segment || projectedEnd - current >= aheadTarget(candidate)) break;
             projectedEnd = segment.endTime;
-            if (track.prefetches.has(index) || track.held?.index === index) continue;
+            if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
@@ -843,6 +883,7 @@
             updateStartupProfile(candidate);
           }
           track.nextIndex = settled.index + 1;
+          track.written.add(settled.index);
           track.started = true;
           options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
           ensureBuffer(candidate);

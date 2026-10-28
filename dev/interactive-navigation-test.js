@@ -1,24 +1,27 @@
 // Issue #34: an interactive video (互动视频) plays its branches as other CIDs under the same
 // BVID and address. The player asks for the next branches ahead of time; when it switches,
 // the takeover must follow it to the new branch instead of playing the first one again.
+// ?av: the address names the video by its av number (bilibili-cleaner's BV号转AV号).
 (function installInteractiveNavigationTest(root) {
   "use strict";
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
-  const BVID = "BV1steinGate1";
+  const avAddress = new URLSearchParams(location.search).has("av");
+  const BVID = avAddress ? "BV17x411w7KC" : "BV1steinGate1";
+  const AID = avAddress ? 170001 : 7;
   const FIRST = 101;
   const calls = [];
   const apiRequests = [];
   const nativeVideo = document.querySelector("video");
   let branch = FIRST;
 
-  history.replaceState(null, "", `/video/${BVID}/`);
+  history.replaceState(null, "", avAddress ? `/video/av${AID}/` : `/video/${BVID}/`);
   root.__INITIAL_STATE__ = {
-    videoData: { bvid: BVID, aid: 7, cid: FIRST, pages: [{ cid: FIRST }], rights: { is_stein_gate: 1 } }
+    videoData: { bvid: BVID, aid: AID, cid: FIRST, pages: [{ cid: FIRST }], rights: { is_stein_gate: 1 } }
   };
   root.__playinfo__ = { data: { dash: { duration: 6, video: [], audio: [] }, marker: `n${FIRST}` } };
   // Bilibili's player names the branch that is on.
-  root.player = { getManifest: () => ({ bvid: BVID, aid: 7, cid: branch, p: 1 }) };
+  root.player = { getManifest: () => ({ bvid: BVID, aid: AID, cid: branch, p: 1 }) };
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
       return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32 };
@@ -41,7 +44,7 @@
     const url = new URL(String(input), location.href);
     if (url.pathname === "/x/web-interface/view") {
       apiRequests.push(url.href);
-      return new Response(JSON.stringify({ code: 0, data: { aid: 7, bvid: BVID, cid: FIRST, pages: [{ cid: FIRST }] } }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ code: 0, data: { aid: AID, bvid: BVID, cid: FIRST, pages: [{ cid: FIRST }] } }), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (/\/x\/player\/(?:wbi\/)?playurl/.test(url.pathname)) {
       apiRequests.push(url.href);
@@ -84,8 +87,8 @@
   (async () => {
     await waitFor(() => latest()?.route === base && latest()?.marker === `n${FIRST}`, "first branch from the embedded playinfo");
     // The player fetches two of the next branches while the first one plays.
-    await root.fetch(`https://api.bilibili.com/x/player/wbi/playurl?bvid=${BVID}&cid=202`);
-    await root.fetch(`https://api.bilibili.com/x/player/wbi/playurl?bvid=${BVID}&cid=303`);
+    await root.fetch(`https://api.bilibili.com/x/player/wbi/playurl?avid=${AID}&bvid=${BVID}&cid=202`);
+    await root.fetch(`https://api.bilibili.com/x/player/wbi/playurl?avid=${AID}&bvid=${BVID}&cid=303`);
     await waitFor(() => latest()?.route === base && latest().updates.length === 0 && calls.length === 1, "branches fetched ahead are not swapped into the one playing");
     switchTo(202);
     await waitFor(() => latest()?.route === `${base}:n202` && latest().marker === "n202" && requestsFor(202) === 1, "next branch from what the player fetched ahead");
