@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.28.1
+// @version      2026.10.29.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -368,6 +368,9 @@ const chrome = (() => {
 //
 // The languages keep growing, so one is recognised by its form and by the browser knowing it
 // as a language, besides the ones the site has today (Chrome knows fewer languages than Node).
+//
+// A video's address can also name it by its av number (/video/av170001: an old link, or an
+// address another script rewrote); avToBv gives the BV number of the same video.
 (function installBilibiliSite(root) {
   "use strict";
 
@@ -436,7 +439,25 @@ const chrome = (() => {
     } catch (_error) { return false; }
   }
 
-  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect });
+  // Bilibili's published conversion, for every av number below 2^51; "" for anything else.
+  function avToBv(aid) {
+    const text = String(aid ?? "").trim();
+    if (!/^\d{1,16}$/.test(text)) return "";
+    const number = BigInt(text);
+    if (number < 1n || number >= 1n << 51n) return "";
+    const table = "FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf";
+    const chars = ["B", "V", "1", "0", "0", "0", "0", "0", "0", "0", "0", "0"];
+    let value = ((1n << 51n) | number) ^ 23442827791579n;
+    for (let index = chars.length - 1; value > 0n; index -= 1) {
+      chars[index] = table[Number(value % 58n)];
+      value /= 58n;
+    }
+    [chars[3], chars[9]] = [chars[9], chars[3]];
+    [chars[4], chars[7]] = [chars[7], chars[4]];
+    return chars.join("");
+  }
+
+  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect, avToBv });
 })(globalThis);
 
 /* src/cdn-resolver.js */
@@ -2722,6 +2743,7 @@ const chrome = (() => {
           options.onLog?.("浏览器缓冲区满了", `已释放播放过的数据，这个视频接下来最多提前缓冲 ${candidate.bufferAheadLimit.toFixed(0)} 秒。`, "info", "buffer");
           const behindEnd = Math.max(0, current - 5);
           if (behindEnd > 0 && bufferedStart(track.sourceBuffer, behindEnd) < behindEnd) {
+            forgetWritten(track, 0, behindEnd);
             track.sourceBuffer.remove(0, behindEnd);
             await waitEvent(track.sourceBuffer, "updateend", "error", candidate.controller.signal);
           }
@@ -2740,8 +2762,32 @@ const chrome = (() => {
       });
     }
 
+    // A segment a removal takes out, even in part, has to be downloaded again.
+    function forgetWritten(track, start, end) {
+      for (const index of track.written) {
+        const segment = track.sidx.segments[index];
+        if (segment.startTime < end && segment.endTime > start) track.written.delete(index);
+      }
+    }
+
+    // Whether the buffer still holds the whole of a segment this session wrote. Only whole
+    // writes count: one cut short by a drag, or cut into since, is downloaded again. With
+    // B-frames a video range starts a few frames after the time the index gives (0.1 s for
+    // AVC at 30 frames a second).
+    function alreadyBuffered(track, index) {
+      if (!track.written.has(index)) return false;
+      const segment = track.sidx.segments[index];
+      let ranges;
+      try { ranges = track.sourceBuffer.buffered; } catch (_error) { return false; }
+      for (let at = 0; at < ranges.length; at += 1) {
+        if (ranges.start(at) <= segment.startTime + 0.25 && ranges.end(at) >= segment.endTime - 0.1) return true;
+      }
+      return false;
+    }
+
     function removeRange(candidate, track, start, end) {
       if (end <= start || candidate.mediaSource.readyState !== "open") return Promise.resolve();
+      forgetWritten(track, start, end);
       return queuedSourceOperation(candidate, track, async () => {
         if (!sessionIsCurrent(candidate) || candidate.mediaSource.readyState !== "open") return;
         track.sourceBuffer.remove(start, end);
@@ -2783,6 +2829,8 @@ const chrome = (() => {
         // The prefetched segments that are in, whole and not yet written: with 二级缓冲 on, a
         // seek keeps those still ahead of it; only the others count as downloads on their way.
         ready: new Set(),
+        // The segments written whole in this session (see alreadyBuffered).
+        written: new Set(),
         operation: Promise.resolve()
       };
       await append(candidate, track, header.initialization, candidate.generation);
@@ -2907,6 +2955,18 @@ const chrome = (() => {
     // How many segments of a track are on their way at once, once it has started.
     const fillWindow = (track) => (track.kind === "video" ? 3 : 4);
 
+    // A drag back into the gap before what is still buffered restarts the track there; once
+    // it meets the kept range, the segments the buffer already holds are passed over instead
+    // of downloaded and written again (a minute back at 4K was hundreds of MB).
+    function skipBuffered(track) {
+      while (!track.held && track.nextIndex < track.sidx.segments.length && alreadyBuffered(track, track.nextIndex)) {
+        track.prefetches.delete(track.nextIndex);
+        track.ready.delete(track.nextIndex);
+        track.nextIndex += 1;
+        track.started = true;
+      }
+    }
+
     function scheduleReserve(candidate, track, current) {
       const target = downloadTarget(candidate);
       const limit = reserveLimitBytes();
@@ -2916,7 +2976,7 @@ const chrome = (() => {
       for (let index = track.nextIndex; onTheirWay < fillWindow(track); index += 1) {
         const segment = track.sidx.segments[index];
         if (!segment || segment.startTime - current >= target) break;
-        if (track.prefetches.has(index) || track.held?.index === index) continue;
+        if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
         if (reserveBytes(candidate) + (Number(segment.length) || 0) > limit) break;
         onTheirWay += 1;
         track.prefetches.set(index, segmentDownload(candidate, track, segment, index, { priority: 20 }).then((settled) => {
@@ -2937,6 +2997,7 @@ const chrome = (() => {
       try {
         while (sessionIsCurrent(candidate) && generation === candidate.generation && !signal.aborted) {
           const current = Number(video.currentTime) || candidate.startTime;
+          skipBuffered(track);
           if (track.nextIndex >= track.sidx.segments.length) {
             track.complete = true;
             break;
@@ -2954,7 +3015,7 @@ const chrome = (() => {
             const segment = track.sidx.segments[index];
             if (!segment || projectedEnd - current >= aheadTarget(candidate)) break;
             projectedEnd = segment.endTime;
-            if (track.prefetches.has(index) || track.held?.index === index) continue;
+            if (track.prefetches.has(index) || track.held?.index === index || alreadyBuffered(track, index)) continue;
             const startup = !track.startupComplete && index === track.startupIndex;
             track.prefetches.set(index, segmentDownload(candidate, track, segment, index, {
               priority: startup ? 120 : Math.max(30, 55 - offset * 5),
@@ -3009,6 +3070,7 @@ const chrome = (() => {
             updateStartupProfile(candidate);
           }
           track.nextIndex = settled.index + 1;
+          track.written.add(settled.index);
           track.started = true;
           options.onSegment?.({ kind: track.kind, bytes: settled.result.byteLength, pieces: settled.result.pieceCount, hosts: settled.result.hosts });
           ensureBuffer(candidate);
@@ -3113,9 +3175,8 @@ const chrome = (() => {
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
-      video.playbackRate = candidate.playbackRate;
+      // The volume, mute and speed are the element's own by now: whatever the viewer or
+      // another script (记忆倍速, #60) set while the start was loading stands.
       clearNativeErrorOverlay();
       attemptAutoplay(candidate);
     }
@@ -3257,11 +3318,14 @@ const chrome = (() => {
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
+      // The speed the element has now, which may have changed while this start waited for
+      // Bilibili's source buffers; the values passed in were read earlier. The load below
+      // resets the speed to the default, so it is written back. The volume and mute survive
+      // a load and are left alone.
+      candidate.playbackRate = video.playbackRate || candidate.playbackRate;
       pauseElement();
       video.src = objectUrl;
       video.load();
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
       video.playbackRate = candidate.playbackRate;
       video.dataset.btrMediaEngine = "progressive-mse-0.8-core";
       options.container.dataset.btrMseActive = "true";
@@ -3646,7 +3710,8 @@ const chrome = (() => {
         video.src = original.src;
         video.volume = original.volume;
         video.muted = original.muted;
-        video.playbackRate = original.playbackRate;
+        // At the speed the viewer has now, not the one from before the takeover.
+        video.playbackRate = state.playbackRate;
         video.load();
         try { video.currentTime = time; } catch (_error) {}
         // A video the viewer paused stays paused. One that was playing goes on once there is
@@ -3714,7 +3779,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.28.1",
+        version: "2026.10.29.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3984,9 +4049,14 @@ const chrome = (() => {
     owner.jobs.add(controller);
     let received = 0, total = null;
     const chunks = [];
+    // Only a start gets the startup treatment (racing the head on every node, copying each
+    // piece early): the first media of a track, a seek, a retry. The segment that follows
+    // the last one delivered is an ordinary download; treating every request as a start
+    // cost a third to half of each segment's time and a fifth of the traffic.
+    const following = Boolean(track.warmEnd) && range.start === track.warmEnd;
     try {
       const result = await owner.downloader.downloadRange(range, owner.resolver(plan.url, track), {
-        signal: controller.signal, parallel: true, startup: true, kind: track.kind,
+        signal: controller.signal, parallel: true, startup: !following, kind: track.kind,
         onOrderedChunk(bytes, piece, fileTotal) {
           if (controller.signal.aborted) throw controller.signal.reason;
           if (piece.start !== range.start + received || bytes.byteLength !== piece.length
@@ -4001,6 +4071,8 @@ const chrome = (() => {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (received !== range.length || result.total !== total) throw new Error("媒体 Range 长度不符");
       const bytes = core.concatChunks(chunks, received);
+      // The init segment and the index are small and come first; media follows them.
+      if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
       owner.delivered(track, result);
       return { bytes, headers: new Headers({
         "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
@@ -4008,6 +4080,7 @@ const chrome = (() => {
         "Accept-Ranges": "bytes"
       }) };
     } catch (error) {
+      track.warmEnd = 0;
       if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
@@ -4593,7 +4666,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.28.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.29.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4949,7 +5022,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.28.1",
+        BTR: "2026.10.29.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5641,6 +5714,8 @@ const chrome = (() => {
   let takeoverFailureRoute = "";
   let takeoverFailureCount = 0;
   let takeoverFailureStartedAt = 0;
+  // The next try of a playlist request that failed, per route (see startPlayer).
+  let playinfoRetry = { route: "", at: 0, count: 0 };
   let takeoverErrorSequence = 1;
   let autoRetakeTimer = null;
   let autoRetakeRoute = "";
@@ -5659,7 +5734,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.28.1",
+    version: "2026.10.29.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -5721,6 +5796,7 @@ const chrome = (() => {
     takeoverFailureRoute = "";
     takeoverFailureCount = 0;
     takeoverFailureStartedAt = 0;
+    playinfoRetry = { route: "", at: 0, count: 0 };
     stats.takeoverError = null;
   }
 
@@ -5940,7 +6016,9 @@ const chrome = (() => {
     // bilibili-site.js); without it the address is the same page.
     const path = root.__BTR_BILIBILI_SITE__?.withoutLanguage(location.pathname) ?? location.pathname;
     const match = /\/video\/(BV[0-9A-Za-z]+|av\d+)/i.exec(path);
-    if (match) return match[1];
+    // An av address is the same video as its BV address (another script may turn one into
+    // the other while it plays), so it is read as the BV number.
+    if (match) return /^av/i.test(match[1]) ? root.__BTR_BILIBILI_SITE__?.avToBv(match[1].slice(2)) || match[1] : match[1];
 
     const episode = /^\/bangumi\/play\/(ep\d+|ss\d+)/i.exec(path);
     if (episode) return episode[1];
@@ -6126,12 +6204,12 @@ const chrome = (() => {
     return null;
   }
 
+  // Bilibili's own player names the video by its BV number (and its av number). A request
+  // with only the av number comes from another script, such as Bilibili Evolved's download
+  // panel asking for another quality or dub, and says nothing about what is playing.
   function requestedVideoKey(url) {
     try {
-      const parsed = new URL(String(url), location.href);
-      const bvid = String(parsed.searchParams.get("bvid") || "");
-      const aid = Number(parsed.searchParams.get("avid") || parsed.searchParams.get("aid")) || 0;
-      return bvid ? bvid.toLowerCase() : aid ? `av${aid}` : "";
+      return String(new URL(String(url), location.href).searchParams.get("bvid") || "").toLowerCase();
     } catch (_error) {
       return "";
     }
@@ -7045,6 +7123,11 @@ const chrome = (() => {
     let playinfo = currentPlayinfo(identity);
     notices?.log("准备接管这个视频", playinfo ? "已经有下载地址，可以继续准备播放。" : "还没有下载地址，正在向 B 站请求。", "info", "", route, "takeover");
     if (!playinfo) {
+      // A request that keeps failing (an episode Bilibili will not serve here, its risk
+      // control) is asked again after a growing pause, up to a minute. The loop that calls
+      // startPlayer every second would otherwise ask once a second for as long as the page
+      // stays open.
+      if (playinfoRetry.route === route && Date.now() < playinfoRetry.at) return;
       startingRoute = route;
       routeRequestController?.abort();
       const controller = new AbortController();
@@ -7053,10 +7136,14 @@ const chrome = (() => {
       schedulePublish();
       try {
         playinfo = await fetchRoutePlayinfo(identity, controller.signal);
+        playinfoRetry = { route: "", at: 0, count: 0 };
       } catch (error) {
         if (error?.name !== "AbortError" && generation === routeGeneration && routeIdentity()?.key === route) {
           recordTakeoverFailure(route, "playinfo", error);
-          restartTimer = setTimeout(startPlayer, stats.takeoverError?.route === route ? 2500 : 700);
+          const count = playinfoRetry.route === route ? playinfoRetry.count + 1 : 1;
+          const delay = Math.min(60000, 700 * (2 ** (count - 1)));
+          playinfoRetry = { route, at: Date.now() + delay, count };
+          restartTimer = setTimeout(startPlayer, delay);
         }
         return;
       } finally {
@@ -7353,7 +7440,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.28.1"
+      version: "2026.10.29.1"
     })
   });
   publish();
@@ -7607,7 +7694,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.28.1",
+    version: "2026.10.29.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8075,7 +8162,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.28.1"
+      version: "2026.10.29.1"
     })
   });
   publish();
