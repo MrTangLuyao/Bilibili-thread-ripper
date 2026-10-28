@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.27.2
+// @version      2026.10.28.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3113,9 +3113,8 @@ const chrome = (() => {
       options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
-      video.playbackRate = candidate.playbackRate;
+      // The volume, mute and speed are the element's own by now: whatever the viewer or
+      // another script (记忆倍速, #60) set while the start was loading stands.
       clearNativeErrorOverlay();
       attemptAutoplay(candidate);
     }
@@ -3257,11 +3256,14 @@ const chrome = (() => {
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
+      // The speed the element has now, which may have changed while this start waited for
+      // Bilibili's source buffers; the values passed in were read earlier. The load below
+      // resets the speed to the default, so it is written back. The volume and mute survive
+      // a load and are left alone.
+      candidate.playbackRate = video.playbackRate || candidate.playbackRate;
       pauseElement();
       video.src = objectUrl;
       video.load();
-      video.volume = candidate.volume;
-      video.muted = candidate.muted;
       video.playbackRate = candidate.playbackRate;
       video.dataset.btrMediaEngine = "progressive-mse-0.8-core";
       options.container.dataset.btrMseActive = "true";
@@ -3646,7 +3648,8 @@ const chrome = (() => {
         video.src = original.src;
         video.volume = original.volume;
         video.muted = original.muted;
-        video.playbackRate = original.playbackRate;
+        // At the speed the viewer has now, not the one from before the takeover.
+        video.playbackRate = state.playbackRate;
         video.load();
         try { video.currentTime = time; } catch (_error) {}
         // A video the viewer paused stays paused. One that was playing goes on once there is
@@ -3714,7 +3717,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.27.2",
+        version: "2026.10.28.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3984,9 +3987,14 @@ const chrome = (() => {
     owner.jobs.add(controller);
     let received = 0, total = null;
     const chunks = [];
+    // Only a start gets the startup treatment (racing the head on every node, copying each
+    // piece early): the first media of a track, a seek, a retry. The segment that follows
+    // the last one delivered is an ordinary download; treating every request as a start
+    // cost a third to half of each segment's time and a fifth of the traffic.
+    const following = Boolean(track.warmEnd) && range.start === track.warmEnd;
     try {
       const result = await owner.downloader.downloadRange(range, owner.resolver(plan.url, track), {
-        signal: controller.signal, parallel: true, startup: true, kind: track.kind,
+        signal: controller.signal, parallel: true, startup: !following, kind: track.kind,
         onOrderedChunk(bytes, piece, fileTotal) {
           if (controller.signal.aborted) throw controller.signal.reason;
           if (piece.start !== range.start + received || bytes.byteLength !== piece.length
@@ -4001,6 +4009,8 @@ const chrome = (() => {
       if (controller.signal.aborted) throw controller.signal.reason;
       if (received !== range.length || result.total !== total) throw new Error("媒体 Range 长度不符");
       const bytes = core.concatChunks(chunks, received);
+      // The init segment and the index are small and come first; media follows them.
+      if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
       owner.delivered(track, result);
       return { bytes, headers: new Headers({
         "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
@@ -4008,6 +4018,7 @@ const chrome = (() => {
         "Accept-Ranges": "bytes"
       }) };
     } catch (error) {
+      track.warmEnd = 0;
       if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
@@ -4593,7 +4604,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.27.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.28.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4949,7 +4960,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.27.2",
+        BTR: "2026.10.28.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5641,6 +5652,8 @@ const chrome = (() => {
   let takeoverFailureRoute = "";
   let takeoverFailureCount = 0;
   let takeoverFailureStartedAt = 0;
+  // The next try of a playlist request that failed, per route (see startPlayer).
+  let playinfoRetry = { route: "", at: 0, count: 0 };
   let takeoverErrorSequence = 1;
   let autoRetakeTimer = null;
   let autoRetakeRoute = "";
@@ -5659,7 +5672,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.27.2",
+    version: "2026.10.28.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -5721,6 +5734,7 @@ const chrome = (() => {
     takeoverFailureRoute = "";
     takeoverFailureCount = 0;
     takeoverFailureStartedAt = 0;
+    playinfoRetry = { route: "", at: 0, count: 0 };
     stats.takeoverError = null;
   }
 
@@ -7045,6 +7059,11 @@ const chrome = (() => {
     let playinfo = currentPlayinfo(identity);
     notices?.log("准备接管这个视频", playinfo ? "已经有下载地址，可以继续准备播放。" : "还没有下载地址，正在向 B 站请求。", "info", "", route, "takeover");
     if (!playinfo) {
+      // A request that keeps failing (an episode Bilibili will not serve here, its risk
+      // control) is asked again after a growing pause, up to a minute. The loop that calls
+      // startPlayer every second would otherwise ask once a second for as long as the page
+      // stays open.
+      if (playinfoRetry.route === route && Date.now() < playinfoRetry.at) return;
       startingRoute = route;
       routeRequestController?.abort();
       const controller = new AbortController();
@@ -7053,10 +7072,14 @@ const chrome = (() => {
       schedulePublish();
       try {
         playinfo = await fetchRoutePlayinfo(identity, controller.signal);
+        playinfoRetry = { route: "", at: 0, count: 0 };
       } catch (error) {
         if (error?.name !== "AbortError" && generation === routeGeneration && routeIdentity()?.key === route) {
           recordTakeoverFailure(route, "playinfo", error);
-          restartTimer = setTimeout(startPlayer, stats.takeoverError?.route === route ? 2500 : 700);
+          const count = playinfoRetry.route === route ? playinfoRetry.count + 1 : 1;
+          const delay = Math.min(60000, 700 * (2 ** (count - 1)));
+          playinfoRetry = { route, at: Date.now() + delay, count };
+          restartTimer = setTimeout(startPlayer, delay);
         }
         return;
       } finally {
@@ -7353,7 +7376,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.27.2"
+      version: "2026.10.28.1"
     })
   });
   publish();
@@ -7607,7 +7630,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.27.2",
+    version: "2026.10.28.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8075,7 +8098,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.27.2"
+      version: "2026.10.28.1"
     })
   });
   publish();
