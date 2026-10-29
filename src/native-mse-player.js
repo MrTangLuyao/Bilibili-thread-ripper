@@ -463,14 +463,16 @@
     // BTR reads and what comes back when the player goes.
     const ownPaused = Object.getOwnPropertyDescriptor(video, "paused");
     const ownPause = Object.getOwnPropertyDescriptor(video, "pause");
+    const ownPlay = Object.getOwnPropertyDescriptor(video, "play");
     let pausedSource = null;
     for (let target = video; target && !pausedSource; target = Object.getPrototypeOf(target)) {
       pausedSource = Object.getOwnPropertyDescriptor(target, "paused") || null;
     }
     const realPaused = pausedSource?.get;
     const realPause = video.pause;
-    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function"
-      && ownPaused?.configurable !== false && ownPause?.configurable !== false;
+    const realPlay = video.play;
+    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function" && typeof realPlay === "function"
+      && ownPaused?.configurable !== false && ownPause?.configurable !== false && ownPlay?.configurable !== false;
     const elementPaused = () => (reportsIntent ? realPaused.call(video) : video.paused);
     const pauseElement = () => (reportsIntent ? realPause.call(video) : video.pause());
     function holdingForPlay() {
@@ -486,6 +488,25 @@
     function readsAsPlaying() {
       return holdingForPlay() && performance.now() - session.holdStartedAt < HOLD_SHOWN_AS_PLAYING_MS;
     }
+    // While the start loads, Bilibili's core and other scripts play and pause the element too,
+    // so a play or pause then is the viewer's only right after a click or a key press. The
+    // core starts the element by itself when it hears that the element can play (its autoplay,
+    // seen on a real page), also within seconds of a click: a call made while the page handles
+    // one of the element's own events is not the viewer's.
+    const viewerActed = () => root.navigator?.userActivation?.isActive ?? true;
+    const VIEWER_INPUT = /^(click|dblclick|key(down|up|press)|pointer(down|up)|mouse(down|up)|touch(start|end))$/;
+    function viewersCall() {
+      const current = root.event;
+      if (current?.isTrusted && current.target === video && !VIEWER_INPUT.test(current.type)) return false;
+      return viewerActed();
+    }
+    // A viewer who paused while the start loaded means the video to stay paused once it is
+    // ready, and the core's autoplay used to start it anyway (#61).
+    function holdsBackPlay() {
+      const candidate = session;
+      return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.playbackActivated
+        && !candidate.resumeWanted && candidate.viewerPaused && !viewersCall());
+    }
     if (reportsIntent) {
       Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !readsAsPlaying() });
       Object.defineProperty(video, "pause", {
@@ -495,7 +516,18 @@
           if (!holdingForPlay()) return pauseElement();
           const shown = readsAsPlaying();
           session.resumeWanted = false;
+          session.viewerPaused = true;
           if (shown) video.dispatchEvent(new Event("pause"));
+        }
+      });
+      Object.defineProperty(video, "play", {
+        configurable: true,
+        writable: true,
+        value() {
+          if (!holdsBackPlay()) return realPlay.apply(video, arguments);
+          note("play held back", "paused by the viewer during the start");
+          // What the browser answers a play() that a pause interrupted.
+          return Promise.reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError"));
         }
       });
     }
@@ -505,6 +537,8 @@
       else delete video.paused;
       if (ownPause) Object.defineProperty(video, "pause", ownPause);
       else delete video.pause;
+      if (ownPlay) Object.defineProperty(video, "play", ownPlay);
+      else delete video.play;
     }
     const downloader = downloaderFactory.createDownloader({
       getSettings,
@@ -1156,6 +1190,9 @@
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
         startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
+        // A start that replaces one the viewer paused (a quality switch while it loads) is
+        // one the viewer paused too.
+        viewerPaused: Boolean(previous?.viewerPaused && !previous.playbackActivated && !playbackState.resume),
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -1174,6 +1211,9 @@
       // resets the speed to the default, so it is written back. The volume and mute survive
       // a load and are left alone.
       candidate.playbackRate = video.playbackRate || candidate.playbackRate;
+      // Taking the element over pauses it: our pause, also when it follows a click (a
+      // recommended video clicked in the page).
+      if (!elementPaused()) candidate.ownPauses += 1;
       pauseElement();
       video.src = objectUrl;
       video.load();
@@ -1377,15 +1417,23 @@
     // session remembers whether the viewer means it to play. Play or pause pressed meanwhile
     // changes that: a second drag used to read the intent from before and leave the video
     // paused for good. The pauses that start such a wait are ours and do not count.
+    // While the start loads, Bilibili's player may already have started the element, and a
+    // pause the viewer pressed then was lost: once its buffer was ready the start played the
+    // video again (#61). Only a play or pause right after a click or a key press counts then
+    // (see viewerActed).
+    const changesIntent = (candidate) => (candidate.playbackActivated ? candidate.recovering : viewerActed());
     video.addEventListener("play", () => {
       const candidate = session;
-      if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = true;
+      if (candidate && sessionIsCurrent(candidate) && changesIntent(candidate)) candidate.resumeWanted = true;
     }, { signal: eventController.signal });
     video.addEventListener("pause", () => {
       const candidate = session;
       if (!candidate || !sessionIsCurrent(candidate)) return;
       if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
-      else if (candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = false;
+      else if (changesIntent(candidate)) {
+        candidate.resumeWanted = false;
+        candidate.viewerPaused = true;
+      }
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
