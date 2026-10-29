@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.29.2
+// @version      2026.10.29.3
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3376,7 +3376,7 @@ const chrome = (() => {
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, takeoverPause: false, holdStartedAt: 0, holdTimer: null,
         // A start that replaces one the viewer paused (a quality switch while it loads) is
         // one the viewer paused too.
         viewerPaused: Boolean(previous?.viewerPaused && !previous.playbackActivated && !playbackState.resume),
@@ -3399,8 +3399,10 @@ const chrome = (() => {
       // a load and are left alone.
       candidate.playbackRate = video.playbackRate || candidate.playbackRate;
       // Taking the element over pauses it: our pause, also when it follows a click (a
-      // recommended video clicked in the page).
-      if (!elementPaused()) candidate.ownPauses += 1;
+      // recommended video clicked in the page). The load below drops its "pause" event in
+      // Chrome, as the standard says; a browser that fires it anyway fires it before the
+      // "loadstart" of that load, which ends the wait for it.
+      candidate.takeoverPause = !elementPaused();
       pauseElement();
       video.src = objectUrl;
       video.load();
@@ -3616,11 +3618,15 @@ const chrome = (() => {
     video.addEventListener("pause", () => {
       const candidate = session;
       if (!candidate || !sessionIsCurrent(candidate)) return;
-      if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
+      if (candidate.takeoverPause) candidate.takeoverPause = false;
+      else if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
       else if (changesIntent(candidate)) {
         candidate.resumeWanted = false;
         candidate.viewerPaused = true;
       }
+    }, { signal: eventController.signal });
+    video.addEventListener("loadstart", () => {
+      if (session) session.takeoverPause = false;
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
@@ -3865,7 +3871,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.29.2",
+        version: "2026.10.29.3",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4759,7 +4765,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.29.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.29.3${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5117,7 +5123,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.29.2",
+        BTR: "2026.10.29.3",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5853,7 +5859,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.29.2",
+    version: "2026.10.29.3",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7559,7 +7565,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.29.2"
+      version: "2026.10.29.3"
     })
   });
   publish();
@@ -7813,7 +7819,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.29.2",
+    version: "2026.10.29.3",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8281,7 +8287,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.29.2"
+      version: "2026.10.29.3"
     })
   });
   publish();
