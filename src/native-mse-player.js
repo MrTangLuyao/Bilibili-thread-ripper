@@ -1189,7 +1189,7 @@
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, takeoverPause: false, holdStartedAt: 0, holdTimer: null,
         // A start that replaces one the viewer paused (a quality switch while it loads) is
         // one the viewer paused too.
         viewerPaused: Boolean(previous?.viewerPaused && !previous.playbackActivated && !playbackState.resume),
@@ -1212,8 +1212,10 @@
       // a load and are left alone.
       candidate.playbackRate = video.playbackRate || candidate.playbackRate;
       // Taking the element over pauses it: our pause, also when it follows a click (a
-      // recommended video clicked in the page).
-      if (!elementPaused()) candidate.ownPauses += 1;
+      // recommended video clicked in the page). The load below drops its "pause" event in
+      // Chrome, as the standard says; a browser that fires it anyway fires it before the
+      // "loadstart" of that load, which ends the wait for it.
+      candidate.takeoverPause = !elementPaused();
       pauseElement();
       video.src = objectUrl;
       video.load();
@@ -1429,11 +1431,15 @@
     video.addEventListener("pause", () => {
       const candidate = session;
       if (!candidate || !sessionIsCurrent(candidate)) return;
-      if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
+      if (candidate.takeoverPause) candidate.takeoverPause = false;
+      else if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
       else if (changesIntent(candidate)) {
         candidate.resumeWanted = false;
         candidate.viewerPaused = true;
       }
+    }, { signal: eventController.signal });
+    video.addEventListener("loadstart", () => {
+      if (session) session.takeoverPause = false;
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });

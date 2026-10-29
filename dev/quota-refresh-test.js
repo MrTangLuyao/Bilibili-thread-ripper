@@ -464,23 +464,46 @@
   }
 
   // An element whose play() and pause() really change it, as Bilibili's player sees it. Its
-  // events come a moment later, as a browser's do; none comes once the scenario is over.
-  function liveElement() {
+  // events come a moment later, as a browser's do. A new source (src, load()) drops the ones
+  // still to come, as Chrome does (seen there: pause() and then load() on a playing element
+  // fire no "pause"); with keepsEvents they come first, before the new source's "loadstart",
+  // as from one queue. None comes once the scenario is over.
+  function liveElement(keepsEvents = false) {
     const state = { paused: true, over: false };
     const play = video.play;
-    const fire = (type) => setTimeout(() => { if (!state.over) video.dispatchEvent(new Event(type)); }, 0);
+    const load = video.load;
+    const srcSetter = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src");
+    const pending = new Map();
+    const dispatch = (type) => { if (!state.over) video.dispatchEvent(new Event(type)); };
+    const fire = (type) => {
+      const timer = setTimeout(() => { pending.delete(timer); dispatch(type); }, 0);
+      pending.set(timer, type);
+    };
+    const newSource = () => {
+      const types = [...pending.values()];
+      for (const timer of pending.keys()) clearTimeout(timer);
+      pending.clear();
+      state.paused = true;
+      if (keepsEvents) types.forEach(dispatch);
+    };
     Object.defineProperty(video, "paused", { configurable: true, get: () => state.paused });
+    Object.defineProperty(video, "src", { configurable: true, get: () => srcSetter.get.call(video), set(value) { newSource(); srcSetter.set.call(video, value); } });
     video.pause = function () { if (!state.paused) { state.paused = true; fire("pause"); } };
     video.play = () => { playCalls += 1; if (state.paused) { state.paused = false; fire("play"); } return Promise.resolve(); };
+    video.load = function () { newSource(); return load.call(video); };
     state.restore = () => {
       state.over = true;
       activated = false;
       delete video.paused;
+      delete video.src;
       delete video.pause;
+      delete video.load;
       video.play = play;
     };
     return state;
   }
+  // A play() the page makes and does not wait for; held back, it is turned down.
+  const pagePlay = () => { video.play().catch(() => {}); };
 
   // #61: while the start loads, Bilibili's player may already have started the element, and
   // the viewer pauses it. That pause stands: the start does not play the video again once its
@@ -498,12 +521,12 @@
     await sleep(60);
     activated = false;
     const ownPauseNotTheViewers = player.getDebug().resumeWanted === true;
-    video.play();
+    pagePlay();
     await sleep(40);
     video.pause();
     await sleep(40);
     const strayPauseNotTheViewers = player.getDebug().resumeWanted === true;
-    video.play();
+    pagePlay();
     await sleep(40);
     activated = true;
     video.pause();
@@ -538,6 +561,37 @@
     };
   }
 
+  // The player takes over an element that is playing, right after a click (a recommended
+  // video clicked in the page). The pause that takes it over is not the viewer's, whether the
+  // browser drops its event (Chrome) or not; and the first pause the viewer then presses is.
+  async function viewersFirstPauseAfterTakeover() {
+    const runs = {};
+    const errors = [];
+    for (const keepsEvents of [false, true]) {
+      const logs = [];
+      const element = liveElement(keepsEvents);
+      downloadDelayMs = 700;
+      element.paused = false;
+      activated = true;
+      const player = startPlayer(2, {}, errors, logs, true);
+      await sleep(60);
+      activated = false;
+      const takeoverNotTheViewers = player.getDebug().resumeWanted === true;
+      pagePlay();
+      await sleep(40);
+      activated = true;
+      video.pause();
+      await sleep(40);
+      activated = false;
+      const viewersPauseCounts = player.getDebug().resumeWanted === false;
+      player.destroy({ resumeNative: false });
+      element.restore();
+      downloadDelayMs = 20;
+      runs[keepsEvents ? "eventsKept" : "eventsDropped"] = { takeoverNotTheViewers, viewersPauseCounts };
+    }
+    return { errors, ...runs, pass: !errors.length && Object.values(runs).every((run) => run.takeoverNotTheViewers && run.viewersPauseCounts) };
+  }
+
   // And the other way: the viewer paused while the start loaded, then pressed play before it
   // was ready. The video starts once its buffer is.
   async function playDuringStartAfterPauseStarts() {
@@ -547,13 +601,13 @@
     downloadDelayMs = 700;
     const player = startPlayer(2, {}, errors, logs, true);
     await sleep(60);
-    video.play();
+    pagePlay();
     await sleep(40);
     activated = true;
     video.pause();
     await sleep(40);
     const pausedFirst = player.getDebug().resumeWanted === false;
-    video.play();
+    pagePlay();
     await sleep(40);
     activated = false;
     const wantedAgain = player.getDebug().resumeWanted === true;
@@ -579,7 +633,7 @@
       audio: [representation(30280, "audio/mp4", "mp4a.40.2", 128000, 1000)]
     } } });
     await sleep(60);
-    video.play();
+    pagePlay();
     await sleep(40);
     activated = true;
     video.pause();
@@ -898,7 +952,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, longWaitReadsAsPaused, refusedAutoplayReadsAsPaused, pauseDuringStartIsKept, playDuringStartAfterPauseStarts, pauseDuringStartSurvivesQualitySwitch, pageStartsAStartNobodyPaused, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, longWaitReadsAsPaused, refusedAutoplayReadsAsPaused, pauseDuringStartIsKept, viewersFirstPauseAfterTakeover, playDuringStartAfterPauseStarts, pauseDuringStartSurvivesQualitySwitch, pageStartsAStartNobodyPaused, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }
