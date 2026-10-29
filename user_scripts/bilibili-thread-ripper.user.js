@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.29.1
+// @version      2026.10.29.2
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2200,6 +2200,8 @@ const chrome = (() => {
   const NATIVE_UI_BUFFER_SECONDS = 10;
   const NATIVE_UI_WAIT_MS = 45000;
   const STARTUP_PROTECTION_MS = 20000;
+  // How long a wait for data reads as playing to the page (see readsAsPlaying).
+  const HOLD_SHOWN_AS_PLAYING_MS = 1500;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
@@ -2663,15 +2665,24 @@ const chrome = (() => {
       return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.externalSourceDetected
         && (!candidate.playbackActivated || candidate.recovering) && candidate.resumeWanted && elementPaused());
     }
+    // Only for a moment, though. Bilibili's player reads video.paused when it hears "pause";
+    // while the element read as playing it showed the video playing and kept its danmaku
+    // running over a picture that did not move, for as long as a slow wait took. A wait that
+    // takes longer than a start or a drag usually does is shown for what it is (see
+    // beginHold); once the data is in, the video plays on by itself and the page hears that.
+    function readsAsPlaying() {
+      return holdingForPlay() && performance.now() - session.holdStartedAt < HOLD_SHOWN_AS_PLAYING_MS;
+    }
     if (reportsIntent) {
-      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !holdingForPlay() });
+      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !readsAsPlaying() });
       Object.defineProperty(video, "pause", {
         configurable: true,
         writable: true,
         value() {
           if (!holdingForPlay()) return pauseElement();
+          const shown = readsAsPlaying();
           session.resumeWanted = false;
-          video.dispatchEvent(new Event("pause"));
+          if (shown) video.dispatchEvent(new Event("pause"));
         }
       });
     }
@@ -3146,12 +3157,36 @@ const chrome = (() => {
     function pauseForData(candidate) {
       if (!elementPaused()) candidate.ownPauses += 1;
       pauseElement();
+      beginHold(candidate);
+    }
+
+    // A wait for data begins: it reads as playing for a moment, then the page hears "pause"
+    // and reads the video as paused, unless the wait is over by then. The pause is BTR's own:
+    // the viewer still means the video to play.
+    function beginHold(candidate) {
+      candidate.holdStartedAt = performance.now();
+      clearTimeout(candidate.holdTimer);
+      candidate.holdTimer = setTimeout(() => {
+        if (!reportsIntent || session !== candidate || !holdingForPlay() || readsAsPlaying()) return;
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+      }, HOLD_SHOWN_AS_PLAYING_MS + 20);
     }
 
     function attemptAutoplay(candidate) {
       if (candidate.playAttempted || !candidate.resumeWanted || !sessionIsCurrent(candidate)) return;
       candidate.playAttempted = true;
-      video.play().then(clearNativeErrorOverlay).catch(() => {});
+      video.play().then(clearNativeErrorOverlay).catch((error) => {
+        // The browser would not start it by itself: a tab opened without a click on the page
+        // yet. Nothing told the page, which went on showing the video playing and running the
+        // danmaku over a still picture. Now it hears that the video is paused, and its play
+        // button starts it.
+        if (error?.name !== "NotAllowedError" || !sessionIsCurrent(candidate) || !elementPaused()) return;
+        candidate.resumeWanted = false;
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+        options.onLog?.("浏览器没有让视频自动播放", "点一下播放键就能继续。", "info", "playback");
+      });
     }
 
     function activateWhenReady(candidate) {
@@ -3255,6 +3290,7 @@ const chrome = (() => {
       candidate.controller.abort(new DOMException("播放任务已取消", "AbortError"));
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
+      clearTimeout(candidate.holdTimer);
       if (detach && video.src === candidate.objectUrl) {
         pauseElement();
         video.removeAttribute("src");
@@ -3306,7 +3342,7 @@ const chrome = (() => {
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -3318,6 +3354,8 @@ const chrome = (() => {
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
+      // The start is a wait for data too.
+      beginHold(candidate);
       // The speed the element has now, which may have changed while this start waited for
       // Bilibili's source buffers; the values passed in were read earlier. The load below
       // resets the speed to the default, so it is written back. The volume and mute survive
@@ -3779,7 +3817,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.29.1",
+        version: "2026.10.29.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4659,6 +4697,13 @@ const chrome = (() => {
     for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
   }
 
+  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
+  }
+
   const PANEL_HTML = `
     <main>
       <header>
@@ -4666,7 +4711,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.29.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.29.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4690,9 +4735,9 @@ const chrome = (() => {
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
-          <section class="current-threads" aria-live="polite">
-            <span>目前总线程</span>
-            <b id="active-count">0</b>
+          <section class="run-state" aria-label="运行状态">
+            <span><b id="active-count">0</b> 条线程</span>
+            <b class="run-speed">0 KB/s</b>
           </section>
         </div>
       </div>
@@ -4952,8 +4997,8 @@ const chrome = (() => {
     .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .current-threads { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
-    .current-threads b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
+    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
     .btr-close:hover { background: #565e6c; }
     /* Solid, for the content scrolling under it. */
@@ -4985,7 +5030,9 @@ const chrome = (() => {
     .page-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .page-back svg { width: 18px; height: 18px; transform: rotate(90deg); }
     .page-title { color: var(--text); font-size: 15px; font-weight: 600; }
-    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 14px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    /* Further from what is under it than the blocks are from each other, so the tabs do not
+       read as one more block of the page they switch. */
+    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 24px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .tabs button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
     .tabs button:hover { color: var(--text); }
     .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
@@ -5022,7 +5069,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.29.1",
+        BTR: "2026.10.29.2",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5208,6 +5255,7 @@ const chrome = (() => {
     const hostInput = $("host-input");
     const hostError = $("host-error");
     const activeCount = $("active-count");
+    const totalSpeed = panel.querySelector(".run-speed");
     let customHosts = [];
 
     const save = (update) => post("settings-update", update);
@@ -5405,9 +5453,31 @@ const chrome = (() => {
     const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
     for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
 
-    // The live thread count: asking for stats makes the page send fresh ones.
+    // The threads and the speed now: asking for stats makes the page send fresh ones. The
+    // numbers run to their new values instead of jumping there.
+    const shown = { threads: 0, speed: 0 };
+    let rollFrame = 0;
+    const showRunState = (threads, speed) => {
+      activeCount.textContent = String(Math.round(threads));
+      totalSpeed.textContent = formatSpeed(speed);
+    };
     const refresh = () => {
-      activeCount.textContent = String(Math.max(0, Math.trunc(Number(latestStats?.activeThreads) || 0)));
+      const from = { ...shown };
+      shown.threads = Math.max(0, Math.trunc(Number(latestStats?.activeThreads) || 0));
+      shown.speed = Math.max(0, Number(latestStats?.totalSpeedBps) || 0);
+      root.cancelAnimationFrame(rollFrame);
+      if (still() || (from.threads === shown.threads && from.speed === shown.speed)) showRunState(shown.threads, shown.speed);
+      else {
+        const startedAt = performance.now();
+        const roll = (now) => {
+          if (current?.host !== host) return;
+          const progress = Math.min(1, (now - startedAt) / 360);
+          const eased = 1 - (1 - progress) ** 3;
+          showRunState(from.threads + (shown.threads - from.threads) * eased, from.speed + (shown.speed - from.speed) * eased);
+          if (progress < 1) rollFrame = root.requestAnimationFrame(roll);
+        };
+        rollFrame = root.requestAnimationFrame(roll);
+      }
       post("get-stats");
     };
     const timer = setInterval(refresh, 400);
@@ -5416,6 +5486,7 @@ const chrome = (() => {
       if (current?.host !== host) return;
       current = null;
       clearInterval(timer);
+      root.cancelAnimationFrame(rollFrame);
       systemTheme.removeEventListener("change", applyTheme);
       launcher?.apply();
       document.removeEventListener("keydown", onKey, true);
@@ -5734,7 +5805,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.29.1",
+    version: "2026.10.29.2",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7440,7 +7511,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.29.1"
+      version: "2026.10.29.2"
     })
   });
   publish();
@@ -7694,7 +7765,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.29.1",
+    version: "2026.10.29.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8162,7 +8233,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.29.1"
+      version: "2026.10.29.2"
     })
   });
   publish();
