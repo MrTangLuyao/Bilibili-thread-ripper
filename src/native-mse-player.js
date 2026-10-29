@@ -13,6 +13,8 @@
   const NATIVE_UI_BUFFER_SECONDS = 10;
   const NATIVE_UI_WAIT_MS = 45000;
   const STARTUP_PROTECTION_MS = 20000;
+  // How long a wait for data reads as playing to the page (see readsAsPlaying).
+  const HOLD_SHOWN_AS_PLAYING_MS = 1500;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
@@ -476,15 +478,24 @@
       return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.externalSourceDetected
         && (!candidate.playbackActivated || candidate.recovering) && candidate.resumeWanted && elementPaused());
     }
+    // Only for a moment, though. Bilibili's player reads video.paused when it hears "pause";
+    // while the element read as playing it showed the video playing and kept its danmaku
+    // running over a picture that did not move, for as long as a slow wait took. A wait that
+    // takes longer than a start or a drag usually does is shown for what it is (see
+    // beginHold); once the data is in, the video plays on by itself and the page hears that.
+    function readsAsPlaying() {
+      return holdingForPlay() && performance.now() - session.holdStartedAt < HOLD_SHOWN_AS_PLAYING_MS;
+    }
     if (reportsIntent) {
-      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !holdingForPlay() });
+      Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !readsAsPlaying() });
       Object.defineProperty(video, "pause", {
         configurable: true,
         writable: true,
         value() {
           if (!holdingForPlay()) return pauseElement();
+          const shown = readsAsPlaying();
           session.resumeWanted = false;
-          video.dispatchEvent(new Event("pause"));
+          if (shown) video.dispatchEvent(new Event("pause"));
         }
       });
     }
@@ -959,12 +970,36 @@
     function pauseForData(candidate) {
       if (!elementPaused()) candidate.ownPauses += 1;
       pauseElement();
+      beginHold(candidate);
+    }
+
+    // A wait for data begins: it reads as playing for a moment, then the page hears "pause"
+    // and reads the video as paused, unless the wait is over by then. The pause is BTR's own:
+    // the viewer still means the video to play.
+    function beginHold(candidate) {
+      candidate.holdStartedAt = performance.now();
+      clearTimeout(candidate.holdTimer);
+      candidate.holdTimer = setTimeout(() => {
+        if (!reportsIntent || session !== candidate || !holdingForPlay() || readsAsPlaying()) return;
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+      }, HOLD_SHOWN_AS_PLAYING_MS + 20);
     }
 
     function attemptAutoplay(candidate) {
       if (candidate.playAttempted || !candidate.resumeWanted || !sessionIsCurrent(candidate)) return;
       candidate.playAttempted = true;
-      video.play().then(clearNativeErrorOverlay).catch(() => {});
+      video.play().then(clearNativeErrorOverlay).catch((error) => {
+        // The browser would not start it by itself: a tab opened without a click on the page
+        // yet. Nothing told the page, which went on showing the video playing and running the
+        // danmaku over a still picture. Now it hears that the video is paused, and its play
+        // button starts it.
+        if (error?.name !== "NotAllowedError" || !sessionIsCurrent(candidate) || !elementPaused()) return;
+        candidate.resumeWanted = false;
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+        options.onLog?.("浏览器没有让视频自动播放", "点一下播放键就能继续。", "info", "playback");
+      });
     }
 
     function activateWhenReady(candidate) {
@@ -1068,6 +1103,7 @@
       candidate.controller.abort(new DOMException("播放任务已取消", "AbortError"));
       clearInterval(candidate.timer);
       clearTimeout(candidate.endRetryTimer);
+      clearTimeout(candidate.holdTimer);
       if (detach && video.src === candidate.objectUrl) {
         pauseElement();
         video.removeAttribute("src");
@@ -1119,7 +1155,7 @@
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -1131,6 +1167,8 @@
       openGeneration(candidate);
       session = candidate;
       if (previous) disposeSession(previous, false);
+      // The start is a wait for data too.
+      beginHold(candidate);
       // The speed the element has now, which may have changed while this start waited for
       // Bilibili's source buffers; the values passed in were read earlier. The load below
       // resets the speed to the default, so it is written back. The volume and mute survive

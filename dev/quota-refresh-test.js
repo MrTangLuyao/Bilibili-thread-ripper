@@ -407,6 +407,55 @@
     return { errors, started, rate, volume, pass: !errors.length && started && rate === 1.5 && Math.abs(volume - 0.3) < 0.001 };
   }
 
+  // A wait that takes longer than a start usually does is shown for what it is: the page
+  // hears "pause" and reads the video as paused. Bilibili then shows ▶ and stops the danmaku,
+  // which used to run on over a picture that did not move. The viewer's wish to play stands:
+  // once the data is in, the video starts by itself.
+  async function longWaitReadsAsPaused() {
+    const errors = [];
+    const logs = [];
+    let pauseEvents = 0;
+    const count = () => { pauseEvents += 1; };
+    downloadDelayMs = 2400;
+    video.addEventListener("pause", count);
+    const player = startPlayer(2, {}, errors, logs, true);
+    await sleep(300);
+    const early = { playing: video.paused === false, pauseEvents };
+    await sleep(1500);
+    const later = { paused: video.paused === true, pauseEvents, wanted: player.wantsToPlay() };
+    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    await sleep(100);
+    const plays = playCalls;
+    video.removeEventListener("pause", count);
+    player.destroy({ resumeNative: false });
+    downloadDelayMs = 20;
+    return {
+      errors, early, later, started, plays,
+      pass: !errors.length && early.playing && early.pauseEvents === 0 && later.paused && later.pauseEvents === 1 && later.wanted && started && plays === 1
+    };
+  }
+
+  // The browser refuses to start the video by itself (a tab opened without a click on the
+  // page): the page, told it was playing while it loaded, now hears that it is paused, and the
+  // player no longer means to start it on its own.
+  async function refusedAutoplayReadsAsPaused() {
+    const errors = [];
+    const logs = [];
+    let pauseEvents = 0;
+    const count = () => { pauseEvents += 1; };
+    const play = video.play;
+    video.play = () => { playCalls += 1; return Promise.reject(new DOMException("autoplay blocked", "NotAllowedError")); };
+    video.addEventListener("pause", count);
+    const player = startPlayer(2, {}, errors, logs, true);
+    const started = await until(() => logs.includes("开播需要的缓冲已经够了"), 8000);
+    const told = await until(() => logs.includes("浏览器没有让视频自动播放"), 2000);
+    const state = { paused: video.paused === true, pauseEvents, resumeWanted: player.getDebug().resumeWanted };
+    video.removeEventListener("pause", count);
+    video.play = play;
+    player.destroy({ resumeNative: false });
+    return { errors, started, told, playCalls, ...state, pass: !errors.length && started && told && playCalls === 1 && state.paused && state.pauseEvents === 1 && !state.resumeWanted };
+  }
+
   // A drag back into the gap before what is still buffered: the new position is downloaded
   // up to the kept range, the segments that range already holds are not downloaded again,
   // and once playback wants more, the downloads go on from where that range ends.
@@ -683,7 +732,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, longWaitReadsAsPaused, refusedAutoplayReadsAsPaused, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }

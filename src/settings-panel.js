@@ -77,6 +77,13 @@
     for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
   }
 
+  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
+  }
+
   const PANEL_HTML = `
     <main>
       <header>
@@ -108,9 +115,9 @@
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
-          <section class="current-threads" aria-live="polite">
-            <span>目前总线程</span>
-            <b id="active-count">0</b>
+          <section class="run-state" aria-label="运行状态">
+            <span><b id="active-count">0</b> 条线程</span>
+            <b class="run-speed">0 KB/s</b>
           </section>
         </div>
       </div>
@@ -370,8 +377,8 @@
     .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .current-threads { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
-    .current-threads b { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
+    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
     .btr-close:hover { background: #565e6c; }
     /* Solid, for the content scrolling under it. */
@@ -403,7 +410,9 @@
     .page-back:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .page-back svg { width: 18px; height: 18px; transform: rotate(90deg); }
     .page-title { color: var(--text); font-size: 15px; font-weight: 600; }
-    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 14px; padding: 3px; border-radius: 10px; background: var(--surface); }
+    /* Further from what is under it than the blocks are from each other, so the tabs do not
+       read as one more block of the page they switch. */
+    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 24px; padding: 3px; border-radius: 10px; background: var(--surface); }
     .tabs button { padding: 7px 4px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; transition: background 180ms ease, color 180ms ease; }
     .tabs button:hover { color: var(--text); }
     .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
@@ -626,6 +635,7 @@
     const hostInput = $("host-input");
     const hostError = $("host-error");
     const activeCount = $("active-count");
+    const totalSpeed = panel.querySelector(".run-speed");
     let customHosts = [];
 
     const save = (update) => post("settings-update", update);
@@ -823,9 +833,31 @@
     const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
     for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
 
-    // The live thread count: asking for stats makes the page send fresh ones.
+    // The threads and the speed now: asking for stats makes the page send fresh ones. The
+    // numbers run to their new values instead of jumping there.
+    const shown = { threads: 0, speed: 0 };
+    let rollFrame = 0;
+    const showRunState = (threads, speed) => {
+      activeCount.textContent = String(Math.round(threads));
+      totalSpeed.textContent = formatSpeed(speed);
+    };
     const refresh = () => {
-      activeCount.textContent = String(Math.max(0, Math.trunc(Number(latestStats?.activeThreads) || 0)));
+      const from = { ...shown };
+      shown.threads = Math.max(0, Math.trunc(Number(latestStats?.activeThreads) || 0));
+      shown.speed = Math.max(0, Number(latestStats?.totalSpeedBps) || 0);
+      root.cancelAnimationFrame(rollFrame);
+      if (still() || (from.threads === shown.threads && from.speed === shown.speed)) showRunState(shown.threads, shown.speed);
+      else {
+        const startedAt = performance.now();
+        const roll = (now) => {
+          if (current?.host !== host) return;
+          const progress = Math.min(1, (now - startedAt) / 360);
+          const eased = 1 - (1 - progress) ** 3;
+          showRunState(from.threads + (shown.threads - from.threads) * eased, from.speed + (shown.speed - from.speed) * eased);
+          if (progress < 1) rollFrame = root.requestAnimationFrame(roll);
+        };
+        rollFrame = root.requestAnimationFrame(roll);
+      }
       post("get-stats");
     };
     const timer = setInterval(refresh, 400);
@@ -834,6 +866,7 @@
       if (current?.host !== host) return;
       current = null;
       clearInterval(timer);
+      root.cancelAnimationFrame(rollFrame);
       systemTheme.removeEventListener("change", applyTheme);
       launcher?.apply();
       document.removeEventListener("keydown", onKey, true);
