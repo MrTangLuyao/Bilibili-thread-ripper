@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.29.2
+// @version      2026.10.30.1
 // @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -2650,14 +2650,16 @@ const chrome = (() => {
     // BTR reads and what comes back when the player goes.
     const ownPaused = Object.getOwnPropertyDescriptor(video, "paused");
     const ownPause = Object.getOwnPropertyDescriptor(video, "pause");
+    const ownPlay = Object.getOwnPropertyDescriptor(video, "play");
     let pausedSource = null;
     for (let target = video; target && !pausedSource; target = Object.getPrototypeOf(target)) {
       pausedSource = Object.getOwnPropertyDescriptor(target, "paused") || null;
     }
     const realPaused = pausedSource?.get;
     const realPause = video.pause;
-    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function"
-      && ownPaused?.configurable !== false && ownPause?.configurable !== false;
+    const realPlay = video.play;
+    const reportsIntent = typeof realPaused === "function" && typeof realPause === "function" && typeof realPlay === "function"
+      && ownPaused?.configurable !== false && ownPause?.configurable !== false && ownPlay?.configurable !== false;
     const elementPaused = () => (reportsIntent ? realPaused.call(video) : video.paused);
     const pauseElement = () => (reportsIntent ? realPause.call(video) : video.pause());
     function holdingForPlay() {
@@ -2673,6 +2675,25 @@ const chrome = (() => {
     function readsAsPlaying() {
       return holdingForPlay() && performance.now() - session.holdStartedAt < HOLD_SHOWN_AS_PLAYING_MS;
     }
+    // While the start loads, Bilibili's core and other scripts play and pause the element too,
+    // so a play or pause then is the viewer's only right after a click or a key press. The
+    // core starts the element by itself when it hears that the element can play (its autoplay,
+    // seen on a real page), also within seconds of a click: a call made while the page handles
+    // one of the element's own events is not the viewer's.
+    const viewerActed = () => root.navigator?.userActivation?.isActive ?? true;
+    const VIEWER_INPUT = /^(click|dblclick|key(down|up|press)|pointer(down|up)|mouse(down|up)|touch(start|end))$/;
+    function viewersCall() {
+      const current = root.event;
+      if (current?.isTrusted && current.target === video && !VIEWER_INPUT.test(current.type)) return false;
+      return viewerActed();
+    }
+    // A viewer who paused while the start loaded means the video to stay paused once it is
+    // ready, and the core's autoplay used to start it anyway (#61).
+    function holdsBackPlay() {
+      const candidate = session;
+      return Boolean(candidate && sessionIsCurrent(candidate) && !candidate.playbackActivated
+        && !candidate.resumeWanted && candidate.viewerPaused && !viewersCall());
+    }
     if (reportsIntent) {
       Object.defineProperty(video, "paused", { configurable: true, get: () => elementPaused() && !readsAsPlaying() });
       Object.defineProperty(video, "pause", {
@@ -2682,7 +2703,18 @@ const chrome = (() => {
           if (!holdingForPlay()) return pauseElement();
           const shown = readsAsPlaying();
           session.resumeWanted = false;
+          session.viewerPaused = true;
           if (shown) video.dispatchEvent(new Event("pause"));
+        }
+      });
+      Object.defineProperty(video, "play", {
+        configurable: true,
+        writable: true,
+        value() {
+          if (!holdsBackPlay()) return realPlay.apply(video, arguments);
+          note("play held back", "paused by the viewer during the start");
+          // What the browser answers a play() that a pause interrupted.
+          return Promise.reject(new DOMException("The play() request was interrupted by a call to pause().", "AbortError"));
         }
       });
     }
@@ -2692,6 +2724,8 @@ const chrome = (() => {
       else delete video.paused;
       if (ownPause) Object.defineProperty(video, "pause", ownPause);
       else delete video.pause;
+      if (ownPlay) Object.defineProperty(video, "play", ownPlay);
+      else delete video.play;
     }
     const downloader = downloaderFactory.createDownloader({
       getSettings,
@@ -3342,7 +3376,10 @@ const chrome = (() => {
         startupCompletedBytes: 0, startupPrefetchLaunched: false, startupStartedAt: performance.now(),
         progressiveAppends: 0, underflowRebuffers: 0,
         startupTargetSeconds: 6, startupThroughputBps: 0, mediaBytesPerSecond: 0,
-        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, holdStartedAt: 0, holdTimer: null,
+        startupWaitingEvents: 0, resumeWanted: playbackState.resume, ownPauses: 0, takeoverPause: false, holdStartedAt: 0, holdTimer: null,
+        // A start that replaces one the viewer paused (a quality switch while it loads) is
+        // one the viewer paused too.
+        viewerPaused: Boolean(previous?.viewerPaused && !previous.playbackActivated && !playbackState.resume),
         volume: playbackState.volume, muted: playbackState.muted, playbackRate: playbackState.playbackRate,
         startTime: Math.max(0, Number(playbackState.time) || 0),
         forceStartTime: Boolean(playbackState.forceTime),
@@ -3361,6 +3398,11 @@ const chrome = (() => {
       // resets the speed to the default, so it is written back. The volume and mute survive
       // a load and are left alone.
       candidate.playbackRate = video.playbackRate || candidate.playbackRate;
+      // Taking the element over pauses it: our pause, also when it follows a click (a
+      // recommended video clicked in the page). The load below drops its "pause" event in
+      // Chrome, as the standard says; a browser that fires it anyway fires it before the
+      // "loadstart" of that load, which ends the wait for it.
+      candidate.takeoverPause = !elementPaused();
       pauseElement();
       video.src = objectUrl;
       video.load();
@@ -3564,15 +3606,27 @@ const chrome = (() => {
     // session remembers whether the viewer means it to play. Play or pause pressed meanwhile
     // changes that: a second drag used to read the intent from before and leave the video
     // paused for good. The pauses that start such a wait are ours and do not count.
+    // While the start loads, Bilibili's player may already have started the element, and a
+    // pause the viewer pressed then was lost: once its buffer was ready the start played the
+    // video again (#61). Only a play or pause right after a click or a key press counts then
+    // (see viewerActed).
+    const changesIntent = (candidate) => (candidate.playbackActivated ? candidate.recovering : viewerActed());
     video.addEventListener("play", () => {
       const candidate = session;
-      if (candidate && sessionIsCurrent(candidate) && candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = true;
+      if (candidate && sessionIsCurrent(candidate) && changesIntent(candidate)) candidate.resumeWanted = true;
     }, { signal: eventController.signal });
     video.addEventListener("pause", () => {
       const candidate = session;
       if (!candidate || !sessionIsCurrent(candidate)) return;
-      if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
-      else if (candidate.playbackActivated && candidate.recovering) candidate.resumeWanted = false;
+      if (candidate.takeoverPause) candidate.takeoverPause = false;
+      else if (candidate.ownPauses > 0) candidate.ownPauses -= 1;
+      else if (changesIntent(candidate)) {
+        candidate.resumeWanted = false;
+        candidate.viewerPaused = true;
+      }
+    }, { signal: eventController.signal });
+    video.addEventListener("loadstart", () => {
+      if (session) session.takeoverPause = false;
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
@@ -3817,7 +3871,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.29.2",
+        version: "2026.10.30.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4711,7 +4765,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.29.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.10.30.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5069,7 +5123,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.29.2",
+        BTR: "2026.10.30.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5805,7 +5859,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.29.2",
+    version: "2026.10.30.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7511,7 +7565,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.29.2"
+      version: "2026.10.30.1"
     })
   });
   publish();
@@ -7765,7 +7819,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.29.2",
+    version: "2026.10.30.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8233,7 +8287,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.29.2"
+      version: "2026.10.30.1"
     })
   });
   publish();
