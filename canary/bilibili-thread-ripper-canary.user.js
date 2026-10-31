@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.10.31.1
+// @version      2026.11.1.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3873,7 +3873,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.10.31.1",
+        version: "2026.11.1.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4771,7 +4771,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.10.31.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.1.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5164,7 +5164,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.10.31.1",
+        BTR: "2026.11.1.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -6006,7 +6006,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.10.31.1",
+    version: "2026.11.1.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -6911,7 +6911,11 @@ const chrome = (() => {
   function takeRetakePosition(route, video) {
     const kept = retakePosition;
     retakePosition = null;
-    return kept && kept.route === route && kept.video === video ? kept.time : undefined;
+    if (!kept || kept.route !== route || kept.video !== video) return undefined;
+    // A native reload may fail while offline. Keep our position until it restores one;
+    // a loaded native video (including a replay at zero) owns its position again.
+    if (kept.handedBack && (video.currentTime > 0 || video.readyState >= 2)) return undefined;
+    return kept.time;
   }
 
   // The player's own "自动开播" switch. Unknown counts as on, as before.
@@ -6945,9 +6949,10 @@ const chrome = (() => {
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
     // The compatibility mode leaves the element as it is.
-    if (current) retakePosition = resumeNative || current.nativeTransport ? null : {
+    if (current) retakePosition = current.nativeTransport ? null : {
       route: playerRoute,
       video: current.video,
+      handedBack: resumeNative,
       time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
     };
     notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
@@ -7447,8 +7452,8 @@ const chrome = (() => {
     const preferredQuality = nativeQuality();
     const preferredCodec = nativeCodec();
     const preferredAudio = nativeAudio();
-    const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
+    const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
@@ -7712,7 +7717,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
         }, null, 1);
       },
-      version: "2026.10.31.1"
+      version: "2026.11.1.1"
     })
   });
   publish();
@@ -7966,7 +7971,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.10.31.1",
+    version: "2026.11.1.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8434,7 +8439,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.10.31.1"
+      version: "2026.11.1.1"
     })
   });
   publish();
