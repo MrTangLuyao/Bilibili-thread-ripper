@@ -149,7 +149,7 @@ async function showMain(panel) {
     await launcherButton.waitFor();
     // Nothing BTR draws on the page can be selected as text, apart from fields to type in.
     assert.equal(await launcherButton.evaluate(node => getComputedStyle(node).userSelect), "none");
-    await launcherButton.click();
+    await launcherButton.evaluate((node) => node.click());
     await page.locator(`${settingsHost} .btr-popup`).waitFor();
     assert.equal(await launcherButton.count(), 0, "悬浮按钮 steps aside while the panel is open");
     await page.keyboard.press("Escape");

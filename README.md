@@ -329,7 +329,7 @@ pics/、docs/      README 里的图片，以及贡献者头像（pics/contributo
 - **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
 - **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。
 
-源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices 这 5 个文件桌面版也在用，改了要同步过去。
+源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices、settings-panel 这 6 个文件桌面版也在用，改了要同步过去。
 
 </details>
 

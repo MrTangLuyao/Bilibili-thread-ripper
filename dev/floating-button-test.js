@@ -12,7 +12,74 @@
   const player = document.querySelector(".bpx-player-container");
   const resultNode = document.getElementById("result");
 
+  // This page is not on .bilibili.com, where the guide's cookie lives.
+  let guideCookie = false;
+  Object.defineProperty(document, "cookie", {
+    configurable: true,
+    get: () => (guideCookie ? "BTR.guideDone=1" : ""),
+    set: (value) => { guideCookie = value.startsWith("BTR.guideDone=1"); }
+  });
   await wait(600);
+  // The first-run guide: the screen goes dark and an arrow points at the button. Nothing is
+  // recorded until it is answered.
+  const guideHost = () => document.getElementById("__bilibili_thread_ripper_guide__");
+  const guideRoot = () => guideHost()?.shadowRoot;
+  const arrowEnd = () => {
+    const parts = (guideRoot()?.querySelector("path")?.getAttribute("d") || "").match(/-?[\d.]+/g)?.map(Number) || [];
+    return parts.length >= 6 ? { x: parts[4], y: parts[5] } : null;
+  };
+  const nearButton = () => {
+    const box = button()?.getBoundingClientRect(), end = arrowEnd();
+    return Boolean(box && end) && Math.hypot(end.x - (box.left + box.width / 2), end.y - (box.top + box.height / 2)) < 60;
+  };
+  const guideShown = Boolean(guideHost());
+  const guideText = guideRoot()?.querySelector("p")?.textContent === "点这里打开全新 线程撕裂者 设置";
+  const guideBold = guideRoot()?.querySelector("b")?.textContent === "线程撕裂者";
+  const arrowOnButton = nearButton();
+  const unanswered = globalThis.__btrTestStorage.syncState.guideDone !== true;
+  // It follows the button in real time.
+  button().style.top = "120px"; button().style.left = "60px"; button().style.right = "auto";
+  await wait(120);
+  const arrowFollows = nearButton();
+  guideRoot()?.querySelector(".btr-guide")?.click();
+  await wait(200);
+  const guideGone = !guideHost();
+  const guideOpenedPanel = Boolean(panel());
+  const guideSaved = globalThis.__btrTestStorage.syncState.guideDone === true && guideCookie;
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(300);
+  const guideStaysAway = !guideHost();
+  // Answered in another subdomain whose record is only the cookie: not shown either, and the
+  // stored settings catch up.
+  globalThis.__btrTestStorage.syncState.guideDone = false;
+  root.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "settings", payload: { guideDone: false } }, "*");
+  await wait(200);
+  const markIsEnough = !guideHost() && globalThis.__btrTestStorage.syncState.guideDone === true;
+  // 恢复默认设置 asks once in place, closes the panel and goes back to first use, the guide
+  // included: its record is gone from everywhere, so it stays until it is answered again.
+  globalThis.__btrTestStorage.syncState.concurrency = 32;
+  globalThis.__btrTestStorage.syncState.mode = "overseas";
+  button().click();
+  await wait(200);
+  const resetButton = () => document.getElementById("__bilibili_thread_ripper_settings__")?.shadowRoot?.getElementById("reset-settings");
+  const resetLabel = resetButton()?.textContent === "恢复默认设置";
+  resetButton()?.click();
+  const resetAsks = resetButton()?.textContent === "确认？" && globalThis.__btrTestStorage.syncState.concurrency === 32;
+  resetButton()?.dispatchEvent(new FocusEvent("blur"));
+  const resetTakenBack = resetButton()?.textContent === "恢复默认设置";
+  resetButton()?.click();
+  resetButton()?.click();
+  await wait(200);
+  const resetDone = !panel() && globalThis.__btrTestStorage.syncState.concurrency === 8 && globalThis.__btrTestStorage.syncState.mode === "mainland";
+  const resetBringsGuide = Boolean(guideHost()) && globalThis.__btrTestStorage.syncState.guideDone === false && !guideCookie;
+  guideRoot()?.querySelector(".btr-guide")?.click();
+  await wait(200);
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(300);
+  const answeredAgain = !guideHost() && globalThis.__btrTestStorage.syncState.guideDone === true && guideCookie;
+  button().style.top = ""; button().style.left = ""; button().style.right = "";
+  root.dispatchEvent(new Event("resize"));
+  await wait(100);
   const shownByDefault = Boolean(button());
   const label = button()?.textContent || "";
   // Never dragged: it sits near the bottom right, clear of Bilibili's own row of buttons.
@@ -103,6 +170,7 @@
     hiddenInWebFullscreen,
     backAfterFullscreen,
     noOnboarding,
+    guideShown, guideText, guideBold, arrowOnButton, unanswered, arrowFollows, guideGone, guideOpenedPanel, guideSaved, guideStaysAway, markIsEnough, resetLabel, resetAsks, resetTakenBack, resetDone, resetBringsGuide, answeredAgain,
     defaultSpot,
     faintUntilHovered: opacity >= 0.5 && opacity <= 0.7,
     stayedWhereDropped,

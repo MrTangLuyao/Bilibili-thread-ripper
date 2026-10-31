@@ -9,6 +9,9 @@
   const core = root.__BILI_RANGE_CORE__;
   const cdn = root.__BILI_CDN_RESOLVER_FACTORY__;
   if (!core || !cdn) return;
+  // The desktop app opens this same panel. It names what the client has no use for and adds
+  // its own block (its src/panel-bridge.js); the userscript sets none of this.
+  const hostApp = root.__BTR_PANEL_HOST__;
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   // Which script this is: the released one, or the Canary built from main.
@@ -19,6 +22,7 @@
   const HOST_ID = "__bilibili_thread_ripper_settings__";
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
+  const GUIDE_ID = "__bilibili_thread_ripper_guide__";
   const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128];
   const BUFFER_OPTIONS = [30, 45, 90, 180];
   const MAX_CUSTOM_HOSTS = 32;
@@ -237,6 +241,9 @@
                 </fieldset>
               </section>
             </div>
+            <div class="block">
+              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
+            </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
             <div class="block">
@@ -375,6 +382,10 @@
     .debug-copy-status { color: var(--success); font-size: 12px; }
     .debug-copy-status.failed { color: var(--error); }
     .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .reset-settings:hover { background: var(--hover); }
+    .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
+    .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
     .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
@@ -394,7 +405,7 @@
     .advanced > summary small { display: block; margin-top: 6px; color: var(--subtle); font-size: 11px; line-height: 1.6; }
     .view-main, .tab-panel { display: grid; gap: 14px; align-content: start; min-width: 0; }
     .view-main { margin-bottom: 14px; }
-    .tab-panel[hidden] { display: none; }
+    .tab-panel[hidden], [data-host-hidden] { display: none !important; }
     .block { min-width: 0; }
     .block-title { margin: 0 0 6px 2px; color: var(--subtle); font-size: 11px; font-weight: 600; line-height: 1.4; }
     .control-title small { display: block; margin-top: 2px; color: var(--subtle); font-size: 11px; }
@@ -431,8 +442,36 @@
     .btr-launcher.dragging { cursor: grabbing; opacity: 1; transform: scale(1.1); transition: opacity 160ms ease, transform 160ms ease; }
     @media (max-width: 700px) { .btr-launcher { width: 40px; height: 40px; font-size: 12px; } }
     .btr-launcher { --ripple: rgba(255, 255, 255, .35); }
+    .btr-launcher.guiding { opacity: 1; animation: btr-guide-pulse 1.6s ease-in-out infinite; }
+    @keyframes btr-guide-pulse { 50% { transform: scale(1.14); } }
+    @media (prefers-reduced-motion: reduce) { .btr-launcher.guiding { animation: none; } }
     ${RIPPLE_CSS}
   `;
+  const GUIDE_CSS = `
+    .btr-guide { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); cursor: pointer; font: 16px/1.5 Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+    .btr-guide p { position: absolute; left: 50%; top: 42%; margin: 0; color: #fff; font-size: 22px; white-space: nowrap; transform: translate(-50%, -50%); }
+    .btr-guide b { color: #fb7299; font-weight: 700; }
+    .btr-guide svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .btr-guide path { fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    @media (max-width: 480px) { .btr-guide p { font-size: 17px; } }
+  `;
+  // The guide used to come back on every Bilibili subdomain: its record was in that site's
+  // localStorage (#26). It is now in the stored settings (the script manager's, shared by all
+  // subdomains), with a cookie on .bilibili.com for when those fall back to localStorage. Both
+  // reach every subdomain, so 恢复默认设置 can take the record back everywhere.
+  // The desktop client is one site, and it brings its cookies back by itself each time it
+  // starts: there a cookie has nothing to do and could not be cleared.
+  const GUIDE_COOKIE = "BTR.guideDone";
+  function writeGuideCookie(value, seconds) {
+    if (hostApp) return;
+    try { document.cookie = `${GUIDE_COOKIE}=${value}; domain=.bilibili.com; path=/; max-age=${seconds}; SameSite=Lax; Secure`; } catch (_error) {}
+  }
+  function guideMarked() {
+    if (hostApp) return false;
+    try { return document.cookie.split("; ").includes(`${GUIDE_COOKIE}=1`); } catch (_error) { return false; }
+  }
+  const markGuide = () => writeGuideCookie("1", 315360000);
+  const forgetGuide = () => writeGuideCookie("", 0);
 
   let current = null;
   // bridge.js sends the stored settings when they load or change, and the page its stats.
@@ -499,7 +538,7 @@
     dialog.append(dialogStyle, host);
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
-    style.textContent = PANEL_CSS;
+    style.textContent = PANEL_CSS + (hostApp?.css || "");
     const backdrop = document.createElement("div");
     backdrop.className = "btr-backdrop";
     const panel = document.createElement("div");
@@ -523,9 +562,14 @@
       alsoRunning.textContent = `正式版和 Canary 同时启用了。现在生效的是${CHANNEL_NAMES[SCRIPT_CHANNEL]}，${CHANNEL_NAMES[other] || other}没有运行。请在脚本管理器里只启用一个。`;
       alsoRunning.hidden = false;
     }
+    for (const selector of hostApp?.hide || []) {
+      for (const node of panel.querySelectorAll(selector)) (node.closest(".block") || node).dataset.hostHidden = "";
+    }
+    if (hostApp?.projectUrl) $("github-link").href = hostApp.projectUrl;
+    hostApp?.mount?.(panel);
     const advanced = $("advanced");
     const panelMain = panel.querySelector("main");
-    const tabs = [...panel.querySelectorAll('[role="tab"]')];
+    const tabs = [...panel.querySelectorAll('[role="tab"]:not([data-host-hidden])')];
     const tabPanels = [...panel.querySelectorAll("[data-tab-panel]")];
     const still = () => root.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const EASE = "cubic-bezier(.2, .8, .2, 1)";
@@ -630,6 +674,7 @@
     const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
     const debugFilters = $("debug-filters");
+    const resetSettings = $("reset-settings");
     const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
@@ -799,6 +844,27 @@
         setCustomHosts([...customHosts, value]);
       }
     });
+    // It asks in place: the second click is the answer, and going elsewhere takes the question back.
+    let resetAsked = 0;
+    const stopAsking = () => {
+      root.clearTimeout(resetAsked);
+      delete resetSettings.dataset.asking;
+      resetSettings.textContent = "恢复默认设置";
+    };
+    resetSettings.addEventListener("click", () => {
+      if (resetSettings.dataset.asking) {
+        stopAsking();
+        // Back to first use: the guide comes up again as soon as the panel is out of the way.
+        forgetGuide();
+        post("settings-reset");
+        current?.close();
+        return;
+      }
+      resetSettings.dataset.asking = "true";
+      resetSettings.textContent = "确认？";
+      resetAsked = root.setTimeout(stopAsking, 4000);
+    });
+    resetSettings.addEventListener("blur", stopAsking);
     errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
     debugNotices.addEventListener("change", () => {
       debugFilters.hidden = !debugNotices.checked;
@@ -862,6 +928,8 @@
     };
     const timer = setInterval(refresh, 400);
     const onKey = (event) => { if (event.key === "Escape") close(); };
+    // However the panel was found, the viewer has found it.
+    launcher?.finishGuide();
     const close = () => {
       if (current?.host !== host) return;
       current = null;
@@ -915,6 +983,68 @@
     let leftRatio = null;
     let topRatio = null;
     let dragging = null;
+    // The first-run guide waits for the stored settings: before they arrive nobody knows
+    // whether it was answered already.
+    let guide = null;
+    let guideAnswered = null;
+
+    function finishGuide() {
+      if (guideAnswered === true && !guide) return;
+      guideAnswered = true;
+      markGuide();
+      post("settings-update", { guideDone: true });
+      hideGuide();
+    }
+
+    function hideGuide() {
+      if (!guide) return;
+      root.cancelAnimationFrame(guide.frame);
+      guide.host.remove();
+      guide = null;
+      button?.classList.remove("guiding");
+    }
+
+    // The arrow is drawn again on every frame, so it stays on the button however the button
+    // or the window moves: from the edge of the text, curving, to just short of the button.
+    function drawGuide() {
+      if (!guide || !button?.isConnected) return;
+      guide.frame = root.requestAnimationFrame(drawGuide);
+      const target = button.getBoundingClientRect(), text = guide.text.getBoundingClientRect();
+      const toX = target.left + target.width / 2, toY = target.top + target.height / 2;
+      const fromX = text.left + text.width / 2, fromY = text.top + text.height / 2;
+      const distance = Math.hypot(toX - fromX, toY - fromY) || 1;
+      const unitX = (toX - fromX) / distance, unitY = (toY - fromY) / distance;
+      // Where the line from the text's middle leaves its box.
+      const leave = Math.min(unitX ? (text.width / 2 + 14) / Math.abs(unitX) : Infinity, unitY ? (text.height / 2 + 14) / Math.abs(unitY) : Infinity);
+      const stop = target.width / 2 + 16;
+      if (distance - leave - stop < 24) { guide.arrow.setAttribute("d", ""); return; }
+      const startX = fromX + unitX * leave, startY = fromY + unitY * leave;
+      const endX = toX - unitX * stop, endY = toY - unitY * stop;
+      const bend = (distance - leave - stop) * .18;
+      const bendX = (startX + endX) / 2 - unitY * bend, bendY = (startY + endY) / 2 + unitX * bend;
+      const angle = Math.atan2(endY - bendY, endX - bendX);
+      const barb = (side) => `${(endX - 15 * Math.cos(angle + side)).toFixed(1)} ${(endY - 15 * Math.sin(angle + side)).toFixed(1)}`;
+      guide.arrow.setAttribute("d", `M${startX.toFixed(1)} ${startY.toFixed(1)} Q${bendX.toFixed(1)} ${bendY.toFixed(1)} ${endX.toFixed(1)} ${endY.toFixed(1)} M${barb(.5)} L${endX.toFixed(1)} ${endY.toFixed(1)} L${barb(-.5)}`);
+    }
+
+    function showGuide() {
+      const guideHost = document.createElement("div");
+      guideHost.id = GUIDE_ID;
+      guideHost.style.cssText = "all:initial!important;position:fixed!important;inset:0!important;z-index:2147483644!important;";
+      const shadow = guideHost.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = GUIDE_CSS;
+      const cover = document.createElement("div");
+      cover.className = "btr-guide";
+      cover.innerHTML = '<p>点这里打开全新 <b>线程撕裂者</b> 设置</p><svg aria-hidden="true"><path></path></svg>';
+      // A click anywhere on it counts: it is the only thing on the screen that can be clicked.
+      cover.addEventListener("click", () => open());
+      shadow.append(style, cover);
+      (document.body || document.documentElement).append(guideHost);
+      guide = { host: guideHost, text: cover.querySelector("p"), arrow: cover.querySelector("path"), frame: 0 };
+      button.classList.add("guiding");
+      drawGuide();
+    }
 
     // Bilibili fills the screen in two ways: the browser fullscreen API, and its own 网页全屏,
     // which only resizes the player inside the page. Rather than follow Bilibili class names,
@@ -1052,12 +1182,15 @@
     function apply() {
       const show = wanted && !fullscreen() && !current;
       if (!show) {
+        hideGuide();
         host?.remove();
         return;
       }
       // Bilibili replaces large parts of the page when you navigate; mount puts it back if it went.
       mount();
       if (!dragging) place();
+      if (guide && !(guide.host.isConnected && button.isConnected)) hideGuide();
+      if (guideAnswered === false && !guide) showGuide();
     }
 
     const update = (settings) => {
@@ -1066,6 +1199,15 @@
       const ratio = (value) => (value != null && Number(value) >= 0 && Number(value) <= 1 ? Number(value) : null);
       leftRatio = ratio(settings?.floatingButtonLeft);
       topRatio = ratio(settings?.floatingButtonTop);
+      if (settings?.guideDone === true) {
+        guideAnswered = true;
+        markGuide();
+        hideGuide();
+      } else if (guideMarked()) {
+        // Answered on another subdomain or before the stored settings could take it.
+        guideAnswered = false;
+        finishGuide();
+      } else guideAnswered = false;
       apply();
     };
     for (const type of ["fullscreenchange", "webkitfullscreenchange"]) document.addEventListener(type, apply, true);
@@ -1075,7 +1217,7 @@
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply, { once: true });
     // The button is on by default, so it is there before the stored settings arrive.
     apply();
-    return { update, apply };
+    return { update, apply, finishGuide };
   })();
 
   root.addEventListener("message", (event) => {
@@ -1098,6 +1240,9 @@
   });
   // The userscript manager's menu entry.
   document.addEventListener("btr-userscript-open-settings", () => { if (root.top === root) toggle(); });
+
+  // Settings sent before this file ran went unheard.
+  post("get-settings");
 
   root.__BTR_SETTINGS_PANEL__ = Object.freeze({ open, close: () => current?.close(), toggle, isOpen: () => Boolean(current) });
 })(globalThis);
