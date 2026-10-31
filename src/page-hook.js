@@ -985,7 +985,11 @@
   function takeRetakePosition(route, video) {
     const kept = retakePosition;
     retakePosition = null;
-    return kept && kept.route === route && kept.video === video ? kept.time : undefined;
+    if (!kept || kept.route !== route || kept.video !== video) return undefined;
+    // A native reload may fail while offline. Keep our position until it restores one;
+    // a loaded native video (including a replay at zero) owns its position again.
+    if (kept.handedBack && (video.currentTime > 0 || video.readyState >= 2)) return undefined;
+    return kept.time;
   }
 
   // The player's own "自动开播" switch. Unknown counts as on, as before.
@@ -1019,9 +1023,10 @@
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
     // The compatibility mode leaves the element as it is.
-    if (current) retakePosition = resumeNative || current.nativeTransport ? null : {
+    if (current) retakePosition = current.nativeTransport ? null : {
       route: playerRoute,
       video: current.video,
+      handedBack: resumeNative,
       time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
     };
     notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
@@ -1521,8 +1526,8 @@
     const preferredQuality = nativeQuality();
     const preferredCodec = nativeCodec();
     const preferredAudio = nativeAudio();
-    const resumeAfterStop = takeResumeHint(autoRetakeRoute === route && autoRetakeCount > 0);
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
+    const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
     for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
