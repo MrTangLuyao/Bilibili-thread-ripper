@@ -21,6 +21,7 @@
   let playCalls = 0;
   let objectUrls = 0;
   let headerDelayMs = 10;
+  let offline = false;
   // Runs right before the next player reads the element: Bilibili putting its position back.
   let beforeCreate = null;
 
@@ -117,6 +118,7 @@
   root.__BILI_IDM_DOWNLOADER_FACTORY__ = {
     createDownloader: () => ({
       async downloadRange(range, _resolver, options) {
+        if (offline) throw new TypeError("Failed to fetch: offline");
         const bytes = new Uint8Array(8);
         if (options.kind === "meta") {
           await new Promise((resolve) => setTimeout(resolve, headerDelayMs));
@@ -187,8 +189,8 @@
   const debug = () => root.__biliThreadRipperDebug;
   const player = () => debug()?.getPlayer() || null;
   // The player that replaced `previous`, once it has what it needs to play.
-  const nextPlayer = async (previous) => {
-    await until(() => player() && player() !== previous && player().getDebug().playbackActivated);
+  const nextPlayer = async (previous, ms = 6000) => {
+    await until(() => player() && player() !== previous && player().getDebug().playbackActivated, ms);
     return player();
   };
   const near = (value, expected) => Math.abs(Number(value) - expected) < 0.01;
@@ -260,15 +262,46 @@
     await until(() => !paused, 3000);
     const nativeSwitchPlaying = { asked: created[6], start: sixth?.getDebug().sessionStartTime, time: clock, paused };
 
+    // A download fails while watching. Bilibili's asynchronous reload also fails while
+    // offline, leaving the detached element at zero. No click: BTR must recover itself.
+    // Then repeat with a successful native reload that has already played farther ahead.
+    const recovery = [];
+    let current = sixth;
+    for (const nativeTime of [0, 470]) {
+      const nativeCore = {
+        state: { mpd: playinfo().data.dash },
+        getCorePlayer: () => ({ getVideoElement: () => video }),
+        switchSource() {
+          if (!nativeTime) return Promise.reject(new TypeError("Native reload failed: offline"));
+          clock = nativeTime;
+          video.play();
+          return Promise.resolve();
+        }
+      };
+      root.player = { __core: () => nativeCore };
+      const watchedTime = clock + 5;
+      clock = watchedTime;
+      video.dispatchEvent(new Event("timeupdate"));
+      offline = true;
+      current.applySettings();
+      const failed = await until(() => debug().getStats().playerState === "error");
+      const handedBack = await until(() => !player());
+      const fallbackTime = clock;
+      offline = false;
+      current = await nextPlayer(current, 10000);
+      recovery.push({ failed, handedBack, fallbackTime, time: clock, paused,
+        expected: nativeTime || watchedTime, start: current?.getDebug().sessionStartTime });
+    }
+
     // A restart, and the page moves to another video before it is taken over again: that
     // video starts where Bilibili has it, not at the position of the one before.
     debug().restart();
     history.pushState(null, "", `/video/${OTHER_BVID}`);
-    const seventh = await nextPlayer(sixth);
-    const otherVideo = { asked: created[7], start: seventh?.getDebug().sessionStartTime, fetched: apiRequests.some((url) => url.includes(OTHER_BVID)) };
+    const seventh = await nextPlayer(current);
+    const otherVideo = { asked: created.at(-1), start: seventh?.getDebug().sessionStartTime, fetched: apiRequests.some((url) => url.includes(OTHER_BVID)) };
 
     const output = {
-      created, watched, restart, modeSwitch, retry, nativeSwitch, nativeSwitchPlaying, otherVideo,
+      created, watched, restart, modeSwitch, retry, nativeSwitch, nativeSwitchPlaying, recovery, otherVideo,
       checks: {
         watchedAtPosition: near(watched.time, 638.7) && watched.paused === false,
         restartKeepsPosition: near(restart.asked?.initialTime, 638.7) && near(restart.start, 638.7) && near(restart.time, 638.7),
@@ -283,10 +316,12 @@
         nativeSwitchStaysPaused: nativeSwitch.asked?.initialResume === false && nativeSwitch.paused === true && nativeSwitch.plays === 0,
         nativeSwitchKeepsPlayingPosition: near(nativeSwitchPlaying.asked?.initialTime, 450) && near(nativeSwitchPlaying.start, 450) && near(nativeSwitchPlaying.time, 450),
         nativeSwitchKeepsPlaying: nativeSwitchPlaying.asked?.initialResume === true && nativeSwitchPlaying.paused === false,
+        failedHandBackReadsZero: recovery[0].fallbackTime === 0,
+        recoveryKeepsPosition: recovery.every(item => item.failed && item.handedBack && near(item.time, item.expected) && near(item.start, item.expected) && !item.paused),
         otherVideoStartsOver: otherVideo.fetched && otherVideo.asked?.route === `/video/${OTHER_BVID}` && otherVideo.asked?.initialTime === undefined && otherVideo.start === 0
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && created.length === 8 && debug()?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean) && created.length === 10 && debug()?.version === "__BTR_VERSION__";
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })().catch((error) => {
