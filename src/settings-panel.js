@@ -515,11 +515,6 @@
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
-  // The panel opens on its main page, or on 高级设置 when it was closed there, for the rest
-  // of this page.
-  let advancedOpen = false;
-  // The tab of 高级设置 last shown, for the rest of this page too.
-  let advancedTab = "network";
 
   function open(options = {}) {
     if (current) return;
@@ -586,6 +581,7 @@
     const enter = (node, from) => {
       if (node && !still()) node.animate([{ opacity: 0, transform: from }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE });
     };
+    let advancedTab = "network";
     const selectTab = (name) => {
       advancedTab = name;
       for (const tab of tabs) {
@@ -604,10 +600,10 @@
       resize(change);
       enter(panel.querySelector(show ? ".advanced-page" : ".view-main"), show ? "translateX(18px)" : "translateX(-18px)");
     };
-    // "自定义" in the gear menu opens it on the custom servers, under 网络.
-    selectTab(options.advanced === true ? "network" : advancedTab);
-    showAdvanced(advancedOpen || options.advanced === true, false);
-    advanced.addEventListener("toggle", () => { advancedOpen = advanced.open; });
+    // The panel always opens on its first page; "自定义" in the gear menu opens it on the
+    // custom servers, under 网络.
+    selectTab("network");
+    showAdvanced(options.advanced === true, false);
     advanced.querySelector("summary").addEventListener("click", (event) => {
       event.preventDefault();
       showAdvanced(true);

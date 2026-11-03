@@ -55,13 +55,28 @@
   root.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "settings", payload: { guideDone: false } }, "*");
   await wait(200);
   const markIsEnough = !guideHost() && globalThis.__btrTestStorage.syncState.guideDone === true;
+  // However the panel was left, it opens on its first page, with 网络 as the tab behind it.
+  const settingsRoot = () => document.getElementById("__bilibili_thread_ripper_settings__")?.shadowRoot;
+  button().click();
+  await wait(200);
+  settingsRoot()?.querySelector(".advanced > summary")?.click();
+  settingsRoot()?.getElementById("tab-features")?.click();
+  await wait(100);
+  const leftOnFeatures = settingsRoot()?.getElementById("advanced")?.open === true && settingsRoot()?.getElementById("tab-features")?.getAttribute("aria-selected") === "true";
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(300);
+  button().click();
+  await wait(200);
+  const opensOnFirstPage = settingsRoot()?.getElementById("advanced")?.open === false && !settingsRoot()?.querySelector("main")?.classList.contains("is-advanced") && settingsRoot()?.getElementById("tab-network")?.getAttribute("aria-selected") === "true";
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  await wait(300);
   // 恢复默认设置 asks once in place, closes the panel and goes back to first use, the guide
   // included: its record is gone from everywhere, so it stays until it is answered again.
   globalThis.__btrTestStorage.syncState.concurrency = 32;
   globalThis.__btrTestStorage.syncState.mode = "overseas";
   button().click();
   await wait(200);
-  const resetButton = () => document.getElementById("__bilibili_thread_ripper_settings__")?.shadowRoot?.getElementById("reset-settings");
+  const resetButton = () => settingsRoot()?.getElementById("reset-settings");
   const resetLabel = resetButton()?.textContent === "恢复默认设置";
   resetButton()?.click();
   const resetAsks = resetButton()?.textContent === "确认？" && globalThis.__btrTestStorage.syncState.concurrency === 32;
@@ -170,7 +185,7 @@
     hiddenInWebFullscreen,
     backAfterFullscreen,
     noOnboarding,
-    guideShown, guideText, guideBold, arrowOnButton, unanswered, arrowFollows, guideGone, guideOpenedPanel, guideSaved, guideStaysAway, markIsEnough, resetLabel, resetAsks, resetTakenBack, resetDone, resetBringsGuide, answeredAgain,
+    guideShown, guideText, guideBold, arrowOnButton, unanswered, arrowFollows, guideGone, guideOpenedPanel, guideSaved, guideStaysAway, markIsEnough, leftOnFeatures, opensOnFirstPage, resetLabel, resetAsks, resetTakenBack, resetDone, resetBringsGuide, answeredAgain,
     defaultSpot,
     faintUntilHovered: opacity >= 0.5 && opacity <= 0.7,
     stayedWhereDropped,
