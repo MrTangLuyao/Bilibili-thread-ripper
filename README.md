@@ -30,7 +30,18 @@
 > 如果 BTR 帮到了你，欢迎分享给同样在海外看 B 站的朋友，也可以给项目点个 Star ⭐，让更多人看到它。
 
 > [!TIP]
-> 想在手机或平板上用？可以试试把 BTR 移植进 PiliPlus 客户端的第三方项目：[nishuodedui1145-del/PiliPlus](https://github.com/nishuodedui1145-del/PiliPlus)、[lemonteaau/PiliPlus](https://github.com/lemonteaau/PiliPlus)。它们由社区独立维护，效果不做保证。
+> 想在全平台使用？试试这些项目：
+>
+> | 名字 | 适用平台 | 作者 | 链接 |
+> | --- | --- | --- | --- |
+> | Bilibili-thread-ripper-desktop | Windows 哔哩哔哩客户端 | LouieTang | [GitHub](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
+> | Bilibili-thread-ripper-mac | macOS 哔哩哔哩客户端 | Katsurama | [GitHub](https://github.com/Katsurama/Bilibili-thread-ripper-mac) |
+> | BiliFast | iOS | KaiC5504 | [GitHub](https://github.com/KaiC5504/BiliFast) |
+> | MyTVB-Speed-Boost | Android TV | nitansde | [GitHub](https://github.com/nitansde/MyTVB-Speed-Boost) |
+> | PiliPlus 海外加速版 | Android、iOS、Windows、macOS、Linux | lemonteaau | [GitHub](https://github.com/lemonteaau/PiliPlus) |
+> | PiliPlus-BTR | Android、iOS | nishuodedui1145-del | [GitHub](https://github.com/nishuodedui1145-del/PiliPlus) |
+>
+> 它们由社区独立维护，效果不做保证。
 
 ## 为什么需要它
 
