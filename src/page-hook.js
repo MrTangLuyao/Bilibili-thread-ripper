@@ -1160,7 +1160,8 @@
   function resolveNativeQualitySwitch() {
     if (!player || player.nativeTransport) return;
     try {
-      const pending = root.player?.__core?.()?.qnSwitchingInfo?.video;
+      const wrapper = root.player?.__core?.();
+      const pending = wrapper?.qnSwitchingInfo?.video;
       if (!pending?.switching || typeof pending.resolve !== "function" || resolvedSwitchToken === pending) return;
       armFastResolve(pending);
       if (stats.playerState !== "ready") return;
@@ -1168,9 +1169,39 @@
       const playingId = Number(player.getDebug?.()?.qualityId) || 0;
       if (target && playingId !== target) return;
       resolvedSwitchToken = pending;
-      pending.resolve({ type: "qualityChangeRendered", mediaType: "video", oldQuality: pending.oQn, newQuality: target || playingId, isMediaSegment: true, requestType: "MediaSegment" });
+      if (!confirmRenderedQuality(wrapper, pending, target || playingId)) {
+        pending.resolve({ type: "qualityChangeRendered", mediaType: "video", oldQuality: pending.oQn, newQuality: target || playingId, isMediaSegment: true, requestType: "MediaSegment" });
+      }
       notices?.log("清晰度切换完成", "新清晰度已经在播放，已通知 B 站播放器。", "success", "", playerRoute, "playback");
     } catch (_error) {}
+  }
+
+  // resolve() alone settles the request but leaves the core believing the old quality is
+  // still on screen: its currentQualityIndex only moves when the core sees
+  // qualityChangeRendered, and the switch's twenty-second timeout stays armed. Switching
+  // back to the previous quality (杜比视界 → 4K → 杜比视界) was then refused as "Set quality
+  // equal current quality" (20004) and shown at once as 切换失败, and the leftover timeout
+  // later set the core back to the old rendition. Where the core offers them, the rendered
+  // notification is delivered the way its own pipeline delivers it, as the compatibility
+  // mode already does: fired on the wrapper, which records the new index, and passed to the
+  // switch's listener, which clears the timeout and resolves the request. The listener
+  // compares indexes (pending.qn), not quality ids, and refuses a rendition other than the
+  // one requested, so it is used only when that index is the quality being played.
+  function confirmRenderedQuality(wrapper, pending, qualityId) {
+    const index = pending.qn;
+    if (!qualityId || !Number.isInteger(index) || typeof pending.listener !== "function"
+      || typeof wrapper.fire !== "function" || typeof wrapper.getQualityChangedData !== "function") return false;
+    const previous = wrapper.state?.currentQualityIndex?.video;
+    const rendered = { type: "qualityChangeRendered", mediaType: "video", oldQuality: Number.isInteger(previous) ? previous : index,
+      newQuality: index, isMediaSegment: true, requestType: "MediaSegment" };
+    const data = wrapper.getQualityChangedData(rendered);
+    if (Number(data?.newQualityNumber) !== qualityId || (Number(pending.oQn) !== qualityId && pending.oQn !== index)) return false;
+    // A core that throws here still gets resolve(), as before.
+    try {
+      wrapper.fire("qualityChangeRendered", data);
+      pending.listener(rendered);
+      return true;
+    } catch (_error) { return false; }
   }
 
   function armFastResolve(pending) {
