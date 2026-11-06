@@ -28,18 +28,18 @@
 
   function flush() {
     flushTimer = null;
-    const entries = Array.from(pending.values()).filter(entry => allowed(entry.level, entry.category));
+    const entries = Array.from(pending.values());
     if (entries.length) post("debug-notices", entries);
     pending.clear();
   }
 
-  function allowed(level, category = "other") {
-    return settings.enabled && (level === "error" ? settings.errorNotices : settings.debugNotices && settings.debugCategories?.[category] !== false);
-  }
-
+  // Every message is kept, with Debug 模式 on or off: the diagnostic copy carries the recent
+  // ones (settings-panel.js), so a problem can be reported right after it happened, without
+  // switching anything on and making it happen again. Only the on-screen view
+  // (notification-view.js) asks whether Debug 模式 is on.
   function log(title, detail = "", level = "info", group = "", route = attachment?.route || "", category = "other") {
     category = ["takeover", "playback", "download", "buffer", "settings", "other"].includes(category) ? category : "other";
-    if (!allowed(level, category)) return;
+    if (!settings.enabled) return;
     // Coalesce high-frequency events before publishing a snapshot. The view
     // always creates a new bubble and never edits an already visible message.
     const key = group ? `${route}:${category}:${group}` : `event-${++sequence}`;
@@ -59,7 +59,7 @@
   }
 
   function sample(force = false) {
-    if (!allowed("info", "playback")) return;
+    if (!settings.enabled) return;
     const video = attachment?.video;
     const valid = Boolean(current());
     const now = performance.now();
@@ -72,7 +72,7 @@
       lastReportedPlaying = playing;
     }
     // Heartbeats let the isolated UI expire status if the page hook disappears.
-    post("playback-notice", { attached: valid, playing, route: valid ? attachment.route : "", session: attachment?.session || 0 });
+    if (settings.debugNotices) post("playback-notice", { attached: valid, playing, route: valid ? attachment.route : "", session: attachment?.session || 0 });
   }
 
   function stopWatch() {
@@ -86,14 +86,13 @@
 
   function watch() {
     stopWatch();
-    if (!settings.enabled || !(settings.debugNotices || settings.errorNotices) || !attachment) return;
+    if (!settings.enabled || !attachment) return;
     const captured = attachment;
     const video = captured.video;
     controller = new AbortController();
     lastTime = Number(video.currentTime) || 0;
     for (const name of EVENT_NAMES) {
       const category = ["waiting", "stalled", "seeking", "seeked"].includes(name) ? "buffer" : "playback";
-      if (!allowed(name === "error" ? "error" : "info", category)) continue;
       video.addEventListener(name, () => {
         if (attachment !== captured || !current()) return;
         if (name === "playing") lastProgress = performance.now();
@@ -108,27 +107,26 @@
         sample(true);
       }, { signal: controller.signal });
     }
-    if (allowed("info", "playback")) {
-      video.addEventListener("timeupdate", () => sample(), { signal: controller.signal });
-      heartbeat = setInterval(sample, 500);
-      sample(true);
-    }
+    video.addEventListener("timeupdate", () => sample(), { signal: controller.signal });
+    heartbeat = setInterval(sample, 500);
+    sample(true);
   }
 
   root.__BTR_RUNTIME_NOTICES__ = Object.freeze({
     log,
     configure(next) {
-      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices === true)
-        || ["playback", "buffer"].some(category => (settings.debugCategories?.[category] !== false) !== (next.debugCategories?.[category] !== false));
+      const changed = settings.enabled !== (next.enabled !== false);
       const wasDebug = settings.enabled && settings.debugNotices;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
-      for (const [key, entry] of pending) if (!allowed(entry.level, entry.category)) pending.delete(key);
-      if (!pending.size) {
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true };
+      if (!settings.enabled) {
+        pending.clear();
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-      if (!wasDebug && settings.enabled && settings.debugNotices) log("调试提示已打开", "接下来会显示你勾选的运行消息。", "success", "", "", "settings");
+      if (!wasDebug && settings.enabled && settings.debugNotices) log("调试提示已打开", "接下来会显示运行消息。", "success", "", "", "settings");
       if (changed) watch();
+      // The view shows the playback state at once.
+      else if (!wasDebug && settings.debugNotices) sample(true);
     },
     attach(video, route, session, isCurrent) {
       attachment = { video, route, session, isCurrent };

@@ -37,15 +37,18 @@
 
   (async () => {
     await waitFor(() => root.__biliThreadRipperDebug?.getPlayer());
-    const checks = { noWatchWithoutDebug: callbacks.size === 0 && report().playback.lastPresentedFrame === null };
-    settings({ debugNotices: true });
+    // The frame is watched for the diagnostic copy whenever BTR plays, Debug 模式 on or off.
     await waitFor(() => callbacks.size === 1);
-    // Callback IDs may be zero; disabling Debug must still cancel the first callback.
-    settings({ debugNotices: false });
+    const checks = { watchesWithoutDebug: report().playback.lastPresentedFrame === null };
+    settings({ debugNotices: true });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    checks.debugAddsNoWatch = callbacks.size === 1;
+    // Callback IDs may be zero; switching BTR off must still cancel the first callback.
+    settings({ enabled: false });
     await waitFor(() => callbacks.size === 0);
     checks.cancelsZeroId = !callbacks.has(0);
-    settings({ debugNotices: true });
-    await waitFor(() => callbacks.size === 1);
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer() && callbacks.size === 1);
     const [id, present] = callbacks.entries().next().value;
     callbacks.delete(id);
     present(performance.now(), { mediaTime: 175, expectedDisplayTime: performance.now(), presentedFrames: 100 });
@@ -60,11 +63,17 @@
     checks.oneOutstandingCallback = callbacks.size === 1;
     video.getVideoPlaybackQuality = undefined;
     checks.noQualityApi = report().playback.frames === null;
-    settings({ debugNotices: false });
+    settings({ enabled: false });
     await waitFor(() => callbacks.size === 0);
     checks.releasesWatch = report().playback.lastPresentedFrame === null;
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer() && callbacks.size === 1);
+    // An element without the frame callback API is not watched.
+    settings({ enabled: false });
+    await waitFor(() => callbacks.size === 0);
     video.requestVideoFrameCallback = undefined;
-    settings({ debugNotices: true });
+    settings({ enabled: true });
+    await waitFor(() => root.__biliThreadRipperDebug.getPlayer());
     await new Promise(resolve => setTimeout(resolve, 100));
     checks.noFrameApi = report().playback.lastPresentedFrame === null && callbacks.size === 0;
     settings({ enabled: false });

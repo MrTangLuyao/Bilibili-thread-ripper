@@ -143,7 +143,7 @@ async function showMain(panel) {
     await page.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().concurrency === 8);
     assert.equal(await page.locator("#__bilibili_thread_ripper_onboarding__").count(), 0);
     const settings = await settingsOf(page);
-    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.errorNotices, settings.debugNotices], [true, "mainland", 8, true, false, false]);
+    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.debugNotices], [true, "mainland", 8, true, false]);
     // The button in the page corner opens the panel, and closes it again.
     const launcherButton = page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher");
     await launcherButton.waitFor();
@@ -250,18 +250,13 @@ async function showMain(panel) {
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "full");
     assert.equal(await panel.locator("#thread-value").textContent(), "自动");
     assert.match(await panel.locator('label[for="auto-concurrency"]').textContent(), /^自动线程数（推荐）/);
-    assert.equal(await panel.locator("#error-notices").isChecked(), false);
-    assert.equal(await panel.locator("#debug-filters").isVisible(), false);
+    // One switch for what shows on the screen: Debug 模式, off by default.
+    assert.equal(await panel.locator("#error-notices, #debug-filters, [data-debug-category]").count(), 0);
     await page.waitForFunction(() => __userscriptTest.statusRequests > 0);
     assert.match(await panel.locator("#active-count").textContent(), /^\d+$/);
-    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("默认不显示的错误", "显示错误关闭", "error"));
+    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("Debug 关闭时记下的错误", "这一小段没能下载下来", "error"));
     await page.waitForTimeout(600);
     assert.equal(await page.locator(".bubble").count(), 0);
-    await showTab(panel, "features");
-    await panel.locator("#error-notices").check();
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().errorNotices === true);
-    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("打开后显示的错误", "这一小段没能下载下来", "error"));
-    await page.locator(red).first().waitFor();
     // The slider only counts once the automatic mode is switched off.
     assert.equal(await panel.locator("#auto-concurrency").isChecked(), true);
     assert.equal(await panel.locator("#concurrency").isDisabled(), true);
@@ -273,14 +268,21 @@ async function showMain(panel) {
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
     await showTab(panel, "features");
     await panel.locator("#debug-notices").check();
-    await panel.locator("#debug-filters").waitFor();
-    assert.equal(await panel.locator("[data-debug-category]:checked").count(), 6);
     await page.locator(".mode").first().waitFor();
+    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("打开后显示的错误", "这一小段没能下载下来", "error"));
+    await page.locator(red).first().waitFor();
     // The GitHub mark next to the title opens the project in a new tab.
     const github = panel.locator("#github-link");
     assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/MrTangLuyao/Bilibili-thread-ripper", "_blank"]);
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
-    // With Debug on, "复制诊断信息" copies what a bug report needs, without signed addresses.
+    // "复制诊断信息" copies what a bug report needs, the messages from before Debug 模式 was
+    // switched on included, without signed addresses.
+    // A download error stays in the copy, however many download messages come after it.
+    await page.evaluate(() => {
+      __BTR_RUNTIME_NOTICES__.log("下载出错的提示", "原因：测试", "error", "", "", "download");
+      for (let i = 0; i < 60; i++) __BTR_RUNTIME_NOTICES__.log("下载流水 " + i, "", "info", "flood-" + i, "", "download");
+    });
+    await page.waitForTimeout(400);
     await page.evaluate(() => {
       window.__copied = null;
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { window.__copied = text; } } });
@@ -290,10 +292,10 @@ async function showMain(panel) {
     await panel.locator("#debug-copy").click();
     await page.waitForFunction(() => typeof window.__copied === "string");
     const copied = await page.evaluate(() => window.__copied);
-    for (const part of ["## 环境", `"BTR": "${version}"`, "## 设置", "## 视频接管", "## 最近的 Debug 提示", "测试用的提示"]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
+    for (const part of ["## 环境", `"BTR": "${version}"`, "## 设置", "## 视频接管", "## 最近的 Debug 提示", "测试用的提示", "Debug 关闭时记下的错误", "下载出错的提示"]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
     assert.equal(/upsig|deadline=/.test(copied), false, "a signed address got into the copy");
     assert.match(await panel.locator("#debug-copy-status").textContent(), /已复制/);
-    console.log("PASS 设置面板：开关、线程、Debug 分类和实时线程数都能用；标题旁的 GitHub 图标指向项目；Debug 模式下能复制诊断信息，里面没有带签名的地址");
+    console.log("PASS 设置面板：开关、线程、Debug 模式和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息里有 Debug 关闭时记下的消息，没有带签名的地址");
 
     // Closing stops the status polling; opening again starts clean.
     await page.keyboard.press("Escape");
@@ -303,7 +305,7 @@ async function showMain(panel) {
     assert.equal(await page.evaluate(() => __userscriptTest.statusRequests), requests, "no polling after close");
     await openSettings(page);
     await panel.waitFor();
-    assert.equal(await panel.locator("#error-notices").isChecked(), true);
+    assert.equal(await panel.locator("#debug-notices").isChecked(), true);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
     await openSettings(page);
     await page.locator(settingsHost).waitFor({ state: "detached" });
@@ -363,7 +365,7 @@ async function showMain(panel) {
     await page.goto(origin);
     await page.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas");
     assert.equal((await settingsOf(page)).theme, "dark", "theme survives reload");
-    assert.deepEqual(await settingsOf(page).then(value => [value.concurrency, value.errorNotices, value.debugNotices]), [16, true, true]);
+    assert.deepEqual(await settingsOf(page).then(value => [value.concurrency, value.debugNotices]), [16, true]);
     console.log("PASS 另一个标签页同步设置，刷新后设置保留");
 
     // "自定义" in the gear menu opens the panel on the custom servers. Known servers are

@@ -18,9 +18,9 @@ const aborted=new DOMException("并发副本已取消","AbortError");
 test("new defaults: mainland CDN, 8 threads, error notices off, live off, episodes on",()=>{
   const {core}=load();
   const defaults=core.normalizeSettings({});
-  assert.equal(defaults.mode,"mainland");assert.equal(defaults.concurrency,8);assert.equal(defaults.errorNotices,false);assert.equal(defaults.debugNotices,false);
-  const chosen=core.normalizeSettings({mode:"overseas",concurrency:32,errorNotices:true});
-  assert.equal(chosen.mode,"overseas");assert.equal(chosen.concurrency,32);assert.equal(chosen.errorNotices,true);
+  assert.equal(defaults.mode,"mainland");assert.equal(defaults.concurrency,8);assert.equal("errorNotices" in defaults,false);assert.equal(defaults.debugNotices,false);
+  const chosen=core.normalizeSettings({mode:"overseas",concurrency:32,debugNotices:true,errorNotices:true});
+  assert.equal(chosen.mode,"overseas");assert.equal(chosen.concurrency,32);assert.equal(chosen.debugNotices,true);assert.equal("errorNotices" in chosen,false);
   assert.equal(core.normalizeSettings({concurrency:7}).concurrency,8);
   assert.equal(defaults.theme,"auto");
   for(const theme of ["auto","light","dark"]) assert.equal(core.normalizeSettings({theme}).theme,theme);

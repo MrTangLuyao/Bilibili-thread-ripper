@@ -359,9 +359,10 @@
 
   // While the player waits for the data of a video the viewer means to play, the element is
   // paused, and Bilibili's play button, which reads video.paused, showed ▶ until the wait was
-  // over. To the page it reads as playing. A pause() from the page during the wait is the
-  // viewer's: the page hears of it and the video does not start. Destroyed, the player leaves
-  // the element as it found it.
+  // over. To the page it reads as playing. A pause() from the page during the wait, right after
+  // a click, is the viewer's: the page hears of it and the video does not start. One nobody
+  // clicked for is Bilibili's core (its reset before it puts its own source in place, #65) or
+  // another script, and changes nothing. Destroyed, the player leaves the element as it found it.
   async function reportsTheViewersIntentWhileLoading() {
     const errors = [];
     const logs = [];
@@ -375,6 +376,10 @@
     const count = () => { pauseEvents += 1; };
     video.addEventListener("pause", count);
     video.pause();
+    const unclickedPauseIgnored = pauseEvents === 0 && video.paused === false && player.getDebug().resumeWanted === true;
+    activated = true;
+    video.pause();
+    activated = false;
     video.removeEventListener("pause", count);
     const readsPausedAfter = video.paused === true;
     // Bilibili's core starting the element by itself later does not undo that pause (#61).
@@ -386,8 +391,8 @@
     const released = !Object.prototype.hasOwnProperty.call(video, "paused") && !Object.prototype.hasOwnProperty.call(video, "pause") && video.play === play;
     downloadDelayMs = 20;
     return {
-      errors, readsPlaying, reallyPaused, pauseEvents, readsPausedAfter, coreAutoplayHeldBack, started, playsAfter, released,
-      pass: !errors.length && readsPlaying && reallyPaused && pauseEvents === 1 && readsPausedAfter && coreAutoplayHeldBack && started && playsAfter === 0 && released
+      errors, readsPlaying, reallyPaused, unclickedPauseIgnored, pauseEvents, readsPausedAfter, coreAutoplayHeldBack, started, playsAfter, released,
+      pass: !errors.length && readsPlaying && reallyPaused && unclickedPauseIgnored && pauseEvents === 1 && readsPausedAfter && coreAutoplayHeldBack && started && playsAfter === 0 && released
     };
   }
 

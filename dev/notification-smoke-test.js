@@ -68,7 +68,8 @@ function mockChrome() {
     await page.waitForTimeout(1100);
     assert.equal(await mode.count(), 0);
     assert.equal(await bubbles.count(), 0);
-    assert.equal(await page.evaluate(() => __noticeTest.messages.length), 0);
+    // Messages are still sent to the page for the diagnostic copy; the playback state is not.
+    assert.equal(await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "playback-notice").length), 0);
     assert.equal(await popup.locator("#status-notice, .monitor, #thread-list, #total-speed, #last-error").count(), 0);
     assert.equal(await popup.locator("#debug-notices").isChecked(), false);
     assert.equal(await popup.locator("#active-count").innerText(), "3");
@@ -76,9 +77,6 @@ function mockChrome() {
     assert.equal(await page.locator("#__bilibili_thread_ripper_watermark__").count(), 0);
     mark("移除旧开关与监控面板，迁移不擅自开启 Debug");
 
-    // Red messages are off by default since 0.9.1.2. The rest of this test covers them too.
-    assert.equal(await popup.locator("#error-notices").isChecked(), false);
-    await popup.locator("#error-notices").check();
     await popup.locator("#debug-notices").check();
     await mode.waitFor({ state: "visible" });
     await page.waitForFunction(() => [...document.getElementById("__btr_notification_stack__")?.shadowRoot.querySelectorAll(".mode:not(.leaving) .detail") || []].at(-1)?.textContent.includes("视频还没播放"));

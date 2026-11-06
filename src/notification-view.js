@@ -4,6 +4,10 @@
   const ID = "__btr_notification_stack__";
   const MAX_CARDS = 6;
   const MAX_ERROR_CARDS = 3;
+  // The download threads send far more messages than everything else together. With Debug
+  // 模式 showing every kind, they never take more than this many places and give theirs up
+  // first, so the takeover, playback and buffer messages stay readable.
+  const MAX_DOWNLOAD_CARDS = 2;
   const LIFETIME = 6500;
   const ERROR_LIFETIME = 20000;
   const ENTER_MS = 600;
@@ -148,7 +152,7 @@
     } else node.setAttribute("role", "status");
     const heading = document.createElement("span");
     heading.className = "heading";
-    heading.textContent = entry.level === "error" && !settings.debugNotices ? "BTR 提示" : "BTR Debug";
+    heading.textContent = "BTR Debug";
     const detail = document.createElement("span");
     detail.className = "detail";
     detail.textContent = [plainText(entry.title, 80), plainText(entry.detail)].filter(Boolean).join("\n");
@@ -184,7 +188,10 @@
       card.fade = card.node.animate([{ opacity: 0, transform: "translateX(-32px)" }, { opacity: 1, transform: "translateX(0)" }], { duration: ENTER_MS, easing: EASING });
     }
     const ordinary = [...cards].filter(card => !card.isError);
-    while (ordinary.length > MAX_CARDS) retire(ordinary.shift());
+    const downloads = ordinary.filter(card => card.category === "download");
+    const drop = (card) => { ordinary.splice(ordinary.indexOf(card), 1); retire(card); };
+    while (downloads.length > MAX_DOWNLOAD_CARDS) drop(downloads.shift());
+    while (ordinary.length > MAX_CARDS) drop(downloads.length ? downloads.shift() : ordinary[0]);
     return added.at(-1);
   }
 
@@ -248,7 +255,7 @@
       return;
     }
     mount();
-    const fresh = settings.debugCategories?.playback !== false && playback?.attached && Date.now() - receivedAt < 2500;
+    const fresh = playback?.attached && Date.now() - receivedAt < 2500;
     const detail = !settings.enabled ? "视频加速目前已关闭。" : fresh ? (playback.playing ? "加速已接管，视频正在播放。" : "加速已接管，视频还没播放。\n如果视频正在播放，请刷新网页。") : "有新的运行消息时，会显示在这里。";
     const signature = `${fresh ? `${playback.route}:${playback.session}` : ""}\n${detail}`;
     if (signature === lastMode && (cards.size || leaving.size)) return;
@@ -269,27 +276,29 @@
   root.__BTR_NOTIFICATION_VIEW__ = Object.freeze({
     configure(next) {
       if (settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices) playback = null;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true };
       if (!settings.debugNotices) lastMode = "";
+      // Debug 模式 shows every message, errors included; off, nothing is shown.
       for (const card of cards) {
-        const debugAllowed = settings.debugNotices && settings.debugCategories[card.category] !== false;
-        const keep = card.kind === "mode" ? debugAllowed : settings.enabled && (card.isError ? settings.errorNotices : debugAllowed);
+        const keep = card.kind === "mode" ? settings.debugNotices : settings.enabled && settings.debugNotices;
         if (!keep) retire(card);
       }
       syncMode();
     },
     playback(next) {
-      if (!settings.enabled || !settings.debugNotices || settings.debugCategories.playback === false) return;
+      if (!settings.enabled || !settings.debugNotices) return;
       playback = { attached: next?.attached === true, playing: next?.playing === true, route: String(next?.route || "").slice(0, 100), session: Number(next?.session) || 0 };
       receivedAt = Date.now();
       syncMode();
     },
     logs(entries) {
-      if (!settings.enabled || !Array.isArray(entries)) return;
-      const allowed = entries.filter(entry => entry && typeof entry === "object" && (entry.level === "error" ? settings.errorNotices : settings.debugNotices && settings.debugCategories[categoryOf(entry)] !== false));
+      if (!settings.enabled || !settings.debugNotices || !Array.isArray(entries)) return;
+      const allowed = entries.filter(entry => entry && typeof entry === "object");
+      const ordinary = allowed.filter(entry => entry.level !== "error");
       const selected = new Set([
         ...allowed.filter(entry => entry.level === "error").slice(-MAX_ERROR_CARDS),
-        ...allowed.filter(entry => entry.level !== "error").slice(-MAX_CARDS)
+        ...ordinary.filter(entry => categoryOf(entry) !== "download").slice(-MAX_CARDS),
+        ...ordinary.filter(entry => categoryOf(entry) === "download").slice(-MAX_DOWNLOAD_CARDS)
       ]);
       const snapshots = allowed.filter(entry => selected.has(entry));
       if (snapshots.length) appendCards(snapshots);

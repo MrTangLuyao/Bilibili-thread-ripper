@@ -115,9 +115,8 @@
       floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
       // The first-run guide to the floating button was answered (settings-panel.js).
       guideDone: source.guideDone === true,
+      // Shows BTR's messages on the screen. They are kept for the diagnostic copy either way.
       debugNotices: source.debugNotices === true,
-      errorNotices: source.errorNotices === true,
-      debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
       // `concurrency` above is only what the viewer set by hand. Off when the value is

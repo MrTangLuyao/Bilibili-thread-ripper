@@ -48,24 +48,18 @@ function mockChrome() {
     await page.goto(origin + "/dev/notification-test.html");
     await openSettings(popup);
     await page.waitForFunction(() => __biliThreadRipperDebug.getPlayer());
-    assert.equal(await popup.locator("#error-notices").isChecked(), false);
+    // One switch is left, Debug 模式, off by default; 显示错误 and the message filters are gone,
+    // and 复制诊断信息 is always there.
     assert.equal(await popup.locator("#debug-notices").isChecked(), false);
-    assert.equal(await popup.locator("#debug-filters").isVisible(), false);
-    assert.equal(await popup.locator("[data-debug-category]:checked").count(), 6);
+    assert.equal(await popup.locator("#error-notices, #debug-filters, [data-debug-category]").count(), 0);
+    assert.equal(await popup.locator("#debug-copy").isVisible(), true);
     assert.equal(await popup.locator("#thread-value").textContent(), "自动");
-    assert.equal(await page.evaluate(() => __biliThreadRipperDebug.getSettings().errorNotices), false);
     assert.equal(await page.evaluate(() => __biliThreadRipperDebug.getSettings().concurrency), 8);
-    // Red errors stay hidden until the user turns the switch on.
-    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("默认不显示的错误", "显示错误默认关闭", "error"));
-    await page.waitForTimeout(600);
-    assert.equal(await page.locator(".bubble").count(), 0);
-    assert.equal(await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").length), 0);
-    console.log("PASS 显示错误默认关闭，线程数默认 8，红色错误不显示");
-    await popup.locator("#error-notices").check();
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().errorNotices === true);
+    // Off, nothing shows on the screen, errors included; every message is still sent to the
+    // page, for the diagnostic copy, and download addresses stay out of them.
     await page.evaluate(() => {
       __BTR_RUNTIME_NOTICES__.log("需要保留的错误", "测试普通信息不会淹没错误。", "error");
-      for (let i = 0; i < 100; i++) __BTR_RUNTIME_NOTICES__.log("普通信息 " + i, "不应在非 Debug 模式显示");
+      for (let i = 0; i < 100; i++) __BTR_RUNTIME_NOTICES__.log("普通信息 " + i, "Debug 关闭时也要记下");
       const options = __noticeTest.calls.at(-1).options;
       const id = options.onTransfer({ phase: "start", kind: "video", url: "https://example.bilivideo.com/v.m4s?token=PRIVATE", totalBytes: 65536 });
       options.onTransfer({ phase: "error", id, error: new Error("下载失败") });
@@ -75,43 +69,51 @@ function mockChrome() {
     });
     await page.waitForFunction(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload).some(item => item.title === "视频播放出错了"));
     await page.waitForTimeout(750);
-    const delivered = await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload));
-    assert(delivered.every(item => item.level === "error"));
-    assert(delivered.some(item => item.title === "这一小段没能下载下来"));
-    assert(delivered.some(item => item.title === "需要保留的错误"));
-    assert(!JSON.stringify(delivered).includes("PRIVATE"));
-    assert((await page.locator(red).count()) >= 1);
-    assert.equal(await page.locator("#__btr_notification_stack__ .stack").evaluate(node => getComputedStyle(node).userSelect), "none");
-    assert((await page.locator(red + " .heading").allTextContents()).every(title => title === "BTR 提示"));
-    assert.equal(await page.locator(".mode").count(), 0);
-    console.log("PASS 打开显示错误后，Debug 关闭时仍捕获真实媒体错误与 Range 下载错误，仅显示红色");
-
-    await popup.locator("#error-notices").uncheck();
-    await page.waitForTimeout(800);
-    assert.equal(await page.locator(".bubble").count(), 0, JSON.stringify(await page.evaluate(() => ({ settings: __biliThreadRipperDebug.getSettings(), stored: localStorage.getItem("errors-sync"), bubbles: [...document.getElementById("__btr_notification_stack__")?.shadowRoot.querySelectorAll(".bubble") || []].map(node => ({ text: node.textContent, class: node.className })) }))) + JSON.stringify(errors));
-    await popup.locator("#debug-notices").check();
-    await page.waitForTimeout(500);
-    await page.evaluate(() => {
-      __BTR_RUNTIME_NOTICES__.log("隐藏错误测试", "不应显示", "error");
-      __BTR_RUNTIME_NOTICES__.log("允许的普通信息", "Debug 正常开启", "success");
-      window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "debug-notices", payload: [{ key: "late-error", level: "error", title: "迟到的错误也不应显示" }] }, "*");
-    });
-    await page.waitForTimeout(750);
-    assert.equal(await page.locator(red).count(), 0);
-    assert((await page.locator('.bubble[data-level="success"]').count()) >= 1);
-    assert.equal(await page.evaluate(() => __noticeTest.calls.length), 1);
-    assert.equal(await page.evaluate(() => __biliThreadRipperDebug.getSettings().errorNotices), false);
-    console.log("PASS 显示错误独立关闭，即使 Debug 开启也过滤红色及迟到消息，切换开关不重新接管视频");
-
+    const recorded = await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload));
+    assert(recorded.some(item => item.title === "开始下载一小段数据" && item.category === "download"));
+    assert(recorded.some(item => item.title === "这一小段没能下载下来" && item.level === "error"));
+    assert(recorded.some(item => item.title === "需要保留的错误"));
+    assert(recorded.some(item => item.level !== "error" && item.title.startsWith("普通信息")));
+    assert(!JSON.stringify(recorded).includes("PRIVATE"));
+    assert.equal(await page.locator(".bubble").count(), 0);
+    assert.equal(await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "playback-notice").length), 0);
+    // The box of a failed takeover stays hidden too.
     await home.goto(origin + "/dev/notification-home-test.html");
     await home.evaluate(() => window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "stats", payload: { playerState: "error", takeoverError: { id: "test-error-switch", at: Date.now(), message: "失败测试", stage: "playinfo", retryCount: 1 } } }, "*"));
     await home.waitForTimeout(250);
     assert.equal(await home.locator("#__bilibili_thread_ripper_error_notice__").count(), 0);
-    await popup.locator("#error-notices").check();
-    await home.locator("#__bilibili_thread_ripper_error_notice__").waitFor({ state: "visible" });
-    // Keep the former error-notice fixture's unique assertions here, using the same
-    // storage and cross-tab setup as the error switch checks.
+    console.log("PASS 只剩 Debug 模式一个开关，默认关闭；关着时屏幕上什么都不显示，消息照常记录");
+
+    // On, every message shows, errors and all kinds included, with the playback state; the
+    // switch does not take the video over again.
+    await popup.locator("#debug-notices").check();
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().debugNotices === true);
+    await page.locator(".mode").first().waitFor();
+    await page.waitForTimeout(500);
+    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("Debug 下的错误", "也要显示", "error", "", "", "download"));
+    await page.waitForTimeout(500);
+    assert((await page.locator(red).count()) >= 1);
+    // Every kind of message shows; two at a time, as the stack only keeps what fits the window.
+    const visibleTitles = async () => (await page.locator(".debug:not(.leaving) .detail").allTextContents()).map(text => text.split(String.fromCharCode(10))[0]);
+    for (const pair of [["takeover", "playback"], ["download", "buffer"], ["settings", "other"]]) {
+      await page.evaluate(pair => { for (const category of pair) __BTR_RUNTIME_NOTICES__.log("分类 " + category, "全部显示", "info", "", "", category); }, pair);
+      await page.waitForTimeout(400);
+      const titles = await visibleTitles();
+      for (const category of pair) assert(titles.includes("分类 " + category), JSON.stringify(titles));
+    }
+    // The download threads never take more than two places, so the rest stays readable.
+    await page.evaluate(() => { __BTR_RUNTIME_NOTICES__.log("接管消息", "不能被下载消息挤掉", "info", "", "", "takeover"); for (let i = 0; i < 12; i++) __BTR_RUNTIME_NOTICES__.log("下载流水 " + i, "", "info", "flood-" + i, "", "download"); });
+    await page.waitForTimeout(500);
+    const afterFlood = (await page.locator('.debug:not(.leaving):not([data-level="error"]) .detail').allTextContents()).map(text => text.split(String.fromCharCode(10))[0]);
+    assert(afterFlood.includes("接管消息") && afterFlood.filter(title => title.startsWith("下载流水")).length <= 2, JSON.stringify(afterFlood));
+    assert((await page.locator(".bubble:not(.leaving) .heading").allTextContents()).every(title => title === "BTR Debug"));
+    assert.equal(await page.locator("#__btr_notification_stack__ .stack").evaluate(node => getComputedStyle(node).userSelect), "none");
+    assert.equal(await page.evaluate(() => __noticeTest.calls.length), 1);
+    console.log("PASS 打开 Debug 模式后所有消息都显示，错误也在内，切换开关不重新接管视频");
+
+    // The box of a failed takeover shows with it.
     const takeoverNotice = home.locator("#__bilibili_thread_ripper_error_notice__");
+    await takeoverNotice.waitFor({ state: "visible" });
     assert.equal(await takeoverNotice.locator(".btr-error-title").innerText(), "BTR 提示");
     await takeoverNotice.locator(".btr-error-toggle").click();
     assert.equal(await takeoverNotice.getAttribute("data-expanded"), "true");
@@ -129,101 +131,46 @@ function mockChrome() {
     await home.waitForFunction(() => window.__retryObserved);
     await home.evaluate(() => window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "stats", payload: { playerState: "ready", takeoverError: null } }, "*"));
     await takeoverNotice.waitFor({ state: "detached" });
-    // Recreate the error so switching the setting off still checks removal independently.
     await home.evaluate(() => window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "stats", payload: { playerState: "error", takeoverError: { id: "test-error-again", at: Date.now(), message: "失败测试", stage: "playinfo", retryCount: 1 } } }, "*"));
     await takeoverNotice.waitFor({ state: "visible" });
-    await popup.locator("#error-notices").uncheck();
-    await home.locator("#__bilibili_thread_ripper_error_notice__").waitFor({ state: "detached" });
-    await page.goto(origin + "/dev/notification-test.html");
-    await popup.reload();
-    await openSettings(popup, false);
-    await page.waitForFunction(() => __biliThreadRipperDebug.getPlayer());
-    assert.equal(await popup.locator("#error-notices").isChecked(), false);
-    assert.equal(await page.evaluate(() => __biliThreadRipperDebug.getSettings().errorNotices), false);
-    await popup.locator("#error-notices").check();
-    await popup.locator("#debug-notices").uncheck();
-    await page.waitForTimeout(800);
-    await page.evaluate(() => {
-      __BTR_RUNTIME_NOTICES__.log("切换后仍显示错误", "独立开关生效", "error");
-      __BTR_RUNTIME_NOTICES__.log("普通日志不可显示", "", "info");
-    });
-    await page.waitForTimeout(800);
-    assert.equal(await page.locator('.bubble:not([data-level="error"])').count(), 0);
-    assert.equal(await page.locator(red).count(), 1);
-    await popup.screenshot({ path: "dist/error-switch-preview.png" });
-    console.log("PASS 原有接管错误框受同一开关控制，刷新与重开设置面板保存设置，Debug 开关互不干扰");
 
-    await popup.locator("#debug-notices").check();
-    assert.equal(await popup.locator("#debug-filters").isVisible(), true);
-    assert.equal(await popup.locator("[data-debug-category]:checked").count(), 6);
-    const categories = ["takeover", "playback", "download", "buffer", "settings", "other"];
-    for (const category of categories) {
-      await popup.locator("#debug-select-none").click();
-      await popup.locator(`[data-debug-category="${category}"]`).check();
-      await page.waitForFunction(category => {
-        const values = __biliThreadRipperDebug.getSettings().debugCategories;
-        return values[category] && Object.values(values).filter(Boolean).length === 1;
-      }, category);
-      await page.waitForTimeout(250);
-      await page.evaluate(categories => {
-        __noticeTest.messages.length = 0;
-        for (const category of categories) __BTR_RUNTIME_NOTICES__.log(`分类测试 ${category}`, "仅勾选的分类可以显示", "info", "", "", category);
-      }, categories);
-      await page.waitForTimeout(300);
-      const shown = await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload).filter(item => item.title.startsWith("分类测试")));
-      assert.deepEqual(shown.map(item => item.category), [category]);
-      if (category === "download") {
-        await page.evaluate(() => {
-          const options = __noticeTest.calls.at(-1).options;
-          const id = options.onTransfer({ phase: "start", kind: "video", url: "https://example.bilivideo.com/d.m4s", totalBytes: 100 });
-          options.onTransfer({ phase: "progress", id, bytes: 50 });
-          options.onTransfer({ phase: "done", id });
-        });
-        await page.waitForTimeout(300);
-        const transfers = await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload).filter(item => item.title.includes("下载") || item.title.includes("接收视频")));
-        assert(transfers.length >= 3 && transfers.every(item => item.category === "download"));
-      }
-    }
-    console.log("PASS Debug 展开六项且默认全选，逐项勾选只显示对应分类，下载线程实际回调分类正确");
-    await popup.locator("#debug-select-none").click();
-    await page.waitForFunction(() => Object.values(__biliThreadRipperDebug.getSettings().debugCategories).every(value => !value));
-    await page.waitForTimeout(750);
-    await page.evaluate(() => {
-      __noticeTest.messages.length = 0;
-      __BTR_RUNTIME_NOTICES__.log("取消全部分类仍显示错误", "错误由独立开关控制", "error", "", "", "download");
-      __BTR_RUNTIME_NOTICES__.log("全不选时不能显示普通消息", "", "info", "", "", "download");
-      window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "debug-notices", payload: [{ category: "download", title: "已经取消的迟到日志", level: "info" }] }, "*");
-    });
-    await page.waitForTimeout(750);
-    const filtered = await page.evaluate(() => __noticeTest.messages.filter(item => item.type === "debug-notices").flatMap(item => item.payload).filter(item => item.title !== "已经取消的迟到日志"));
-    assert(filtered.length === 1 && filtered[0].level === "error");
-    assert.equal(await page.locator('.debug:not(.leaving):not([data-level="error"])').count(), 0);
-    await popup.locator('[data-debug-category="buffer"]').check();
-    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().debugCategories.buffer === true);
+    // Off again, everything shown goes away, and late messages stay hidden.
     await popup.locator("#debug-notices").uncheck();
-    assert.equal(await popup.locator("#debug-filters").isVisible(), false);
-    await popup.reload();
-    await openSettings(popup, false);
+    await takeoverNotice.waitFor({ state: "detached" });
+    await page.waitForTimeout(800);
+    await page.evaluate(() => {
+      __BTR_RUNTIME_NOTICES__.log("关闭后的错误", "不应显示", "error");
+      window.postMessage({ channel: "__BILI_RANGE_ACCELERATOR_V1__", type: "debug-notices", payload: [{ key: "late-error", level: "error", title: "迟到的错误也不应显示" }] }, "*");
+    });
+    await page.waitForTimeout(800);
+    assert.equal(await page.locator(".bubble:not(.leaving)").count(), 0, JSON.stringify(await page.evaluate(() => [...document.getElementById("__btr_notification_stack__")?.shadowRoot.querySelectorAll(".bubble") || []].map(node => ({ text: node.textContent, class: node.className })))));
+    console.log("PASS 接管失败的提示框跟 Debug 模式一起显示和关闭，关闭后迟到的消息也不显示");
+
+    // Kept across reloads; the settings of 显示错误 and of the filters left by earlier versions
+    // are removed from the storage.
     await popup.locator("#debug-notices").check();
-    assert.equal(await popup.locator("[data-debug-category]:checked").count(), 1);
-    assert.equal(await popup.locator('[data-debug-category="buffer"]').isChecked(), true);
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().debugNotices === true);
+    await page.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem("errors-sync") || "{}");
+      localStorage.setItem("errors-sync", JSON.stringify({ ...stored, errorNotices: true, debugCategories: { download: false } }));
+    });
     await page.goto(origin + "/dev/notification-test.html");
     await page.waitForFunction(() => __biliThreadRipperDebug.getPlayer());
-    assert.equal(await page.evaluate(() => __biliThreadRipperDebug.getSettings().debugCategories.buffer), true);
-    assert.equal(await page.evaluate(() => Object.values(__biliThreadRipperDebug.getSettings().debugCategories).filter(Boolean).length), 1);
-    await popup.waitForTimeout(250);
+    await page.waitForFunction(() => { const stored = JSON.parse(localStorage.getItem("errors-sync") || "{}"); return !("errorNotices" in stored) && !("debugCategories" in stored) && stored.debugNotices === true; });
+    assert.deepEqual(await page.evaluate(() => { const value = __biliThreadRipperDebug.getSettings(); return ["errorNotices" in value, "debugCategories" in value, value.debugNotices]; }), [false, false, true]);
+    await popup.reload();
+    await openSettings(popup, false);
     assert.equal(await popup.locator("#debug-notices").isChecked(), true);
-    await popup.screenshot({ path: "dist/debug-filters-preview.png" });
-    await popup.locator("#debug-select-all").click();
-    assert.equal(await popup.locator("[data-debug-category]:checked").count(), 6);
-    console.log("PASS 全不选不会关闭红色错误，迟到日志再次过滤，Debug 关闭再开启及页面重载保留分类选择");
+    await popup.screenshot({ path: "dist/debug-switch-preview.png" });
+    await popup.locator("#debug-notices").uncheck();
+    console.log("PASS Debug 模式刷新后保留，旧版的显示错误和分类设置会从存储里删掉");
 
     const priority = await context.newPage();
     priority.on("pageerror", error => errors.push(error.message));
     await priority.goto(origin + "/dev/notification-flow-test.html");
     const bornAt = Date.now();
     await priority.evaluate(() => {
-      __BTR_NOTIFICATION_VIEW__.configure({ enabled: true, debugNotices: true, errorNotices: true });
+      __BTR_NOTIFICATION_VIEW__.configure({ enabled: true, debugNotices: true });
       __BTR_NOTIFICATION_VIEW__.logs([{ key: "sticky", title: "应保留二十秒的错误", detail: "新来的普通消息不能把它挤掉。", level: "error" }]);
       const node = document.getElementById("__btr_notification_stack__").shadowRoot.querySelector('[data-level="error"]');
       const originalText = node.textContent;

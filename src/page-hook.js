@@ -111,9 +111,20 @@
     pageEvents.push({ at: Math.round(performance.now()), time: Math.round((Number(video?.currentTime) || 0) * 10) / 10, what, detail: String(detail).slice(0, 120) });
     if (pageEvents.length > 60) pageEvents.shift();
   }
+  // The tab going to the background and coming back, which Bilibili's player reacts to (#66):
+  // one entry when it comes back, while BTR plays a video.
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { hiddenAt = performance.now(); return; }
+    if (hiddenAt && player) remember("page was in the background", `${((performance.now() - hiddenAt) / 1000).toFixed(1)} s`);
+    hiddenAt = 0;
+  });
+  // The timeline of the player stopped last: when Bilibili's player put its own source in
+  // place, the report only had the one that took over again (#65).
+  let previousTimeline = null;
 
-  // A media clock alone cannot show a stale picture (#45). Keep the most recently
-  // presented frame's timestamp only while Debug is enabled; no canvas/readback involved.
+  // A media clock alone cannot show a stale picture (#45). Keep the most recently presented
+  // frame's timestamp for the diagnostic copy, Debug 模式 on or off; no canvas/readback involved.
   let frameWatch = null;
   function stopFrameWatch() {
     const previous = frameWatch;
@@ -121,7 +132,7 @@
     if (previous?.id != null) previous.video.cancelVideoFrameCallback?.(previous.id);
   }
   function syncFrameWatch(video = player?.video) {
-    if (!settings.enabled || !settings.debugNotices || typeof video?.requestVideoFrameCallback !== "function") {
+    if (!settings.enabled || typeof video?.requestVideoFrameCallback !== "function") {
       stopFrameWatch();
       return;
     }
@@ -248,7 +259,7 @@
       const now = Date.now();
       let host = "";
       try { host = new URL(event.url).hostname; } catch (_error) {}
-      if (settings.debugNotices && settings.debugCategories?.download !== false) notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
+      notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
       const kind = ["video", "audio", "meta"].includes(event.kind) ? event.kind : "video";
       transfers.set(id, {
         id,
@@ -276,11 +287,9 @@
     const item = transfers.get(Number(event?.id));
     if (!item || item.state !== "active") return event?.id;
     const now = Date.now();
-    if ((settings.debugNotices && settings.debugCategories?.download !== false) || (settings.errorNotices === true && event.phase === "error")) {
-      const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
-      const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
-      notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
-    }
+    const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
+    const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
+    notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
       recentBytes.push({ at: now, bytes });
@@ -1019,6 +1028,7 @@
     stopFrameWatch();
     const current = player;
     if (current) remember(resumeNative ? "handed back to Bilibili" : "player stopped", stats.playerState);
+    if (current) previousTimeline = { route: playerRoute, timeline: (current.getDebug?.()?.timeline || []).slice(-60) };
     // While a session loads or has failed the element is paused whatever the viewer wants;
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
@@ -1190,6 +1200,51 @@
       }
     }, 150);
   }
+
+  // Bilibili's player has a background mode: 20 seconds after the tab is hidden it drops its
+  // video buffer and plays the sound alone, and when the tab comes back it builds a new video
+  // element with its own source and swaps it in. With the full takeover that swap is a new
+  // source like any other, taken over again from scratch: the sound stopped for about two
+  // seconds whenever the viewer came back to the tab (#66). The buffer it drops is not the one
+  // BTR plays from, so the mode saved nothing then. The player reads whether the mode is on
+  // from its stored config once, when it starts; on a video page BTR takes over in full it
+  // reads "off". An episode plays in Bilibili's own player (the compatibility mode), and before
+  // BTR's settings are in nothing is known yet: those keep the mode. A takeover mode changed
+  // later on the page reaches it with the next reload. The stored config itself is left as it
+  // is. (installCodecFailureGuard in native-mse-player.js patches Storage too, its setItem.)
+  const KV_CONFIG_KEY = "bilibili_player_kv_config";
+  let kvOutcome = "";
+  function withoutBackgroundAudio(text) {
+    let config = null;
+    try { config = JSON.parse(text || "{}"); } catch (_error) { return text; }
+    if (!config || typeof config !== "object" || Array.isArray(config)) return text;
+    const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
+    // Missing parts are added; parts in a shape the player does not read are left alone.
+    if (config.dash_config != null && !plain(config.dash_config)) return text;
+    const dash = config.dash_config || {};
+    if (dash.audio_only_config != null && !plain(dash.audio_only_config)) return text;
+    const audioOnly = dash.audio_only_config || {};
+    return JSON.stringify({ ...config, dash_config: { ...dash, audio_only_config: { ...audioOnly, enabled: false } } });
+  }
+  try {
+    const storage = root.Storage?.prototype;
+    const getItem = storage?.getItem;
+    if (typeof getItem === "function") {
+      storage.getItem = function (key) {
+        const value = getItem.apply(this, arguments);
+        if (key !== KV_CONFIG_KEY) return value;
+        try { if (this !== root.localStorage) return value; } catch (_error) { return value; }
+        const pathId = urlPathId();
+        if (!pathId || /^(ep|ss)/i.test(pathId) || !settings.enabled || settings.takeover === "compat") return value;
+        const changed = settingsLoaded ? withoutBackgroundAudio(value) : value;
+        // Once per outcome: the player reads it at every start.
+        const outcome = !settingsLoaded ? "Bilibili's background mode left on, settings not loaded yet" : changed !== value ? "Bilibili's background mode read as off" : "Bilibili's background mode config left as it is";
+        if (outcome !== kvOutcome) remember(outcome);
+        kvOutcome = outcome;
+        return changed;
+      };
+    }
+  } catch (_error) {}
 
   // While BTR plays the video, Bilibili's dash core keeps its schedule controllers running:
   // seeking and quality switches wake them, they download the same segments in parallel with
@@ -1788,7 +1843,7 @@
             paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
             width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
             lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null } : null,
-          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
+          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline, previousPlayer: previousTimeline
         }, null, 1);
       },
       version: "__BTR_VERSION__"

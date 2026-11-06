@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR B 站自己换源测试</title>
+</head>
+<body>
+  <div id="bilibili-player"><div class="bpx-player-container" style="width:960px;height:540px"><video muted></video><div class="bpx-player-ctrl-setting-menu-right"><div class="bpx-player-ctrl-setting-others">其他设置</div></div></div></div>
+  <pre id="source-switch-result">starting</pre>
+  <script src="/src/range-core.js"></script>
+  <script src="/dev/source-switch-test.js"></script>
+  <script src="/src/native-mse-player.js"></script>
+  <script src="/src/page-hook.js"></script>
+  <!-- What Bilibili's player would read if it started before BTR's settings are in. -->
+  <script>window.__kvReadBeforeSettings = localStorage.getItem("bilibili_player_kv_config");</script>
+</body>
+</html>

@@ -219,26 +219,13 @@
             <div class="block">
               <h2 class="block-title">调试</h2>
               <section class="notice-controls" aria-label="调试">
-                <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
                 <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
-                <fieldset id="debug-filters" class="debug-filters" hidden>
-                  <legend>显示哪些 Debug 消息</legend>
-                  <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
-                  <div class="debug-filter-options">
-                    <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
-                    <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
-                    <label><input type="checkbox" data-debug-category="download">下载线程</label>
-                    <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
-                    <label><input type="checkbox" data-debug-category="settings">设置变化</label>
-                    <label><input type="checkbox" data-debug-category="other">其他日志</label>
-                  </div>
-                  <div class="debug-copy">
-                    <button id="debug-copy" type="button">复制诊断信息</button>
-                    <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
-                  </div>
-                  <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
-                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
-                </fieldset>
+                <div class="debug-copy">
+                  <button id="debug-copy" type="button">复制诊断信息</button>
+                  <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
+                </div>
+                <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
+                <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
               </section>
             </div>
             <div class="block">
@@ -365,23 +352,14 @@
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
     .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
-    .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
-    .debug-filters[hidden] { display: none; }
-    .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
-    .debug-filter-actions { display: flex; gap: 8px; margin-bottom: 12px; }
-    .debug-filter-actions button { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 11px; cursor: pointer; }
-    .debug-filter-actions button:hover, .manual-host button:hover { border-color: #fb7299; }
-    .debug-filter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
-    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: var(--label); font-size: 12px; cursor: pointer; }
-    .debug-filter-options input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #fb7299; cursor: pointer; }
-    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .manual-host button:hover { border-color: #fb7299; }
     .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
     .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
     .debug-copy button:hover { background: #fb7299; }
     .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
     .debug-copy-status { color: var(--success); font-size: 12px; }
     .debug-copy-status.failed { color: var(--error); }
-    .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .debug-copy-note { margin: 8px 0 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
     .reset-settings:hover { background: var(--hover); }
     .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
@@ -428,7 +406,7 @@
     .tabs button:hover { color: var(--text); }
     .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
     .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-    .host-option, .debug-filter-options label { border-radius: 4px; }
+    .host-option { border-radius: 4px; }
     .btr-popup { --ripple: rgba(251, 114, 153, .35); }
     .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
     .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span, .host-form button, .debug-copy button:hover { --ripple: rgba(255, 255, 255, .35); }
@@ -477,8 +455,18 @@
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
   let latestStats = null;
-  // The debug notices shown on this page, newest last, for the diagnostic copy.
+  // BTR's messages on this page, newest last, for the diagnostic copy: they are all kept, Debug
+  // 模式 on or off (runtime-notices.js). The download threads send many more than everything
+  // else together, so only their latest stay; their errors are kept like any other message.
   const noticeHistory = [];
+  const HISTORY_LIMIT = 200;
+  const DOWNLOAD_HISTORY_LIMIT = 40;
+  function keepNotice(item) {
+    noticeHistory.push(item);
+    const downloads = noticeHistory.filter((entry) => entry.category === "download" && entry.level !== "error");
+    if (downloads.length > DOWNLOAD_HISTORY_LIMIT) noticeHistory.splice(noticeHistory.indexOf(downloads[0]), 1);
+    if (noticeHistory.length > HISTORY_LIMIT) noticeHistory.shift();
+  }
 
   // Everything needed to look into a report, as text to paste into an issue. The page's own
   // reports already leave out download addresses and account data; any address that is left
@@ -510,7 +498,7 @@
     liveModules.forEach((api, index) => sections.push([liveModules.length > 1 ? `直播模块 ${index + 1}` : "直播模块", safely(() => ({ stats: api.getStats(), context: api.getContext?.() }))]));
     sections.push(["最近的 Debug 提示", noticeHistory.length
       ? noticeHistory.map((item) => `${new Date(item.at).toISOString().slice(11, 19)} [${item.level}/${item.category}] ${item.title}${item.count > 1 ? ` ×${item.count}` : ""}${item.detail ? ` — ${item.detail}` : ""}`).join("\n")
-      : "（还没有。打开 Debug 模式以后显示过的提示才会记在这里）"]);
+      : "（还没有）"]);
     const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
@@ -635,7 +623,7 @@
     panel.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !(event.target instanceof Element)) return;
       const target = event.target.closest(".auto-row, .accel-row, .notice-row")
-        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option, .debug-filter-options label");
+        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option");
       if (!target || target.matches(":disabled")) return;
       ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
     });
@@ -663,15 +651,12 @@
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
-    const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
     const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
-    const debugFilters = $("debug-filters");
     const resetSettings = $("reset-settings");
-    const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
     const hostError = $("host-error");
@@ -769,13 +754,9 @@
       episodeEnabled.checked = settings.episodeEnabled !== false;
       blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
-      errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
-      debugFilters.hidden = !settings.debugNotices;
-      for (const input of debugCategoryInputs) input.checked = settings.debugCategories[input.dataset.debugCategory] !== false;
     }
 
-    const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
     // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
     // then to the ones it is (now kept by hand), then back to 自动.
@@ -861,14 +842,7 @@
       resetAsked = root.setTimeout(stopAsking, 4000);
     });
     resetSettings.addEventListener("blur", stopAsking);
-    errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
-    debugNotices.addEventListener("change", () => {
-      debugFilters.hidden = !debugNotices.checked;
-      save({ debugNotices: debugNotices.checked });
-    });
-    for (const input of debugCategoryInputs) input.addEventListener("change", saveDebugCategories);
-    $("debug-select-all").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = true; saveDebugCategories(); });
-    $("debug-select-none").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = false; saveDebugCategories(); });
+    debugNotices.addEventListener("change", () => save({ debugNotices: debugNotices.checked }));
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
     let copyStatusTimer = null;
@@ -1226,8 +1200,7 @@
       latestStats = event.data.payload;
     } else if (event.data.type === "debug-notices") {
       for (const item of [].concat(event.data.payload || [])) {
-        noticeHistory.push({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
-        if (noticeHistory.length > 100) noticeHistory.shift();
+        keepNotice({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
       }
     } else if (event.data.type === "open-settings" && root.top === root) {
       // "自定义" in the gear menu: the custom servers are under 高级设置.

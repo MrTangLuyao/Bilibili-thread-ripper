@@ -15,6 +15,11 @@
   const STARTUP_PROTECTION_MS = 20000;
   // How long a wait for data reads as playing to the page (see readsAsPlaying).
   const HOLD_SHOWN_AS_PLAYING_MS = 1500;
+  // A pause() made during a wait this close before Bilibili's player puts its own source in
+  // place belongs to that switch (see sourceObserver): its reset pauses and changes the source
+  // in one go. A pause the viewer pressed this close before an unrelated switch counts as the
+  // switch's too.
+  const SWITCH_PAUSE_MS = 300;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
@@ -431,11 +436,22 @@
     // Bilibili's player can put its own source for the same video in place at any time, and
     // the element then reads that source's zero and is paused, whatever the viewer had (#54).
     const lastSeen = { time: 0, playing: false };
+    // When a pause() made during a wait for data last took back the wish to play.
+    let heldPauseAt = -Infinity;
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
       if (destroyed || !candidate || candidate.disposed || video.src === candidate.objectUrl) return;
       if (candidate.externalSourceDetected) return;
       candidate.externalSourceDetected = true;
+      // Bilibili's player pauses the element right before it puts its own source in place.
+      // That pause belongs to the switch: read as the viewer's, the retake stayed paused at
+      // zero while Bilibili went on showing the video playing (#65). A playing element's own
+      // "pause" of that reset never comes in Chrome: the load of the new source drops it.
+      const sincePause = performance.now() - heldPauseAt;
+      if (sincePause < SWITCH_PAUSE_MS) {
+        lastSeen.playing = true;
+        note("pause taken as the switch's", `${Math.round(sincePause)} ms before the new source`);
+      }
       rememberNativeRestore(restoreKey, lastSeen.time);
       candidate.controller.abort(new DOMException("B站原生播放器正在切换媒体源", "AbortError"));
       clearInterval(candidate.timer);
@@ -514,7 +530,15 @@
         writable: true,
         value() {
           if (!holdingForPlay()) return pauseElement();
+          // While the start loads, a pause() is the viewer's only right after a click or a key
+          // press, as for play(). Bilibili's core pauses the element then too: right before
+          // it puts its own source in place (#65), and when it puts back the state it had saved.
+          if (!session.playbackActivated && !viewersCall()) {
+            note("pause not the viewer's", root.event?.type || "no event");
+            return;
+          }
           const shown = readsAsPlaying();
+          heldPauseAt = performance.now();
           session.resumeWanted = false;
           session.viewerPaused = true;
           if (shown) video.dispatchEvent(new Event("pause"));
@@ -1439,7 +1463,18 @@
       }
     }, { signal: eventController.signal });
     video.addEventListener("loadstart", () => {
-      if (session) session.takeoverPause = false;
+      const candidate = session;
+      if (!candidate) return;
+      const pauseDropped = candidate.takeoverPause;
+      candidate.takeoverPause = false;
+      // Chrome dropped the "pause" of a playing element taken over. A start that plays the
+      // video does not need it; one that keeps it paused does: the page went on showing the
+      // video playing, ran its danmaku over a still picture, and its play button only paused
+      // the element again, which changed nothing (#65).
+      if (pauseDropped && sessionIsCurrent(candidate) && video.src === candidate.objectUrl && !candidate.resumeWanted && elementPaused()) {
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+      }
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });

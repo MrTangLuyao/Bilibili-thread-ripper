@@ -29,6 +29,7 @@ const { chromium } = require("playwright");
     ["secondary-buffer-test.html?case=off", "secondary-buffer-result"],
     ["secondary-buffer-test.html?case=limit", "secondary-buffer-result"],
     ["retake-position-test.html", "retake-position-result", 40000],
+    ["source-switch-test.html", "source-switch-result", 30000],
     ["codec-choice-test.html", "codec-choice-result"],
     ["takeover-mode-test.html", "takeover-mode-result"],
     ["compat-switch-test.html", "compat-switch-result"],
