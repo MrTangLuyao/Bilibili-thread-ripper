@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.6.1
+// @version      2026.11.6.2
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3907,7 +3907,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.11.6.1",
+        version: "2026.11.6.2",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4803,7 +4803,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.6.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.6.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4936,9 +4936,6 @@ const chrome = (() => {
                 <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
               </section>
             </div>
-            <div class="block">
-              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
-            </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
             <div class="block">
@@ -4949,7 +4946,10 @@ const chrome = (() => {
           </div>
         </div>
       </details>
-    </main>`;
+    </main>
+    <footer class="btr-footer">
+      <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
+    </footer>`;
 
   const PANEL_CSS = `
     .btr-popup {
@@ -5076,9 +5076,11 @@ const chrome = (() => {
     .debug-copy-text[hidden] { display: none; }
     .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
+       scrolling under them. */
+    .btr-footer { position: sticky; bottom: 0; display: grid; gap: 14px; padding: 8px 18px 16px; background: var(--bg); box-shadow: 0 -10px 12px var(--bg); }
+    .btr-close { display: block; width: 100%; margin: 0; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .btr-close:hover { background: #565e6c; }
-    /* Solid, for the content scrolling under it. */
     .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
     .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
     .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -5184,7 +5186,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.11.6.1",
+        BTR: "2026.11.6.2",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5242,7 +5244,7 @@ const chrome = (() => {
     closeButton.type = "button";
     closeButton.className = "btr-close";
     closeButton.textContent = "关闭";
-    panel.append(closeButton);
+    panel.querySelector(".btr-footer").append(closeButton);
     shadow.append(style, backdrop, panel);
 
     const $ = (id) => shadow.getElementById(id);
@@ -5553,8 +5555,9 @@ const chrome = (() => {
     debugNotices.addEventListener("change", () => save({ debugNotices: debugNotices.checked }));
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
-    let copyStatusTimer = null;
-    $("debug-copy").addEventListener("click", async () => {
+    const copyButton = $("debug-copy");
+    let copyDoneTimer = 0;
+    copyButton.addEventListener("click", async () => {
       const text = diagnostics();
       let copied = false;
       try { await navigator.clipboard.writeText(text); copied = true; } catch (_error) {}
@@ -5566,10 +5569,15 @@ const chrome = (() => {
         copyText.select();
         try { copied = document.execCommand("copy"); } catch (_error) {}
       }
+      // Done, the button says so in place for a moment, keeping its width; otherwise the note
+      // next to it points to the text to copy by hand.
+      root.clearTimeout(copyDoneTimer);
       copyStatus.classList.toggle("failed", !copied);
-      copyStatus.textContent = copied ? "已复制" : "没能自动复制，请手动复制下面的内容";
-      clearTimeout(copyStatusTimer);
-      if (copied) copyStatusTimer = setTimeout(() => { copyStatus.textContent = ""; }, 2500);
+      copyStatus.textContent = copied ? "" : "没能自动复制，请手动复制下面的内容";
+      if (!copied) return;
+      if (!copyButton.style.minWidth) copyButton.style.minWidth = `${copyButton.offsetWidth}px`;
+      copyButton.textContent = "已复制";
+      copyDoneTimer = root.setTimeout(() => { copyButton.textContent = "复制诊断信息"; }, 2500);
     });
 
     // Keys typed into the panel belong to it. The shadow root hides the input from the page,
@@ -6007,7 +6015,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.6.1",
+    version: "2026.11.6.2",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7773,7 +7781,7 @@ const chrome = (() => {
           state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline, previousPlayer: previousTimeline
         }, null, 1);
       },
-      version: "2026.11.6.1"
+      version: "2026.11.6.2"
     })
   });
   publish();
@@ -8027,7 +8035,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.6.1",
+    version: "2026.11.6.2",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8495,7 +8503,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.11.6.1"
+      version: "2026.11.6.2"
     })
   });
   publish();
