@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.3.1
+// @version      2026.11.6.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -327,9 +327,8 @@ const chrome = (() => {
       floatingButtonTop: source.floatingButtonTop != null && Number(source.floatingButtonTop) >= 0 && Number(source.floatingButtonTop) <= 1 ? Number(source.floatingButtonTop) : null,
       // The first-run guide to the floating button was answered (settings-panel.js).
       guideDone: source.guideDone === true,
+      // Shows BTR's messages on the screen. They are kept for the diagnostic copy either way.
       debugNotices: source.debugNotices === true,
-      errorNotices: source.errorNotices === true,
-      debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, source.debugCategories?.[key] !== false])),
       concurrency: allowed.includes(requested) ? requested : 8,
       // 自动线程数: the downloader picks the thread count itself, between 8 and 64, and
       // `concurrency` above is only what the viewer set by hand. Off when the value is
@@ -2204,6 +2203,11 @@ const chrome = (() => {
   const STARTUP_PROTECTION_MS = 20000;
   // How long a wait for data reads as playing to the page (see readsAsPlaying).
   const HOLD_SHOWN_AS_PLAYING_MS = 1500;
+  // A pause() made during a wait this close before Bilibili's player puts its own source in
+  // place belongs to that switch (see sourceObserver): its reset pauses and changes the source
+  // in one go. A pause the viewer pressed this close before an unrelated switch counts as the
+  // switch's too.
+  const SWITCH_PAUSE_MS = 300;
   // When the browser's buffer quota is hit: the forward buffer is never brought below the
   // floor, and a full buffer with less than this ahead is a failure, not something to wait out.
   const QUOTA_AHEAD_FLOOR_SECONDS = 8;
@@ -2620,11 +2624,22 @@ const chrome = (() => {
     // Bilibili's player can put its own source for the same video in place at any time, and
     // the element then reads that source's zero and is paused, whatever the viewer had (#54).
     const lastSeen = { time: 0, playing: false };
+    // When a pause() made during a wait for data last took back the wish to play.
+    let heldPauseAt = -Infinity;
     const sourceObserver = new MutationObserver(() => {
       const candidate = session;
       if (destroyed || !candidate || candidate.disposed || video.src === candidate.objectUrl) return;
       if (candidate.externalSourceDetected) return;
       candidate.externalSourceDetected = true;
+      // Bilibili's player pauses the element right before it puts its own source in place.
+      // That pause belongs to the switch: read as the viewer's, the retake stayed paused at
+      // zero while Bilibili went on showing the video playing (#65). A playing element's own
+      // "pause" of that reset never comes in Chrome: the load of the new source drops it.
+      const sincePause = performance.now() - heldPauseAt;
+      if (sincePause < SWITCH_PAUSE_MS) {
+        lastSeen.playing = true;
+        note("pause taken as the switch's", `${Math.round(sincePause)} ms before the new source`);
+      }
       rememberNativeRestore(restoreKey, lastSeen.time);
       candidate.controller.abort(new DOMException("B站原生播放器正在切换媒体源", "AbortError"));
       clearInterval(candidate.timer);
@@ -2703,7 +2718,15 @@ const chrome = (() => {
         writable: true,
         value() {
           if (!holdingForPlay()) return pauseElement();
+          // While the start loads, a pause() is the viewer's only right after a click or a key
+          // press, as for play(). Bilibili's core pauses the element then too: right before
+          // it puts its own source in place (#65), and when it puts back the state it had saved.
+          if (!session.playbackActivated && !viewersCall()) {
+            note("pause not the viewer's", root.event?.type || "no event");
+            return;
+          }
           const shown = readsAsPlaying();
+          heldPauseAt = performance.now();
           session.resumeWanted = false;
           session.viewerPaused = true;
           if (shown) video.dispatchEvent(new Event("pause"));
@@ -3628,7 +3651,18 @@ const chrome = (() => {
       }
     }, { signal: eventController.signal });
     video.addEventListener("loadstart", () => {
-      if (session) session.takeoverPause = false;
+      const candidate = session;
+      if (!candidate) return;
+      const pauseDropped = candidate.takeoverPause;
+      candidate.takeoverPause = false;
+      // Chrome dropped the "pause" of a playing element taken over. A start that plays the
+      // video does not need it; one that keeps it paused does: the page went on showing the
+      // video playing, ran its danmaku over a still picture, and its play button only paused
+      // the element again, which changed nothing (#65).
+      if (pauseDropped && sessionIsCurrent(candidate) && video.src === candidate.objectUrl && !candidate.resumeWanted && elementPaused()) {
+        candidate.ownPauses += 1;
+        video.dispatchEvent(new Event("pause"));
+      }
     }, { signal: eventController.signal });
     for (const name of ["play", "pause", "seeked"]) video.addEventListener(name, noteViewer, { signal: eventController.signal });
     video.addEventListener("playing", clearNativeErrorOverlay, { signal: eventController.signal });
@@ -3873,7 +3907,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.11.3.1",
+        version: "2026.11.6.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4557,18 +4591,18 @@ const chrome = (() => {
 
   function flush() {
     flushTimer = null;
-    const entries = Array.from(pending.values()).filter(entry => allowed(entry.level, entry.category));
+    const entries = Array.from(pending.values());
     if (entries.length) post("debug-notices", entries);
     pending.clear();
   }
 
-  function allowed(level, category = "other") {
-    return settings.enabled && (level === "error" ? settings.errorNotices : settings.debugNotices && settings.debugCategories?.[category] !== false);
-  }
-
+  // Every message is kept, with Debug 模式 on or off: the diagnostic copy carries the recent
+  // ones (settings-panel.js), so a problem can be reported right after it happened, without
+  // switching anything on and making it happen again. Only the on-screen view
+  // (notification-view.js) asks whether Debug 模式 is on.
   function log(title, detail = "", level = "info", group = "", route = attachment?.route || "", category = "other") {
     category = ["takeover", "playback", "download", "buffer", "settings", "other"].includes(category) ? category : "other";
-    if (!allowed(level, category)) return;
+    if (!settings.enabled) return;
     // Coalesce high-frequency events before publishing a snapshot. The view
     // always creates a new bubble and never edits an already visible message.
     const key = group ? `${route}:${category}:${group}` : `event-${++sequence}`;
@@ -4588,7 +4622,7 @@ const chrome = (() => {
   }
 
   function sample(force = false) {
-    if (!allowed("info", "playback")) return;
+    if (!settings.enabled) return;
     const video = attachment?.video;
     const valid = Boolean(current());
     const now = performance.now();
@@ -4601,7 +4635,7 @@ const chrome = (() => {
       lastReportedPlaying = playing;
     }
     // Heartbeats let the isolated UI expire status if the page hook disappears.
-    post("playback-notice", { attached: valid, playing, route: valid ? attachment.route : "", session: attachment?.session || 0 });
+    if (settings.debugNotices) post("playback-notice", { attached: valid, playing, route: valid ? attachment.route : "", session: attachment?.session || 0 });
   }
 
   function stopWatch() {
@@ -4615,14 +4649,13 @@ const chrome = (() => {
 
   function watch() {
     stopWatch();
-    if (!settings.enabled || !(settings.debugNotices || settings.errorNotices) || !attachment) return;
+    if (!settings.enabled || !attachment) return;
     const captured = attachment;
     const video = captured.video;
     controller = new AbortController();
     lastTime = Number(video.currentTime) || 0;
     for (const name of EVENT_NAMES) {
       const category = ["waiting", "stalled", "seeking", "seeked"].includes(name) ? "buffer" : "playback";
-      if (!allowed(name === "error" ? "error" : "info", category)) continue;
       video.addEventListener(name, () => {
         if (attachment !== captured || !current()) return;
         if (name === "playing") lastProgress = performance.now();
@@ -4637,27 +4670,26 @@ const chrome = (() => {
         sample(true);
       }, { signal: controller.signal });
     }
-    if (allowed("info", "playback")) {
-      video.addEventListener("timeupdate", () => sample(), { signal: controller.signal });
-      heartbeat = setInterval(sample, 500);
-      sample(true);
-    }
+    video.addEventListener("timeupdate", () => sample(), { signal: controller.signal });
+    heartbeat = setInterval(sample, 500);
+    sample(true);
   }
 
   root.__BTR_RUNTIME_NOTICES__ = Object.freeze({
     log,
     configure(next) {
-      const changed = settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices || settings.errorNotices !== (next.errorNotices === true)
-        || ["playback", "buffer"].some(category => (settings.debugCategories?.[category] !== false) !== (next.debugCategories?.[category] !== false));
+      const changed = settings.enabled !== (next.enabled !== false);
       const wasDebug = settings.enabled && settings.debugNotices;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
-      for (const [key, entry] of pending) if (!allowed(entry.level, entry.category)) pending.delete(key);
-      if (!pending.size) {
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true };
+      if (!settings.enabled) {
+        pending.clear();
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-      if (!wasDebug && settings.enabled && settings.debugNotices) log("调试提示已打开", "接下来会显示你勾选的运行消息。", "success", "", "", "settings");
+      if (!wasDebug && settings.enabled && settings.debugNotices) log("调试提示已打开", "接下来会显示运行消息。", "success", "", "", "settings");
       if (changed) watch();
+      // The view shows the playback state at once.
+      else if (!wasDebug && settings.debugNotices) sample(true);
     },
     attach(video, route, session, isCurrent) {
       attachment = { video, route, session, isCurrent };
@@ -4771,7 +4803,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.3.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.6.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -4895,26 +4927,13 @@ const chrome = (() => {
             <div class="block">
               <h2 class="block-title">调试</h2>
               <section class="notice-controls" aria-label="调试">
-                <label class="notice-row" for="error-notices"><span class="row-text">显示错误</span><span class="switch"><input id="error-notices" type="checkbox" aria-label="显示错误"><span></span></span></label>
                 <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
-                <fieldset id="debug-filters" class="debug-filters" hidden>
-                  <legend>显示哪些 Debug 消息</legend>
-                  <div class="debug-filter-actions"><button id="debug-select-all" type="button">全选</button><button id="debug-select-none" type="button">全不选</button></div>
-                  <div class="debug-filter-options">
-                    <label><input type="checkbox" data-debug-category="takeover">接管与切换</label>
-                    <label><input type="checkbox" data-debug-category="playback">播放与暂停</label>
-                    <label><input type="checkbox" data-debug-category="download">下载线程</label>
-                    <label><input type="checkbox" data-debug-category="buffer">缓冲与跳转</label>
-                    <label><input type="checkbox" data-debug-category="settings">设置变化</label>
-                    <label><input type="checkbox" data-debug-category="other">其他日志</label>
-                  </div>
-                  <div class="debug-copy">
-                    <button id="debug-copy" type="button">复制诊断信息</button>
-                    <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
-                  </div>
-                  <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
-                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
-                </fieldset>
+                <div class="debug-copy">
+                  <button id="debug-copy" type="button">复制诊断信息</button>
+                  <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
+                </div>
+                <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
+                <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
               </section>
             </div>
             <div class="block">
@@ -5041,23 +5060,14 @@ const chrome = (() => {
     .scale span:first-child { text-align: left; }
     .scale span:last-child { text-align: right; }
     .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
-    .debug-filters { min-width: 0; margin: 9px 0 7px; padding: 12px 0 0; border: 0; border-top: 1px solid var(--divider); }
-    .debug-filters[hidden] { display: none; }
-    .debug-filters legend { padding: 0 0 4px; color: var(--label); font-size: 12px; }
-    .debug-filter-actions { display: flex; gap: 8px; margin-bottom: 12px; }
-    .debug-filter-actions button { padding: 4px 8px; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; font-size: 11px; cursor: pointer; }
-    .debug-filter-actions button:hover, .manual-host button:hover { border-color: #fb7299; }
-    .debug-filter-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
-    .debug-filter-options label { display: flex; align-items: center; gap: 7px; color: var(--label); font-size: 12px; cursor: pointer; }
-    .debug-filter-options input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: #fb7299; cursor: pointer; }
-    .debug-filter-actions button:focus-visible, .debug-filter-options input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+    .manual-host button:hover { border-color: #fb7299; }
     .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
     .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
     .debug-copy button:hover { background: #fb7299; }
     .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
     .debug-copy-status { color: var(--success); font-size: 12px; }
     .debug-copy-status.failed { color: var(--error); }
-    .debug-copy-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .debug-copy-note { margin: 8px 0 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
     .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
     .reset-settings:hover { background: var(--hover); }
     .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
@@ -5104,7 +5114,7 @@ const chrome = (() => {
     .tabs button:hover { color: var(--text); }
     .tabs button[aria-selected="true"] { background: var(--tab); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .12); }
     .tabs button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-    .host-option, .debug-filter-options label { border-radius: 4px; }
+    .host-option { border-radius: 4px; }
     .btr-popup { --ripple: rgba(251, 114, 153, .35); }
     .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
     .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span, .host-form button, .debug-copy button:hover { --ripple: rgba(255, 255, 255, .35); }
@@ -5153,8 +5163,18 @@ const chrome = (() => {
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
   let latestStats = null;
-  // The debug notices shown on this page, newest last, for the diagnostic copy.
+  // BTR's messages on this page, newest last, for the diagnostic copy: they are all kept, Debug
+  // 模式 on or off (runtime-notices.js). The download threads send many more than everything
+  // else together, so only their latest stay; their errors are kept like any other message.
   const noticeHistory = [];
+  const HISTORY_LIMIT = 200;
+  const DOWNLOAD_HISTORY_LIMIT = 40;
+  function keepNotice(item) {
+    noticeHistory.push(item);
+    const downloads = noticeHistory.filter((entry) => entry.category === "download" && entry.level !== "error");
+    if (downloads.length > DOWNLOAD_HISTORY_LIMIT) noticeHistory.splice(noticeHistory.indexOf(downloads[0]), 1);
+    if (noticeHistory.length > HISTORY_LIMIT) noticeHistory.shift();
+  }
 
   // Everything needed to look into a report, as text to paste into an issue. The page's own
   // reports already leave out download addresses and account data; any address that is left
@@ -5164,7 +5184,7 @@ const chrome = (() => {
     const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
     const sections = [
       ["环境", {
-        BTR: "2026.11.3.1",
+        BTR: "2026.11.6.1",
         渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
         同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
         脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
@@ -5186,7 +5206,7 @@ const chrome = (() => {
     liveModules.forEach((api, index) => sections.push([liveModules.length > 1 ? `直播模块 ${index + 1}` : "直播模块", safely(() => ({ stats: api.getStats(), context: api.getContext?.() }))]));
     sections.push(["最近的 Debug 提示", noticeHistory.length
       ? noticeHistory.map((item) => `${new Date(item.at).toISOString().slice(11, 19)} [${item.level}/${item.category}] ${item.title}${item.count > 1 ? ` ×${item.count}` : ""}${item.detail ? ` — ${item.detail}` : ""}`).join("\n")
-      : "（还没有。打开 Debug 模式以后显示过的提示才会记在这里）"]);
+      : "（还没有）"]);
     const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
     return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
   }
@@ -5311,7 +5331,7 @@ const chrome = (() => {
     panel.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !(event.target instanceof Element)) return;
       const target = event.target.closest(".auto-row, .accel-row, .notice-row")
-        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option, .debug-filter-options label");
+        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option");
       if (!target || target.matches(":disabled")) return;
       ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
     });
@@ -5339,15 +5359,12 @@ const chrome = (() => {
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
-    const errorNotices = $("error-notices");
     const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
     const blockInternational = $("block-international");
     const floatingButton = $("floating-button");
-    const debugFilters = $("debug-filters");
     const resetSettings = $("reset-settings");
-    const debugCategoryInputs = [...shadow.querySelectorAll("[data-debug-category]")];
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
     const hostError = $("host-error");
@@ -5445,13 +5462,9 @@ const chrome = (() => {
       episodeEnabled.checked = settings.episodeEnabled !== false;
       blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
-      errorNotices.checked = settings.errorNotices;
       debugNotices.checked = settings.debugNotices;
-      debugFilters.hidden = !settings.debugNotices;
-      for (const input of debugCategoryInputs) input.checked = settings.debugCategories[input.dataset.debugCategory] !== false;
     }
 
-    const saveDebugCategories = () => save({ debugCategories: Object.fromEntries(debugCategoryInputs.map((input) => [input.dataset.debugCategory, input.checked])) });
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
     // Each click goes on to the next choice: from 自动 to the colors the system is not showing,
     // then to the ones it is (now kept by hand), then back to 自动.
@@ -5537,14 +5550,7 @@ const chrome = (() => {
       resetAsked = root.setTimeout(stopAsking, 4000);
     });
     resetSettings.addEventListener("blur", stopAsking);
-    errorNotices.addEventListener("change", () => save({ errorNotices: errorNotices.checked }));
-    debugNotices.addEventListener("change", () => {
-      debugFilters.hidden = !debugNotices.checked;
-      save({ debugNotices: debugNotices.checked });
-    });
-    for (const input of debugCategoryInputs) input.addEventListener("change", saveDebugCategories);
-    $("debug-select-all").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = true; saveDebugCategories(); });
-    $("debug-select-none").addEventListener("click", () => { for (const input of debugCategoryInputs) input.checked = false; saveDebugCategories(); });
+    debugNotices.addEventListener("change", () => save({ debugNotices: debugNotices.checked }));
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
     let copyStatusTimer = null;
@@ -5902,8 +5908,7 @@ const chrome = (() => {
       latestStats = event.data.payload;
     } else if (event.data.type === "debug-notices") {
       for (const item of [].concat(event.data.payload || [])) {
-        noticeHistory.push({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
-        if (noticeHistory.length > 100) noticeHistory.shift();
+        keepNotice({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
       }
     } else if (event.data.type === "open-settings" && root.top === root) {
       // "自定义" in the gear menu: the custom servers are under 高级设置.
@@ -6002,7 +6007,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.3.1",
+    version: "2026.11.6.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -6033,9 +6038,20 @@ const chrome = (() => {
     pageEvents.push({ at: Math.round(performance.now()), time: Math.round((Number(video?.currentTime) || 0) * 10) / 10, what, detail: String(detail).slice(0, 120) });
     if (pageEvents.length > 60) pageEvents.shift();
   }
+  // The tab going to the background and coming back, which Bilibili's player reacts to (#66):
+  // one entry when it comes back, while BTR plays a video.
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { hiddenAt = performance.now(); return; }
+    if (hiddenAt && player) remember("page was in the background", `${((performance.now() - hiddenAt) / 1000).toFixed(1)} s`);
+    hiddenAt = 0;
+  });
+  // The timeline of the player stopped last: when Bilibili's player put its own source in
+  // place, the report only had the one that took over again (#65).
+  let previousTimeline = null;
 
-  // A media clock alone cannot show a stale picture (#45). Keep the most recently
-  // presented frame's timestamp only while Debug is enabled; no canvas/readback involved.
+  // A media clock alone cannot show a stale picture (#45). Keep the most recently presented
+  // frame's timestamp for the diagnostic copy, Debug 模式 on or off; no canvas/readback involved.
   let frameWatch = null;
   function stopFrameWatch() {
     const previous = frameWatch;
@@ -6043,7 +6059,7 @@ const chrome = (() => {
     if (previous?.id != null) previous.video.cancelVideoFrameCallback?.(previous.id);
   }
   function syncFrameWatch(video = player?.video) {
-    if (!settings.enabled || !settings.debugNotices || typeof video?.requestVideoFrameCallback !== "function") {
+    if (!settings.enabled || typeof video?.requestVideoFrameCallback !== "function") {
       stopFrameWatch();
       return;
     }
@@ -6170,7 +6186,7 @@ const chrome = (() => {
       const now = Date.now();
       let host = "";
       try { host = new URL(event.url).hostname; } catch (_error) {}
-      if (settings.debugNotices && settings.debugCategories?.download !== false) notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
+      notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
       const kind = ["video", "audio", "meta"].includes(event.kind) ? event.kind : "video";
       transfers.set(id, {
         id,
@@ -6198,11 +6214,9 @@ const chrome = (() => {
     const item = transfers.get(Number(event?.id));
     if (!item || item.state !== "active") return event?.id;
     const now = Date.now();
-    if ((settings.debugNotices && settings.debugCategories?.download !== false) || (settings.errorNotices === true && event.phase === "error")) {
-      const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
-      const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
-      notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
-    }
+    const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
+    const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
+    notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
       recentBytes.push({ at: now, bytes });
@@ -6941,6 +6955,7 @@ const chrome = (() => {
     stopFrameWatch();
     const current = player;
     if (current) remember(resumeNative ? "handed back to Bilibili" : "player stopped", stats.playerState);
+    if (current) previousTimeline = { route: playerRoute, timeline: (current.getDebug?.()?.timeline || []).slice(-60) };
     // While a session loads or has failed the element is paused whatever the viewer wants;
     // the player knows the intent.
     if (current) resumeHint = { playing: Boolean(current.wantsToPlay ? current.wantsToPlay() : current.video && !current.video.paused), at: Date.now(), handedBack: resumeNative };
@@ -7112,6 +7127,51 @@ const chrome = (() => {
       }
     }, 150);
   }
+
+  // Bilibili's player has a background mode: 20 seconds after the tab is hidden it drops its
+  // video buffer and plays the sound alone, and when the tab comes back it builds a new video
+  // element with its own source and swaps it in. With the full takeover that swap is a new
+  // source like any other, taken over again from scratch: the sound stopped for about two
+  // seconds whenever the viewer came back to the tab (#66). The buffer it drops is not the one
+  // BTR plays from, so the mode saved nothing then. The player reads whether the mode is on
+  // from its stored config once, when it starts; on a video page BTR takes over in full it
+  // reads "off". An episode plays in Bilibili's own player (the compatibility mode), and before
+  // BTR's settings are in nothing is known yet: those keep the mode. A takeover mode changed
+  // later on the page reaches it with the next reload. The stored config itself is left as it
+  // is. (installCodecFailureGuard in native-mse-player.js patches Storage too, its setItem.)
+  const KV_CONFIG_KEY = "bilibili_player_kv_config";
+  let kvOutcome = "";
+  function withoutBackgroundAudio(text) {
+    let config = null;
+    try { config = JSON.parse(text || "{}"); } catch (_error) { return text; }
+    if (!config || typeof config !== "object" || Array.isArray(config)) return text;
+    const plain = (value) => value && typeof value === "object" && !Array.isArray(value);
+    // Missing parts are added; parts in a shape the player does not read are left alone.
+    if (config.dash_config != null && !plain(config.dash_config)) return text;
+    const dash = config.dash_config || {};
+    if (dash.audio_only_config != null && !plain(dash.audio_only_config)) return text;
+    const audioOnly = dash.audio_only_config || {};
+    return JSON.stringify({ ...config, dash_config: { ...dash, audio_only_config: { ...audioOnly, enabled: false } } });
+  }
+  try {
+    const storage = root.Storage?.prototype;
+    const getItem = storage?.getItem;
+    if (typeof getItem === "function") {
+      storage.getItem = function (key) {
+        const value = getItem.apply(this, arguments);
+        if (key !== KV_CONFIG_KEY) return value;
+        try { if (this !== root.localStorage) return value; } catch (_error) { return value; }
+        const pathId = urlPathId();
+        if (!pathId || /^(ep|ss)/i.test(pathId) || !settings.enabled || settings.takeover === "compat") return value;
+        const changed = settingsLoaded ? withoutBackgroundAudio(value) : value;
+        // Once per outcome: the player reads it at every start.
+        const outcome = !settingsLoaded ? "Bilibili's background mode left on, settings not loaded yet" : changed !== value ? "Bilibili's background mode read as off" : "Bilibili's background mode config left as it is";
+        if (outcome !== kvOutcome) remember(outcome);
+        kvOutcome = outcome;
+        return changed;
+      };
+    }
+  } catch (_error) {}
 
   // While BTR plays the video, Bilibili's dash core keeps its schedule controllers running:
   // seeking and quality switches wake them, they download the same segments in parallel with
@@ -7710,10 +7770,10 @@ const chrome = (() => {
             paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
             width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
             lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null } : null,
-          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline
+          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline, previousPlayer: previousTimeline
         }, null, 1);
       },
-      version: "2026.11.3.1"
+      version: "2026.11.6.1"
     })
   });
   publish();
@@ -7967,7 +8027,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.3.1",
+    version: "2026.11.6.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -8435,7 +8495,7 @@ const chrome = (() => {
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
-      version: "2026.11.3.1"
+      version: "2026.11.6.1"
     })
   });
   publish();
@@ -8448,6 +8508,10 @@ const chrome = (() => {
   const ID = "__btr_notification_stack__";
   const MAX_CARDS = 6;
   const MAX_ERROR_CARDS = 3;
+  // The download threads send far more messages than everything else together. With Debug
+  // 模式 showing every kind, they never take more than this many places and give theirs up
+  // first, so the takeover, playback and buffer messages stay readable.
+  const MAX_DOWNLOAD_CARDS = 2;
   const LIFETIME = 6500;
   const ERROR_LIFETIME = 20000;
   const ENTER_MS = 600;
@@ -8592,7 +8656,7 @@ const chrome = (() => {
     } else node.setAttribute("role", "status");
     const heading = document.createElement("span");
     heading.className = "heading";
-    heading.textContent = entry.level === "error" && !settings.debugNotices ? "BTR 提示" : "BTR Debug";
+    heading.textContent = "BTR Debug";
     const detail = document.createElement("span");
     detail.className = "detail";
     detail.textContent = [plainText(entry.title, 80), plainText(entry.detail)].filter(Boolean).join("\n");
@@ -8628,7 +8692,10 @@ const chrome = (() => {
       card.fade = card.node.animate([{ opacity: 0, transform: "translateX(-32px)" }, { opacity: 1, transform: "translateX(0)" }], { duration: ENTER_MS, easing: EASING });
     }
     const ordinary = [...cards].filter(card => !card.isError);
-    while (ordinary.length > MAX_CARDS) retire(ordinary.shift());
+    const downloads = ordinary.filter(card => card.category === "download");
+    const drop = (card) => { ordinary.splice(ordinary.indexOf(card), 1); retire(card); };
+    while (downloads.length > MAX_DOWNLOAD_CARDS) drop(downloads.shift());
+    while (ordinary.length > MAX_CARDS) drop(downloads.length ? downloads.shift() : ordinary[0]);
     return added.at(-1);
   }
 
@@ -8692,7 +8759,7 @@ const chrome = (() => {
       return;
     }
     mount();
-    const fresh = settings.debugCategories?.playback !== false && playback?.attached && Date.now() - receivedAt < 2500;
+    const fresh = playback?.attached && Date.now() - receivedAt < 2500;
     const detail = !settings.enabled ? "视频加速目前已关闭。" : fresh ? (playback.playing ? "加速已接管，视频正在播放。" : "加速已接管，视频还没播放。\n如果视频正在播放，请刷新网页。") : "有新的运行消息时，会显示在这里。";
     const signature = `${fresh ? `${playback.route}:${playback.session}` : ""}\n${detail}`;
     if (signature === lastMode && (cards.size || leaving.size)) return;
@@ -8713,27 +8780,29 @@ const chrome = (() => {
   root.__BTR_NOTIFICATION_VIEW__ = Object.freeze({
     configure(next) {
       if (settings.enabled !== next.enabled || settings.debugNotices !== next.debugNotices) playback = null;
-      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true, errorNotices: next.errorNotices === true, debugCategories: { ...next.debugCategories } };
+      settings = { enabled: next.enabled !== false, debugNotices: next.debugNotices === true };
       if (!settings.debugNotices) lastMode = "";
+      // Debug 模式 shows every message, errors included; off, nothing is shown.
       for (const card of cards) {
-        const debugAllowed = settings.debugNotices && settings.debugCategories[card.category] !== false;
-        const keep = card.kind === "mode" ? debugAllowed : settings.enabled && (card.isError ? settings.errorNotices : debugAllowed);
+        const keep = card.kind === "mode" ? settings.debugNotices : settings.enabled && settings.debugNotices;
         if (!keep) retire(card);
       }
       syncMode();
     },
     playback(next) {
-      if (!settings.enabled || !settings.debugNotices || settings.debugCategories.playback === false) return;
+      if (!settings.enabled || !settings.debugNotices) return;
       playback = { attached: next?.attached === true, playing: next?.playing === true, route: String(next?.route || "").slice(0, 100), session: Number(next?.session) || 0 };
       receivedAt = Date.now();
       syncMode();
     },
     logs(entries) {
-      if (!settings.enabled || !Array.isArray(entries)) return;
-      const allowed = entries.filter(entry => entry && typeof entry === "object" && (entry.level === "error" ? settings.errorNotices : settings.debugNotices && settings.debugCategories[categoryOf(entry)] !== false));
+      if (!settings.enabled || !settings.debugNotices || !Array.isArray(entries)) return;
+      const allowed = entries.filter(entry => entry && typeof entry === "object");
+      const ordinary = allowed.filter(entry => entry.level !== "error");
       const selected = new Set([
         ...allowed.filter(entry => entry.level === "error").slice(-MAX_ERROR_CARDS),
-        ...allowed.filter(entry => entry.level !== "error").slice(-MAX_CARDS)
+        ...ordinary.filter(entry => categoryOf(entry) !== "download").slice(-MAX_CARDS),
+        ...ordinary.filter(entry => categoryOf(entry) === "download").slice(-MAX_DOWNLOAD_CARDS)
       ]);
       const snapshots = allowed.filter(entry => selected.has(entry));
       if (snapshots.length) appendCards(snapshots);
@@ -8758,10 +8827,11 @@ const chrome = (() => {
   const ERROR_NOTICE_ID = "__bilibili_thread_ripper_error_notice__";
   const ERROR_NOTICE_STYLE_ID = "__bilibili_thread_ripper_error_notice_style__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false, debugNotices: false, errorNotices: false, debugCategories: {} };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false, debugNotices: false };
   // Settings of the old ArtPlayer version, of the compatibility modes removed before today's
-  // 兼容模式 (that one is `takeover`), and the flag of the first-run guide that 0.9.4.2 removed.
-  const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision"];
+  // 兼容模式 (that one is `takeover`), the flag of the first-run guide that 0.9.4.2 removed, and
+  // 显示错误 and the Debug message filters, which Debug 模式 alone replaced.
+  const RETIRED_KEYS = ["statusNotice", "compatibilityMode", "volume", "danmaku", "danmakuFontSize", "subtitleLanguage", "subtitleLastLanguage", "btrOnboardingRevision", "errorNotices", "debugCategories"];
   let latestSettings = { ...DEFAULTS };
   let latestStats = null;
   let loaded = false;
@@ -8791,9 +8861,7 @@ const chrome = (() => {
       floatingButtonLeft: input?.floatingButtonLeft != null && Number(input.floatingButtonLeft) >= 0 && Number(input.floatingButtonLeft) <= 1 ? Number(input.floatingButtonLeft) : null,
       floatingButtonTop: input?.floatingButtonTop != null && Number(input.floatingButtonTop) >= 0 && Number(input.floatingButtonTop) <= 1 ? Number(input.floatingButtonTop) : null,
       guideDone: input?.guideDone === true,
-      debugNotices: input?.debugNotices === true,
-      errorNotices: input?.errorNotices === true,
-      debugCategories: Object.fromEntries(["takeover", "playback", "download", "buffer", "settings", "other"].map(key => [key, input?.debugCategories?.[key] !== false]))
+      debugNotices: input?.debugNotices === true
     };
   }
 
@@ -8846,7 +8914,7 @@ const chrome = (() => {
 
   function syncTakeoverErrorNotice() {
     const error = latestStats?.takeoverError;
-    if (!loaded || latestSettings.enabled === false || latestSettings.errorNotices !== true || !error || ["ready", "disabled"].includes(latestStats?.playerState)) {
+    if (!loaded || latestSettings.enabled === false || latestSettings.debugNotices !== true || !error || ["ready", "disabled"].includes(latestStats?.playerState)) {
       removeTakeoverErrorNotice();
       return;
     }
