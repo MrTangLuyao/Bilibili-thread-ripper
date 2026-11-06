@@ -22,9 +22,12 @@
   // keeps a pending switch that waits for the "rendered" confirmation.
   let pendingSwitch = null;
   const resolvedSwitches = [];
+  // The real core also has fire(), getQualityChangedData() and the currentQualityIndex its
+  // own qualityChangeRendered handler keeps. The first switch below runs without them.
+  let realCore = null;
   root.player = {
     getQuality: () => ({ nowQ: 0, newQ: nativeQuality, realQ: 16 }),
-    __core: () => ({ qnSwitchingInfo: { video: pendingSwitch } })
+    __core: () => ({ ...realCore, qnSwitchingInfo: { video: pendingSwitch } })
   };
   for (const item of document.querySelectorAll(".bpx-player-ctrl-quality-menu-item")) {
     item.addEventListener("click", () => { nativeQuality = Number(item.dataset.value); });
@@ -97,6 +100,44 @@
     output.steps.samePendingNotRepeated = resolvedSwitches.length === 1;
     pendingSwitch = null;
 
+    // With a core like the real one, the switch is confirmed through its own rendered path:
+    // the wrapper records the new index (or the next switch back is refused as the same
+    // quality, 切换失败) and the listener clears the switch and its timeout. The listener
+    // works with indexes; index 0 is 16 here.
+    const qualityByIndex = [16, 32, 64];
+    const fired = [], heard = [];
+    const state = { currentQualityIndex: { video: 1 } };
+    realCore = {
+      state,
+      getQualityChangedData: (event) => ({ ...event, newQualityNumber: qualityByIndex[event.newQuality], oldQualityNumber: qualityByIndex[event.oldQuality] }),
+      fire(name, data) { fired.push({ name, data }); if (name === "qualityChangeRendered") state.currentQualityIndex[data.mediaType] = data.newQuality; }
+    };
+    const resolvedBefore = resolvedSwitches.length;
+    pendingSwitch = {
+      switching: true, oQn: 16, qn: 0,
+      resolve(payload) { resolvedSwitches.push(payload); },
+      reject() {},
+      listener(event) { heard.push(event); pendingSwitch = {}; }
+    };
+    await wait(2400);
+    output.steps.renderedThroughCore = heard.length === 1 && heard[0].newQuality === 0 && heard[0].oldQuality === 1
+      && fired.length === 1 && fired[0].name === "qualityChangeRendered" && fired[0].data.newQualityNumber === 16
+      && state.currentQualityIndex.video === 0 && resolvedSwitches.length === resolvedBefore;
+
+    // A pending index that is not the quality being played is never handed to the listener
+    // (it would refuse the switch); resolve() still settles it.
+    pendingSwitch = {
+      switching: true, oQn: 16, qn: 2,
+      resolve(payload) { resolvedSwitches.push(payload); pendingSwitch.switching = false; },
+      reject() {},
+      listener(event) { heard.push(event); }
+    };
+    await wait(2400);
+    output.steps.mismatchFallsBack = heard.length === 1 && fired.length === 1
+      && resolvedSwitches.length === resolvedBefore + 1 && resolvedSwitches.at(-1)?.newQuality === 16;
+    pendingSwitch = null;
+    realCore = null;
+
     clickedAt = performance.now();
     click(0);
     await wait(150);
@@ -110,6 +151,8 @@
       && output.steps.changeWithoutClick
       && output.steps.switchConfirmed
       && output.steps.samePendingNotRepeated
+      && output.steps.renderedThroughCore
+      && output.steps.mismatchFallsBack
       && output.steps.backToAuto
       && output.steps.onePlayer
       && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
