@@ -294,7 +294,11 @@ async function showMain(panel) {
     const copied = await page.evaluate(() => window.__copied);
     for (const part of ["## 环境", `"BTR": "${version}"`, "## 设置", "## 视频接管", "## 最近的 Debug 提示", "测试用的提示", "Debug 关闭时记下的错误", "下载出错的提示"]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
     assert.equal(/upsig|deadline=/.test(copied), false, "a signed address got into the copy");
-    assert.match(await panel.locator("#debug-copy-status").textContent(), /已复制/);
+    // The button says so in place for a moment, then goes back.
+    assert.equal(await panel.locator("#debug-copy").textContent(), "已复制");
+    assert.equal(await panel.locator("#debug-copy-status").textContent(), "");
+    await page.waitForTimeout(2700);
+    assert.equal(await panel.locator("#debug-copy").textContent(), "复制诊断信息");
     console.log("PASS 设置面板：开关、线程、Debug 模式和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息里有 Debug 关闭时记下的消息，没有带签名的地址");
 
     // Closing stops the status polling; opening again starts clean.
@@ -344,6 +348,9 @@ async function showMain(panel) {
     await page.locator(`${settingsHost} .btr-popup`).waitFor();
     const shortBox = await page.locator(`${settingsHost} .btr-close`).boundingBox();
     assert.ok(shortBox.y + shortBox.height <= 480, "关闭 is below the bottom of a short window");
+    // 恢复默认设置 is at the bottom with it, on the first page as on every other.
+    const resetBox = await page.locator(`${settingsHost} #reset-settings`).boundingBox();
+    assert.ok(resetBox && resetBox.y >= 0 && resetBox.y + resetBox.height <= shortBox.y, "恢复默认设置 is not in reach above 关闭");
     await clickClose(page);
     await page.setViewportSize({ width: 1100, height: 900 });
     console.log("PASS 页面自己的弹层或模态框开着时设置页仍在最上层，窗口很矮时“关闭”也点得到");

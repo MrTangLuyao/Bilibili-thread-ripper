@@ -228,9 +228,6 @@
                 <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
               </section>
             </div>
-            <div class="block">
-              <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
-            </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
             <div class="block">
@@ -241,7 +238,10 @@
           </div>
         </div>
       </details>
-    </main>`;
+    </main>
+    <footer class="btr-footer">
+      <button id="reset-settings" class="reset-settings" type="button">恢复默认设置</button>
+    </footer>`;
 
   const PANEL_CSS = `
     .btr-popup {
@@ -368,9 +368,11 @@
     .debug-copy-text[hidden] { display: none; }
     .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .btr-close { position: sticky; bottom: 12px; display: block; width: calc(100% - 36px); margin: 0 18px 16px; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 -6px 12px var(--bg); }
+    /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
+       scrolling under them. */
+    .btr-footer { position: sticky; bottom: 0; display: grid; gap: 14px; padding: 8px 18px 16px; background: var(--bg); box-shadow: 0 -10px 12px var(--bg); }
+    .btr-close { display: block; width: 100%; margin: 0; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
     .btr-close:hover { background: #565e6c; }
-    /* Solid, for the content scrolling under it. */
     .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
     .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
     .btr-close:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -534,7 +536,7 @@
     closeButton.type = "button";
     closeButton.className = "btr-close";
     closeButton.textContent = "关闭";
-    panel.append(closeButton);
+    panel.querySelector(".btr-footer").append(closeButton);
     shadow.append(style, backdrop, panel);
 
     const $ = (id) => shadow.getElementById(id);
@@ -845,8 +847,9 @@
     debugNotices.addEventListener("change", () => save({ debugNotices: debugNotices.checked }));
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
-    let copyStatusTimer = null;
-    $("debug-copy").addEventListener("click", async () => {
+    const copyButton = $("debug-copy");
+    let copyDoneTimer = 0;
+    copyButton.addEventListener("click", async () => {
       const text = diagnostics();
       let copied = false;
       try { await navigator.clipboard.writeText(text); copied = true; } catch (_error) {}
@@ -858,10 +861,15 @@
         copyText.select();
         try { copied = document.execCommand("copy"); } catch (_error) {}
       }
+      // Done, the button says so in place for a moment, keeping its width; otherwise the note
+      // next to it points to the text to copy by hand.
+      root.clearTimeout(copyDoneTimer);
       copyStatus.classList.toggle("failed", !copied);
-      copyStatus.textContent = copied ? "已复制" : "没能自动复制，请手动复制下面的内容";
-      clearTimeout(copyStatusTimer);
-      if (copied) copyStatusTimer = setTimeout(() => { copyStatus.textContent = ""; }, 2500);
+      copyStatus.textContent = copied ? "" : "没能自动复制，请手动复制下面的内容";
+      if (!copied) return;
+      if (!copyButton.style.minWidth) copyButton.style.minWidth = `${copyButton.offsetWidth}px`;
+      copyButton.textContent = "已复制";
+      copyDoneTimer = root.setTimeout(() => { copyButton.textContent = "复制诊断信息"; }, 2500);
     });
 
     // Keys typed into the panel belong to it. The shadow root hides the input from the page,
