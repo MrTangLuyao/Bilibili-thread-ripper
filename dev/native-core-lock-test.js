@@ -45,7 +45,7 @@
   root.__playinfo__ = { data: { dash: { duration: 320, video: [], audio: [] } } };
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
-      return { enabled: value?.enabled !== false, debugNotices: false, takeover: "full", mode: "mainland", customHosts: [], concurrency: 8 };
+      return { enabled: value?.enabled !== false, takeover: "full", mode: "mainland", customHosts: [], concurrency: 8 };
     }
   };
   // The full-takeover player marks its container like native-mse-player.js does; the

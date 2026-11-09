@@ -455,7 +455,6 @@
       owner.destroy();
       lastError = `原生播放器接口发生变化，已停止加速：${error?.message || error}`;
       note("native quality guard unavailable", `acceleration stopped: ${error?.message || error}`);
-      options.onLog?.("已交回 B 站原生播放", lastError, "error", "playback");
       options.onState?.({ playerState: "native-fallback", lastError });
     }
     function sampleQuality() {
@@ -495,8 +494,7 @@
       const playing = tracks.find(track => track.kind === "video" && Number(track.representation.id) === Number(qualityState.split("/")[0]))?.representation;
       options.onState?.({ playerState: video.error ? "error" : video.ended ? "ended" : video.readyState >= 3 ? "ready" : "buffering",
         lastError: video.error ? video.error.message || `media error ${video.error.code}` : lastError,
-        // "native" when Bilibili's player has not said which it plays (page-hook.js shows it as
-        // 原生画质).
+        // "native" when Bilibili's player has not said which it plays.
         mode: settings().mode, quality: playing ? root.__BILI_NATIVE_MSE_PLAYER_FACTORY__?.qualityLabel?.(playing) || String(playing.id) : "native",
         bufferedAhead: bufferedAhead(), cdnHosts: [...cache.values()].flatMap(resolver => resolver.status()) });
     };
@@ -534,7 +532,6 @@
         failures++;
         lastError = String(error?.message || error);
         note("native range failed", lastError);
-        options.onLog?.("媒体分段下载失败", lastError, "error", "download");
         publish();
         // Reject the original loader request; Bilibili owns playback recovery.
       },
@@ -553,7 +550,6 @@
     const events = new AbortController();
     for (const name of ["playing", "waiting", "stalled", "seeking", "seeked", "ended", "loadedmetadata", "error", "progress", "timeupdate"]) video.addEventListener(name, () => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
-      if (name === "error") options.onLog?.("B 站播放器出错了", video.error?.message || `媒体错误 ${video.error?.code}`, "error", "playback");
       if (name === "playing") lastError = "";
       if (name === "timeupdate") sampleQuality();
       else publish();

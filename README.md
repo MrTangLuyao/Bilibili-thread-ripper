@@ -285,7 +285,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 - [ ] 所在国家或地区，以及网络运营商
 - [ ] 视频 BV 号、清晰度和编码
 - [ ] CDN 模式与线程数
-- [ ] 右键“视频统计信息”里的数据，打开 Debug 后的日志或错误提示；也可以在浏览器控制台运行 `copy(__biliThreadRipperDebug.report())`，把复制下来的诊断信息贴上来
+- [ ] 右键“视频统计信息”里的数据，以及 BTR 设置里 **高级设置 → 功能 → 调试 → 复制诊断信息** 复制下来的内容
 - [ ] 是首次加载慢、连续播放卡，还是大幅拖动后卡
 
 > [!CAUTION]
@@ -342,7 +342,7 @@ pics/、docs/      README 里的图片，以及贡献者头像（pics/contributo
 - **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
 - **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。
 
-源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、notification-view、runtime-notices、diagnostic-report、settings-panel 这 7 个文件桌面版也在用，改了要同步过去；diagnostic-report 要在 settings-panel 之前加载。
+源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、runtime-notices、diagnostic-report、settings-panel 这 6 个文件桌面版也在用，改了要同步过去；diagnostic-report 要在 settings-panel 之前加载。
 
 </details>
 

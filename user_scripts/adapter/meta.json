@@ -37,7 +37,6 @@
     "src/page-hook.js",
     "src/live-core.js",
     "src/live-hook.js",
-    "src/notification-view.js",
     "src/bridge.js"
   ],
   "loader": "user_scripts/adapter/loader.js",

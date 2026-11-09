@@ -129,7 +129,6 @@ async function showMain(panel) {
   const browser = await chromium.launch({ executablePath: process.env.BTR_CHROME_PATH || undefined, headless: true });
   const origin = "http://127.0.0.1:18763/dev/userscript-test.html";
   const errors = [];
-  const red = '.bubble[data-level="error"]:not(.leaving)';
   try {
     const context = await browser.newContext({ viewport: { width: 1100, height: 900 } });
     const page = await context.newPage();
@@ -143,7 +142,7 @@ async function showMain(panel) {
     await page.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().concurrency === 8);
     assert.equal(await page.locator("#__bilibili_thread_ripper_onboarding__").count(), 0);
     const settings = await settingsOf(page);
-    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, settings.debugNotices], [true, "mainland", 8, true, false]);
+    assert.deepEqual([settings.enabled, settings.mode, settings.concurrency, settings.autoConcurrency, "debugNotices" in settings], [true, "mainland", 8, true, false]);
     // The button in the page corner opens the panel, and closes it again.
     const launcherButton = page.locator("#__bilibili_thread_ripper_launcher__ .btr-launcher");
     await launcherButton.waitFor();
@@ -250,30 +249,26 @@ async function showMain(panel) {
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "full");
     assert.equal(await panel.locator("#thread-value").textContent(), "自动");
     assert.match(await panel.locator('label[for="auto-concurrency"]').textContent(), /^自动线程数（推荐）/);
-    // One switch for what shows on the screen: Debug 模式, off by default.
-    assert.equal(await panel.locator("#error-notices, #debug-filters, [data-debug-category]").count(), 0);
+    // Nothing shows on the page any more: Debug 模式, 显示错误 and the message filters are gone.
+    assert.equal(await panel.locator("#debug-notices, #error-notices, #debug-filters, [data-debug-category]").count(), 0);
     await page.waitForFunction(() => __userscriptTest.statusRequests > 0);
     assert.match(await panel.locator("#active-count").textContent(), /^\d+$/);
-    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("Debug 关闭时记下的错误", "这一小段没能下载下来", "error"));
-    // The diagnostic copy is English and carries no notices: it reads what BTR records next to
-    // them, Debug 模式 on or off. Two errors while it is off: a range that failed, through the
-    // page's own download path (the fake player is handed the same onTransfer as the real
-    // one), and an error event of the element.
+    // The diagnostic copy is English and reads what BTR records. Two errors: a range that
+    // failed, through the page's own download path (the fake player is handed the same
+    // onTransfer as the real one), and an error event of the element.
     await page.waitForFunction(() => __biliThreadRipperDebug.getPlayer()?.video && __userscriptTest.calls.length > 0 && __biliThreadRipperDebug.getStats().playerState === "ready");
     await page.evaluate(() => {
       const { onTransfer } = __userscriptTest.calls.at(-1).options;
       const signed = "https://upos-sz-mirrorali.bilivideo.com/a.m4s?deadline=1&upsig=secret";
       const id = onTransfer({ phase: "start", kind: "video", url: signed, totalBytes: 65536 });
-      onTransfer({ phase: "error", id, error: new Error(`Debug off test failure at ${signed}`) });
+      onTransfer({ phase: "error", id, error: new Error(`range test failure at ${signed}`) });
       __biliThreadRipperDebug.getPlayer().video.dispatchEvent(new Event("error"));
     });
     const recorded = await page.evaluate(() => ({ report: __biliThreadRipperDebug.report(), media: __BTR_RUNTIME_NOTICES__.history() }));
     assert.ok(JSON.parse(recorded.report).page.some(event => event.what === "range failed" && event.level === "warn"
-      && event.detail === "video upos-sz-mirrorali.bilivideo.com after 0 KiB: Debug off test failure at https://upos-sz-mirrorali.bilivideo.com/a.m4s"), "the failed range is not among the page events");
+      && event.detail === "video upos-sz-mirrorali.bilivideo.com after 0 KiB: range test failure at https://upos-sz-mirrorali.bilivideo.com/a.m4s"), "the failed range is not among the page events");
     assert.equal(/upsig|deadline=/.test(recorded.report), false, "a signed address got into report()");
     assert.ok(recorded.media.some(event => event.name === "error"), "the element's error event was not recorded");
-    await page.waitForTimeout(600);
-    assert.equal(await page.locator(".bubble").count(), 0);
     // The slider only counts once the automatic mode is switched off.
     assert.equal(await panel.locator("#auto-concurrency").isChecked(), true);
     assert.equal(await panel.locator("#concurrency").isDisabled(), true);
@@ -284,19 +279,13 @@ async function showMain(panel) {
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().concurrency === 16);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
     await showTab(panel, "features");
-    await panel.locator("#debug-notices").check();
-    await page.locator(".mode").first().waitFor();
-    await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("打开后显示的错误", "这一小段没能下载下来", "error"));
-    await page.locator(red).first().waitFor();
     // The GitHub mark next to the title opens the project in a new tab.
     const github = panel.locator("#github-link");
     assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/MrTangLuyao/Bilibili-thread-ripper", "_blank"]);
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
-    // "复制诊断信息" copies what a bug report needs, in English: the errors from before Debug 模式
-    // was switched on included, and no signed addresses.
+    // "复制诊断信息" copies what a bug report needs, in English, with no signed addresses.
     // The errors stay in the copy, however many downloads come after them: 60 that finish and
-    // 60 copies that lose the race, which no longer leave an event each. The Chinese notices
-    // (one with a signed address) are for the screen and stay out of the copy.
+    // 60 copies that lose the race, which no longer leave an event each.
     await page.evaluate(() => {
       const { onTransfer } = __userscriptTest.calls.at(-1).options;
       for (let i = 0; i < 60; i++) {
@@ -306,16 +295,9 @@ async function showMain(panel) {
         const lost = onTransfer({ phase: "start", kind: "audio", url: "https://upos-sz-mirrorbd.bilivideo.com/a.m4s?deadline=1&upsig=secret", totalBytes: 1024 });
         onTransfer({ phase: "cancel", id: lost, error: new DOMException("并发副本已取消", "AbortError") });
       }
-      __BTR_RUNTIME_NOTICES__.log("下载出错的提示", "原因：测试", "error", "", "", "download");
-      for (let i = 0; i < 60; i++) __BTR_RUNTIME_NOTICES__.log("下载流水 " + i, "", "info", "flood-" + i, "", "download");
-    });
-    await page.waitForTimeout(400);
-    await page.evaluate(() => {
       window.__copied = null;
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { window.__copied = text; } } });
-      __BTR_RUNTIME_NOTICES__.log("测试用的提示", "https://upos-sz-mirrorali.bilivideo.com/a.m4s?deadline=1&upsig=secret", "info", "", "", "download");
     });
-    await page.waitForTimeout(400);
     const counted = JSON.parse(await page.evaluate(() => __biliThreadRipperDebug.report())).downloads;
     assert.deepEqual([counted.byKind.video, counted.byKind.audio], [{ started: 61, ok: 60, failed: 1, cancelled: 0, bytes: 61440 }, { started: 60, ok: 0, failed: 0, cancelled: 60, bytes: 0 }]);
     assert.deepEqual(counted.cancelReasons, { 并发副本已取消: 60 });
@@ -325,7 +307,7 @@ async function showMain(panel) {
     assert.ok(copied.startsWith("BTR diagnostics (format 1) | "), "the copy does not start with its header");
     for (const part of [`BTR ${version}`, "== Summary ==", "== Environment ==", "== Settings ==", "== Downloads ==", "== Events ==", "== End =="]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
     assert.match(copied, new RegExp(`^btr +${version.replace(/\./g, "\\.")} stable\\b`, "m"));
-    assert.match(copied, /^ *\d+\.\d{3} +WARN +page +.*range failed: video upos-sz-mirrorali\.bilivideo\.com after 0 KiB: Debug off test failure at https:\/\/upos-sz-mirrorali\.bilivideo\.com\/a\.m4s/m, "the failed range is not in the copy");
+    assert.match(copied, /^ *\d+\.\d{3} +WARN +page +.*range failed: video upos-sz-mirrorali\.bilivideo\.com after 0 KiB: range test failure at https:\/\/upos-sz-mirrorali\.bilivideo\.com\/a\.m4s/m, "the failed range is not in the copy");
     assert.match(copied, /^ *\d+\.\d{3} +[A-Z]+ +media +.*\berror\b/m, "the element's error event is not in the copy");
     assert.match(copied, /^video +61 started, 60 ok, 1 failed, 0 cancelled\b/m);
     assert.match(copied, /^audio +60 started, 0 ok, 0 failed, 60 cancelled\b/m);
@@ -337,7 +319,7 @@ async function showMain(panel) {
     assert.equal(await panel.locator("#debug-copy-status").textContent(), "");
     await page.waitForTimeout(2700);
     assert.equal(await panel.locator("#debug-copy").textContent(), "复制诊断信息");
-    console.log("PASS 设置面板：开关、线程、Debug 模式和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息是英文的，里面有 Debug 关闭时记下的错误，没有带签名的地址");
+    console.log("PASS 设置面板：开关、线程和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息是英文的，里面有记下的错误，没有带签名的地址");
 
     // Closing stops the status polling; opening again starts clean.
     await page.keyboard.press("Escape");
@@ -347,7 +329,7 @@ async function showMain(panel) {
     assert.equal(await page.evaluate(() => __userscriptTest.statusRequests), requests, "no polling after close");
     await openSettings(page);
     await panel.waitFor();
-    assert.equal(await panel.locator("#debug-notices").isChecked(), true);
+    assert.equal(await panel.locator("#auto-concurrency").isChecked(), false);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
     await openSettings(page);
     await page.locator(settingsHost).waitFor({ state: "detached" });
@@ -410,7 +392,7 @@ async function showMain(panel) {
     await page.goto(origin);
     await page.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas");
     assert.equal((await settingsOf(page)).theme, "dark", "theme survives reload");
-    assert.deepEqual(await settingsOf(page).then(value => [value.concurrency, value.debugNotices]), [16, true]);
+    assert.deepEqual(await settingsOf(page).then(value => [value.concurrency, value.autoConcurrency]), [16, false]);
     console.log("PASS 另一个标签页同步设置，刷新后设置保留");
 
     // "自定义" in the gear menu opens the panel on the custom servers. Known servers are
@@ -452,7 +434,6 @@ async function showMain(panel) {
     await isolated.locator(`${settingsHost} .btr-popup`).waitFor();
     await isolated.evaluate(() => __userscriptTest.menus[0].callback());
     await isolated.locator(settingsHost).waitFor({ state: "detached" });
-    assert.equal(await isolated.locator("#__btr_notification_stack__").count() <= 1, true);
     console.log("PASS 油猴在独立环境运行时：核心只注入页面一次，油猴菜单“线程撕裂者设置”能打开和关闭设置页");
 
     // Settings in the manager's storage, shared by every bilibili subdomain. Separate browser
@@ -486,10 +467,16 @@ async function showMain(panel) {
     await modeOf(space, "mainland");
     await space.waitForFunction(() => JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}").mode === "mainland");
     assert.equal(JSON.parse(gmStore.get("sync")).mode, "mainland");
-    // Existing settings in this manager still win over a stale local copy.
-    gmStores.get("1").set("sync", JSON.stringify({ mode: "overseas", autoConcurrency: false, concurrency: 16 }));
+    // Existing settings in this manager still win over a stale local copy. Settings that
+    // earlier versions left (the status notice, 显示错误, the Debug message filters and Debug
+    // 模式) are removed from the store.
+    const retired = { statusNotice: true, errorNotices: true, debugCategories: { download: false }, debugNotices: true };
+    const leftover = () => Object.keys(retired).filter(key => key in JSON.parse(gmStore.get("sync")));
+    gmStores.get("1").set("sync", JSON.stringify({ mode: "overseas", autoConcurrency: false, concurrency: 16, ...retired }));
     await space.goto(`${origin}?gm=live`);
     await modeOf(space, "overseas");
+    for (let i = 0; i < 50 && leftover().length; i += 1) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual(leftover(), [], "old settings were left in the store");
     assert.equal(JSON.parse(gmStore.get("sync")).mode, "overseas");
     assert.equal(JSON.parse(await space.evaluate(() => localStorage.getItem("BTR_Userscript.sync"))).mode, "overseas");
     // Another subdomain, with nothing in its own localStorage, reads the same settings.
@@ -559,7 +546,7 @@ async function showMain(panel) {
     await silent.goto(`${origin}?gm=silent`);
     await silent.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().mode === "overseas", null, { timeout: 8000 });
     assert.ok(Date.now() - silentStarted < 6000);
-    console.log("PASS 管理器设置独立：不导入 localStorage，切回原管理器保留设置；跨子域与标签页同步、诊断和 localStorage 故障回退正常");
+    console.log("PASS 管理器设置独立：不导入 localStorage，切回原管理器保留设置，旧版留下的设置会删掉；跨子域与标签页同步、诊断和 localStorage 故障回退正常");
 
     // The Canary alone: its own entry in the manager's menu, a yellow mark by the version and
     // its channel in the diagnostic report.

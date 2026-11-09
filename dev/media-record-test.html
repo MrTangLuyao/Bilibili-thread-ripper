@@ -1,38 +1,37 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><title>BTR notification integration test</title></head>
+<head><meta charset="utf-8"><title>BTR media record test</title></head>
 <body style="margin:0;background:#21232b;color:#eee;font:16px system-ui">
-  <div style="padding:24px">BTR 提示与视频播放状态测试</div>
+  <div style="padding:24px">BTR 视频事件记录测试</div>
   <div id="bilibili-player"><div class="bpx-player-container" style="width:960px;height:540px;background:linear-gradient(125deg,#272c42,#4b3440)">
     <video style="width:100%;height:100%" muted></video>
     <div class="bpx-player-ctrl-setting-menu-right"><div class="bpx-player-ctrl-setting-others">其他设置</div></div>
   </div></div>
   <script>
-    history.replaceState(null, "", "/video/BV1noticeA001");
-    window.__INITIAL_STATE__ = { videoData: { bvid: "BV1noticeA001", cid: 101 } };
+    history.replaceState(null, "", "/video/BV1recordA001");
+    window.__INITIAL_STATE__ = { videoData: { bvid: "BV1recordA001", cid: 101 } };
     window.__playinfo__ = { data: { dash: { video: [], audio: [] } } };
-    window.__noticeTest = { calls: [], messages: [], frames: 0 };
-    window.addEventListener("message", event => {
-      if (["playback-notice", "debug-notices"].includes(event.data?.type)) __noticeTest.messages.push(event.data);
-    });
+    window.__mediaTest = { calls: [], frames: 0 };
     window.fetch = async input => {
       const url = new URL(String(input), location.href);
       return new Response(JSON.stringify(url.pathname.endsWith("/view")
         ? { code: 0, data: { bvid: url.searchParams.get("bvid"), cid: 202, pages: [{ cid: 202 }] } }
         : { code: 0, data: { dash: { video: [], audio: [] } } }), { headers: { "content-type": "application/json" } });
     };
+    // Each player gets a fresh element in place of the one before, as the real one does.
     window.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = {
       createNativePlayer(options) {
         const old = options.container.querySelector("video");
         const video = old.cloneNode();
         old.replaceWith(video);
         const call = { options, video, destroyed: false };
-        __noticeTest.calls.push(call);
+        __mediaTest.calls.push(call);
         setTimeout(() => options.onState({ playerState: "ready", quality: "1080P", codec: "av1" }), 0);
         return { video, applySettings() {}, destroy() { call.destroyed = true; video.pause(); } };
       }
     };
-    window.__noticeTest.play = async () => {
+    // Real frames from a canvas, so the element plays without any media file.
+    window.__mediaTest.play = async () => {
       const video = __biliThreadRipperDebug.getPlayer().video;
       if (!video.srcObject) {
         const canvas = document.createElement("canvas");
@@ -40,8 +39,7 @@
         const context = canvas.getContext("2d");
         function frame() {
           context.fillStyle = "#292d42"; context.fillRect(0, 0, 640, 360);
-          context.fillStyle = "#fb7299"; context.fillRect((__noticeTest.frames++ * 4) % 600, 160, 40, 40);
-          context.fillStyle = "white"; context.font = "24px sans-serif"; context.fillText("BTR video frames " + __noticeTest.frames, 32, 70);
+          context.fillStyle = "#fb7299"; context.fillRect((__mediaTest.frames++ * 4) % 600, 160, 40, 40);
           requestAnimationFrame(frame);
         }
         frame();
@@ -54,7 +52,6 @@
   <script src="/src/range-core.js"></script>
   <script src="/src/runtime-notices.js"></script>
   <script src="/src/page-hook.js"></script>
-  <script src="/src/notification-view.js"></script>
   <script src="/src/bridge.js"></script>
 </body>
 </html>

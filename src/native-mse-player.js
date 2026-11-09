@@ -435,7 +435,6 @@
       seekSettledAt = performance.now();
       stallsAfterSeek = 0;
       note("seek settled", `${Math.round(lastSeekMs)} ms`);
-      options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
     }
     // The initialization segment and the index of a representation never change, and a later
     // session often plays the same one again (a replay after the end, another audio track, a
@@ -638,7 +637,6 @@
           const ahead = Math.max(0, bufferedEndAt(track.sourceBuffer, current) - current);
           candidate.bufferAheadLimit = Math.max(QUOTA_AHEAD_FLOOR_SECONDS, Math.min(candidate.bufferAheadLimit || Infinity, ahead * 0.75));
           note("buffer quota hit", `${track.kind} keeps ${candidate.bufferAheadLimit.toFixed(0)}s ahead`);
-          options.onLog?.("浏览器缓冲区满了", `已释放播放过的数据，这个视频接下来最多提前缓冲 ${candidate.bufferAheadLimit.toFixed(0)} 秒。`, "info", "buffer");
           const behindEnd = Math.max(0, current - 5);
           if (behindEnd > 0 && bufferedStart(track.sourceBuffer, behindEnd) < behindEnd) {
             forgetWritten(track, 0, behindEnd);
@@ -707,7 +705,6 @@
         const parsed = sidxTools.parseSidx(indexBytes.bytes, ranges.index.start);
         if (!parsed?.segments?.length) throw new Error(`${kind === "video" ? "视频" : "音频"} SIDX 解析失败`);
         note("index parsed", `${kind} ${parsed.segments.length} segments`);
-        options.onLog?.("已经确认数据的下载位置", `找到了 ${parsed.segments.length} 段${kind === "audio" ? "声音" : "画面"}数据。`, "success", "download");
         header = { initialization: initialization.bytes, sidx: parsed };
         trackHeaders.set(headerKey, header);
       }
@@ -1014,7 +1011,6 @@
           candidate.endAttempts = (candidate.endAttempts || 0) + 1;
           if (candidate.endAttempts === 40) {
             note("end of stream failed", `${candidate.endAttempts} attempts: ${String(error?.message || error).slice(0, 160)}`);
-            options.onLog?.("视频结尾没能正常收尾", `结束媒体流一直失败，播放器可能停在结尾。\n原因：${String(error?.message || error).slice(0, 160)}`, "error", "playback");
           }
           candidate.endRetryTimer = setTimeout(() => maybeEndStream(candidate), 50);
         }
@@ -1032,7 +1028,7 @@
 
     // Bilibili's own player core downloads nothing while BTR plays, so it may report errors
     // about that. The stylesheet hides its error panels only while BTR is active; what they
-    // said goes to the Debug log instead of being lost.
+    // said goes to the timeline instead of being lost.
     let reportedNativeError = "";
     function clearNativeErrorOverlay() {
       for (const node of options.container.querySelectorAll(".bpx-player-error-wrap,.bpx-player-error-panel")) {
@@ -1041,7 +1037,6 @@
         reportedNativeError = text;
         // Bilibili's own words; the report keeps only their numbers (an error code).
         note("Bilibili error overlay", text);
-        options.onLog?.("B 站原生播放器报错", `线程撕裂者接管时，B 站自己的播放内核不再下载视频，这类报错通常可以忽略。\n原文：${text}`, "info", "playback");
       }
     }
 
@@ -1079,7 +1074,6 @@
         candidate.ownPauses += 1;
         video.dispatchEvent(new Event("pause"));
         note("autoplay refused", String(error?.message || error?.name || "NotAllowedError").slice(0, 160));
-        options.onLog?.("浏览器没有让视频自动播放", "点一下播放键就能继续。", "info", "playback");
       });
     }
 
@@ -1101,7 +1095,6 @@
       candidate.playbackActivated = true;
       note("ready to play", `needed ${required.toFixed(1)} s buffered`);
       noteSeekSettled();
-      options.onLog?.("开播需要的缓冲已经够了", `从 ${target.toFixed(2)} 秒开始播放，这次需要先缓冲 ${required.toFixed(1)} 秒。`, "success", "buffer");
       candidate.playbackActivatedAt = performance.now();
       if (target - (Number(video.currentTime) || 0) > 0.05) setCurrentTimeInternal(candidate, target);
       // The volume, mute and speed are the element's own by now: whatever the viewer or
@@ -1145,7 +1138,6 @@
         candidate.recoveryTargetSeconds = Math.max(STARTUP_RECOVERY_SECONDS, candidate.startupTargetSeconds);
         candidate.underflowRebuffers += 1;
         note("rebuffer before underflow", `${ahead.toFixed(2)}s ahead`);
-        options.onLog?.("前方缓冲快用完了", "先暂停播放，等声音和画面都备好再一起继续。", "info", "buffer");
         pauseForData(candidate);
         if (core.normalizeSettings(getSettings()).autoConcurrency) downloaderFactory.autoConcurrency?.stall("前方缓冲快用完了");
       }
@@ -1159,7 +1151,6 @@
             noteSeekSettled();
           }
           note("rebuffer done", `${ahead.toFixed(1)} s ahead`);
-          options.onLog?.("缓冲补好了，可以继续播放", `已经备好接下来 ${ahead.toFixed(1)} 秒的数据。`, "success", "buffer");
           candidate.playAttempted = false;
           attemptAutoplay(candidate);
         }
@@ -1216,7 +1207,6 @@
         // A later start replaced this one meanwhile.
         if (destroyed || request !== sessionRequests) return;
       }
-      options.onLog?.("正在准备播放器", `使用 ${qualityLabel(representation)} 清晰度，从 ${Number(playbackState.time || 0).toFixed(2)} 秒开始。`, "info", "takeover");
       const previous = session;
       // Read once: selection can be replaced by a new playinfo while this session starts.
       const audio = selection.audio;
@@ -1380,14 +1370,12 @@
       }
       if (candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, target))) {
         note("seek inside buffer", `to ${target.toFixed(1)}`);
-        options.onLog?.("你跳到的位置已经有缓冲", `可以直接从 ${target.toFixed(2)} 秒继续播放。`, "success", "buffer");
         ensureBuffer(candidate);
         return;
       }
       seekReloads += 1;
       seekStartedAt = seekRequestedAt || performance.now();
       note("seek outside the buffer", target.toFixed(1));
-      options.onLog?.("你跳到的位置还需要加载", `正在为 ${target.toFixed(2)} 秒的位置重新准备数据。`, "info", "buffer");
       // A video sent back to its start right after it ended is the player's 单集循环 or its
       // replay button, which mean to play it again. The video is paused at that moment, so
       // without this the next round would stop at the first frame (issue #17); that case keeps
@@ -1416,7 +1404,6 @@
         candidate.restoreUndoneAt = candidate.metadataAt;
         nativeRestoresUndone += 1;
         note("native restore undone", `${target.toFixed(1)} -> ${candidate.startTime.toFixed(1)}`);
-        options.onLog?.("挡住了 B 站播放器的回跳", `B 站的播放内核想跳回 ${target.toFixed(1)} 秒，保持在你选的 ${candidate.startTime.toFixed(1)} 秒。`, "info", "buffer");
         setCurrentTimeInternal(candidate, candidate.startTime);
         // Its restore also plays or pauses as things were back then; the viewer's intent wins.
         if (!candidate.resumeWanted && !elementPaused()) pauseElement();

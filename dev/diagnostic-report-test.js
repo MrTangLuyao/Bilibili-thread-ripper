@@ -23,7 +23,7 @@ function fixture(){
     capturedAt:CAPTURED,timeOrigin:ORIGIN,now:NOW,
     btr:{version:"2026.11.3.1",channel:"stable",otherBuild:"",scriptManager:"Tampermonkey 5.5.1",host:"userscript"},
     env:{userAgent:"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",language:"zh-TW",viewport:"1680x876",page:"https://www.bilibili.com/video/BV1UjxD69EKs/"},
-    settings:{enabled:true,theme:"auto",liveEnabled:false,episodeEnabled:true,blockInternational:false,takeover:"full",mode:"mainland",customHosts:[],floatingButton:true,floatingButtonLeft:0,floatingButtonTop:0.8979357798165137,guideDone:true,debugNotices:true,concurrency:8,autoConcurrency:true,minChunkBytes:65536,firstByteTimeoutMs:5500,stallTimeoutMs:4000,attemptTimeoutMs:15000,hedgeDelayMs:900,bufferAheadSeconds:45,secondaryBuffer:false},
+    settings:{enabled:true,theme:"auto",liveEnabled:false,episodeEnabled:true,blockInternational:false,takeover:"full",mode:"mainland",customHosts:[],floatingButton:true,floatingButtonLeft:0,floatingButtonTop:0.8979357798165137,guideDone:true,concurrency:8,autoConcurrency:true,minChunkBytes:65536,firstByteTimeoutMs:5500,stallTimeoutMs:4000,attemptTimeoutMs:15000,hedgeDelayMs:900,bufferAheadSeconds:45,secondaryBuffer:false},
     site:{international:false,signedIn:false,userSite:"",accountSites:null,lang:"",guard:"on",redirectsBlocked:0,gaveUp:false},
     video:{
       version:"2026.11.3.1",channel:"stable",scriptManager:"Tampermonkey 5.5.1",at:NOW,timeOrigin:ORIGIN,route:"bv1ujxd69eks:p1",
@@ -182,7 +182,7 @@ test("the issue #65 fixture renders the format 1 layout",()=>{
   assert.equal(lines.find(line=>line.startsWith("== Settings ==")),"== Settings ==  (* = changed from default)");
   assert.deepEqual(section(text,"Settings"),[
     "enabled              yes","takeover             full","cdn                  mainland","custom hosts         none","threads              auto",
-    "buffer ahead         45 s","secondary buffer     no","episodes             yes","live                 no","block international  no","debug mode           yes *"
+    "buffer ahead         45 s","secondary buffer     no","episodes             yes","live                 no","block international  no"
   ]);
   // Every row, in order: a row that goes missing or moves fails here.
   assert.deepEqual(section(text,"Playback"),[
@@ -248,7 +248,7 @@ test("a source that is missing prints n/a, and {} or null never throw",()=>{
   assert.ok(section(text,"Summary").includes("engine        n/a (setting full)"));
   assert.ok(section(text,"Downloads").includes("video         n/a"));
   assert.ok(section(text,"Downloads").includes("auto threads  16, level 2, 1 step, last change T+1.021 (start with 16 threads)"));
-  assert.ok(section(text,"Settings").includes("debug mode           yes *"));
+  assert.ok(section(text,"Settings").includes("threads              auto"));
 });
 
 test("values of the wrong type or out of range never throw and stay in the grammar",()=>{
@@ -412,9 +412,9 @@ test("the pinned defaults are bridge.js DEFAULTS",()=>{
   assert.deepEqual(JSON.parse(JSON.stringify(report.DEFAULTS)),JSON.parse(JSON.stringify(defaults)));
   // Changed settings are marked, unchanged ones not.
   const snapshot=fixture();
-  Object.assign(snapshot.settings,{autoConcurrency:false,concurrency:16,mode:"custom",customHosts:["cn-hk-eq-01-13.bilivideo.com"],bufferAheadSeconds:90,debugNotices:false});
+  Object.assign(snapshot.settings,{autoConcurrency:false,concurrency:16,mode:"custom",customHosts:["cn-hk-eq-01-13.bilivideo.com"],bufferAheadSeconds:90});
   const settings=section(report.render(snapshot),"Settings");
-  for(const line of ["threads              16 *","cdn                  custom *","custom hosts         cn-hk-eq-01-13.bilivideo.com *","buffer ahead         90 s *","debug mode           no"]) assert.ok(settings.includes(line),line);
+  for(const line of ["threads              16 *","cdn                  custom *","custom hosts         cn-hk-eq-01-13.bilivideo.com *","buffer ahead         90 s *"]) assert.ok(settings.includes(line),line);
   assert.ok(section(report.render(snapshot),"Downloads").includes("auto threads  off (manual 16)"));
 });
 
@@ -527,7 +527,7 @@ test("compat, native, live and a takeover failure print their own lines",()=>{
   const failed=fixture();
   failed.video.state="error";
   failed.video.lastError="读取播放清单失败（HTTP 412）";
-  failed.stats.takeoverError={id:3,at:CAPTURED-10000,route:"bv1ujxd69eks:p1",stage:"playinfo",message:"读取播放清单失败（HTTP 412）",retryCount:2};
+  failed.stats.takeoverError={at:CAPTURED-10000,route:"bv1ujxd69eks:p1",stage:"playinfo",message:"读取播放清单失败（HTTP 412）",retryCount:2};
   failed.video.playback.mediaError={code:3,message:"PIPELINE_ERROR_DECODE"};
   failed.video.playback.visibility="hidden";
   Object.assign(failed.video.nativeQuality,{newQ:64});

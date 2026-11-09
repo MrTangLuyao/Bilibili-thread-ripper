@@ -219,7 +219,6 @@
             <div class="block">
               <h2 class="block-title">调试</h2>
               <section class="notice-controls" aria-label="调试">
-                <label class="notice-row" for="debug-notices"><span class="row-text">Debug 模式</span><span class="switch"><input id="debug-notices" type="checkbox" aria-label="Debug 模式"><span></span></span></label>
                 <div class="debug-copy">
                   <button id="debug-copy" type="button">复制诊断信息</button>
                   <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
@@ -274,7 +273,7 @@
     .version { color: var(--muted); font-size: 11px; line-height: 1.2; font-variant-numeric: tabular-nums; }
     .version .canary { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: #f5b301; color: #1d1d1f; font-size: 10px; font-weight: 700; }
     /* With the master switch off the panel says so, and what only works with BTR on fades out
-       and cannot be used: not 调试 (the notices and the diagnostic copy) or the floating button,
+       and cannot be used: not 调试 (the diagnostic copy) or the floating button,
        which still apply. */
     .disabled-note { margin: -10px 0 14px; padding: 8px 10px; border-radius: 8px; background: rgba(251, 114, 153, .16); color: var(--text); font-size: 12px; line-height: 1.55; }
     [data-needs-enabled] { transition: opacity .2s ease, filter .2s ease; }
@@ -353,7 +352,7 @@
     .scale span:last-child { text-align: right; }
     .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
     .manual-host button:hover { border-color: #fb7299; }
-    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
     .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
     .debug-copy button:hover { background: #fb7299; }
     .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -706,7 +705,6 @@
     const bufferValue = $("buffer-value");
     const bufferFill = $("buffer-fill");
     const secondaryBuffer = $("secondary-buffer");
-    const debugNotices = $("debug-notices");
     const liveEnabled = $("live-enabled");
     const episodeEnabled = $("episode-enabled");
     const blockInternational = $("block-international");
@@ -809,7 +807,6 @@
       episodeEnabled.checked = settings.episodeEnabled !== false;
       blockInternational.checked = settings.blockInternational === true;
       floatingButton.checked = settings.floatingButton !== false;
-      debugNotices.checked = settings.debugNotices;
     }
 
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
@@ -897,7 +894,6 @@
       resetAsked = root.setTimeout(stopAsking, 4000);
     });
     resetSettings.addEventListener("blur", stopAsking);
-    debugNotices.addEventListener("change", () => save({ debugNotices: debugNotices.checked }));
     const copyStatus = $("debug-copy-status");
     const copyText = $("debug-copy-text");
     const copyButton = $("debug-copy");

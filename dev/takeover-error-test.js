@@ -7,7 +7,7 @@
   history.replaceState(null, "", `/video/${BVID}`);
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
-      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32 };
+      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", customHosts: [], concurrency: 32 };
     }
   };
   root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = { createNativePlayer() { throw new Error("不应创建播放器"); } };
@@ -25,12 +25,18 @@
   // not once a second: at most four requests in the first six and a half seconds.
   let requestsInWindow = null;
   let latest = {};
+  // The failure also reaches the diagnostic copy, as a page event.
+  const pageFailure = () => {
+    try { return JSON.parse(root.__biliThreadRipperDebug.report()).page.find((event) => event.what === "takeover failed") || null; }
+    catch (_error) { return null; }
+  };
   const render = () => {
     const stats = latest;
     const output = {
       version: stats.version || "",
       playerState: stats.playerState || "",
       takeoverError: stats.takeoverError || null,
+      pageFailure: pageFailure(),
       requestsInWindow,
       requests
     };
@@ -38,6 +44,7 @@
       && output.playerState === "error"
       && output.takeoverError?.stage === "playinfo"
       && /HTTP 404/.test(output.takeoverError?.message || "")
+      && output.pageFailure?.level === "error" && /^playinfo: .*HTTP 404/.test(output.pageFailure.detail)
       && requests.length > 0
       && requests.every((url) => new URL(url).origin === "https://api.bilibili.com")
       && requestsInWindow !== null && requestsInWindow >= 2 && requestsInWindow <= 4;

@@ -27,7 +27,7 @@
 
   // bridge.js DEFAULTS, the stored settings before anything is changed: Settings marks every
   // value that differs with *. dev/diagnostic-report-test.js checks that the two stay equal.
-  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false, debugNotices: false });
+  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false });
 
   // English names of Bilibili's quality ids; the player's own labels are Chinese (1080P 60帧).
   const QUALITY_LABELS = Object.freeze({ 127: "8K", 126: "Dolby Vision", 125: "HDR", 120: "4K", 116: "1080P60", 112: "1080P+", 80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P", 6: "240P" });
@@ -81,16 +81,13 @@
     [/原生调度接口不兼容/g, "native scheduler API incompatible"],
     [/原生内核未恢复/g, "native core not restored"],
     [/加速任务已停止/g, "transport stopped"],
-    [/媒体错误\s*/g, "media error "],
-    [/原生画质/g, "native"],
-    // The page: page-hook.js and bridge.js.
+    // The page: page-hook.js.
     [/视频已经换了/g, "video changed"],
     [/B ?站 ?15 ?秒内没有回应/g, "Bilibili did not answer within 15 s"],
     [/读取视频信息失败/g, "video info request failed"],
     [/新视频缺少 ?CID/g, "new video has no CID"],
     [/读取播放清单失败/g, "playlist request failed"],
     [/未知接管错误/g, "unknown takeover error"],
-    [/接管失败/g, "takeover failed"],
     [/\s*[（(]兼容模式[)）]/g, " (compat)"],
     [/兼容模式/g, "compat"],
     [/全接管/g, "full"],
@@ -559,8 +556,7 @@
       ["secondary buffer", flag("secondaryBuffer")],
       ["episodes", flag("episodeEnabled")],
       ["live", flag("liveEnabled")],
-      ["block international", flag("blockInternational")],
-      ["debug mode", flag("debugNotices")]
+      ["block international", flag("blockInternational")]
     ]);
   }
 

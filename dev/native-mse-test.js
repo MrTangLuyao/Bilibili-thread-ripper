@@ -10,7 +10,7 @@
   const initialResume = initialTimeParam === null ? undefined : true;
   video.currentTime = handoffTime;
   const settings = { enabled: true, mode: "mainland", concurrency: 32, bufferAheadSeconds: 24 };
-  const probe = { active: 0, maxActive: 0, transfers: 0, attemptErrors: [], errors: [], state: null, segments: 0, nativeSourceChanges: 0, nativeErrorLogs: [] };
+  const probe = { active: 0, maxActive: 0, transfers: 0, attemptErrors: [], errors: [], state: null, segments: 0, nativeSourceChanges: 0 };
   const config = await fetch("/config").then((response) => response.json());
   const playinfo = await fetch("/playinfo").then((response) => response.json());
   const render = (extra = {}) => {
@@ -44,7 +44,6 @@
       return event.id;
     },
     onSegment() { probe.segments += 1; },
-    onLog(title, detail) { if (title === "B 站原生播放器报错") probe.nativeErrorLogs.push(String(detail)); },
     onState(state) { probe.state = state; render(); },
     onNativeSourceChange() { probe.nativeSourceChanges += 1; },
     onFatal(error) { probe.errors.push(String(error?.message || error)); render(); }
@@ -70,6 +69,9 @@
     await new Promise((resolve) => setTimeout(resolve, nativeAutoplay ? 20 : 200));
   }
   const beforeSeek = root.__nativeMseTestPlayer.getDebug();
+  // Bilibili's error panel is noted once playback starts; read before a long run can push it
+  // out of the timeline.
+  const errorNoted = beforeSeek.timeline.some((item) => item.what === "Bilibili error overlay" && item.detail.includes("B 站原生内核报错占位"));
   const startupHandoffTime = beforeSeek.sessionStartTime;
   let seekTarget = 0;
   if (!probe.errors.length && Number(video.duration) > 20) {
@@ -139,9 +141,9 @@
     doubleSeek.position = Number(video.currentTime) || 0;
   }
   // Bilibili's own toasts stay visible; its error panel is hidden only while BTR plays and
-  // what it said is in the log.
+  // what it said is in the timeline.
   const shown = (selector) => getComputedStyle(document.querySelector(selector)).display !== "none";
-  const nativeLayers = { toastVisible: shown(".bpx-player-toast-wrap"), errorHiddenWhileActive: !shown(".bpx-player-error-wrap"), errorLogged: probe.nativeErrorLogs.some((detail) => detail.includes("B 站原生内核报错占位")) };
+  const nativeLayers = { toastVisible: shown(".bpx-player-toast-wrap"), errorHiddenWhileActive: !shown(".bpx-player-error-wrap"), errorNoted };
   video.src = "data:video/mp4;base64,";
   video.load();
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -201,7 +203,7 @@
     && output.durationRefusals === 0
     && output.nativeLayers.toastVisible
     && output.nativeLayers.errorHiddenWhileActive
-    && output.nativeLayers.errorLogged
+    && output.nativeLayers.errorNoted
     && output.maxActive <= 32
     && output.maxActive >= 2
     && output.nativeSourceChanges === 1

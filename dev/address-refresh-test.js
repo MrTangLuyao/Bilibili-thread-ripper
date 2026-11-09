@@ -17,7 +17,6 @@
 
   const players = [];
   const requests = [];
-  const notices = [];
   let apiMode = "ok";
 
   history.replaceState(null, "", `/video/${FIRST}`);
@@ -25,13 +24,9 @@
   root.__playinfo__ = { data: { dash: { duration: 100, video: [], audio: [] }, marker: "embedded" } };
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
-      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32 };
+      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", customHosts: [], concurrency: 32 };
     }
   };
-  // Only the titles matter here; whatever else the hook calls does nothing.
-  root.__BTR_RUNTIME_NOTICES__ = new Proxy({ log(title) { notices.push(String(title)); } }, {
-    get: (target, name) => target[name] || (() => {})
-  });
   root.__BILI_NATIVE_MSE_PLAYER_FACTORY__ = {
     createNativePlayer(options) {
       const record = { route: location.pathname, deadline: realNow() / 1000 + 7200, updates: [], destroyed: false };
@@ -75,6 +70,9 @@
     return Boolean(condition());
   };
   const playurl = () => requests.filter((item) => item.path === "/x/player/playurl");
+  // The page events of the diagnostic copy: how many of one kind there were.
+  const pageEvents = () => JSON.parse(root.__biliThreadRipperDebug.report()).page;
+  const recorded = (what) => pageEvents().filter((event) => event.what === what).reduce((sum, event) => sum + (event.count || 1), 0);
   const output = { steps: {} };
 
   document.addEventListener("DOMContentLoaded", () => {
@@ -85,6 +83,7 @@
     await until(() => players.length === 1, 5000);
     const first = players[0];
     const steps = output.steps;
+    const fetchedAtStart = recorded("playinfo fetched");
 
     // Addresses that are good for two more hours are left alone.
     await wait(1300);
@@ -111,7 +110,8 @@
     steps.refreshed = first.updates.length === 1 && playurl().length === 2;
     await wait(1300);
     steps.noRequestOnceRenewed = playurl().length === 2;
-    steps.noTakeoverNotices = !notices.some((title) => title === "正在读取视频信息" || title === "已经拿到视频下载地址");
+    // Recorded as a refresh, not as the address fetch of a takeover.
+    steps.recordedAsRefresh = recorded("playinfo refresh") > 0 && recorded("playinfo fetched") === fetchedAtStart;
 
     // The video changes while a refresh is under way: the request ends there, and the next
     // video's player never sees the old video's addresses.
@@ -130,7 +130,7 @@
     steps.nextVideoUntouched = players.length === 2 && players[1].updates.length === 0;
 
     output.requests = requests.map((item) => `${item.path.split("/").at(-1)} ${item.bvid} ${item.mode}${item.aborted ? " aborted" : ""}`);
-    output.notices = notices.filter((title) => /下载地址/.test(title));
+    output.page = pageEvents().map((event) => event.what);
     output.pass = Object.values(steps).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);

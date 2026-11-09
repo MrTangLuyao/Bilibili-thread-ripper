@@ -5,8 +5,6 @@
   const INSTALL_FLAG = "__biliThreadRipper0901Installed";
   const BILIBILI_API_ORIGIN = "https://api.bilibili.com";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const STATE_LABELS = Object.freeze({ waiting: "正在等视频信息", loading: "正在准备播放", ready: "视频已经准备好了", buffering: "正在补充缓冲", ended: "视频播放完了", error: "播放器出错了", "native-fallback": "已经改回 B 站原来的连接", disabled: "加速已关闭" });
-  const KIND_LABELS = Object.freeze({ video: "画面", audio: "声音", meta: "视频信息" });
   const SETTINGS_ID = "__bilibili_thread_ripper_native_settings__";
   const SETTINGS_STYLE_ID = "__bilibili_thread_ripper_native_settings_style__";
   if (root[INSTALL_FLAG]) return;
@@ -32,7 +30,7 @@
   // gone once it is replaced, and that is exactly when a report is needed (a video that went
   // black and came back at another position). Positions, states and failures only, in
   // English: the diagnostic copy prints them as they are (diagnostic-report.js translates the
-  // error messages), while the Chinese notices next to them are only for the screen.
+  // error messages).
   // level is debug, info, warn or error. One kind of event cannot crowd out the others: each
   // keeps its newest 30, and a full list gives up its oldest debug and info entries first. A
   // repeat within two seconds only counts up.
@@ -79,13 +77,8 @@
       // The ban is decided while the failed range is still being reported: its event comes
       // after that range's, which is the one that caused it.
       const record = (what, detail) => queueMicrotask(() => remember(what, detail, "warn"));
-      if (address) {
-        notices?.log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "", cdnBanRoute, "download");
-        record("address banned", "refused by the nodes");
-      } else {
-        notices?.log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "", cdnBanRoute, "download");
-        record("node banned", `${host}, ${Number(count) || 0} failures with no data`);
-      }
+      if (address) record("address banned", "refused by the nodes");
+      else record("node banned", `${host}, ${Number(count) || 0} failures with no data`);
     }
   }) || null;
   let playerContainer = null;
@@ -117,7 +110,6 @@
   let takeoverFailureStartedAt = 0;
   // The next try of a playlist request that failed, per route (see startPlayer).
   let playinfoRetry = { route: "", at: 0, count: 0 };
-  let takeoverErrorSequence = 1;
   let autoRetakeTimer = null;
   let autoRetakeRoute = "";
   let autoRetakeCount = 0;
@@ -143,7 +135,6 @@
   autoThreads?.subscribe(({ threads, previous, reason }) => {
     if (!settings.autoConcurrency) return;
     stats.autoThreads = threads;
-    notices?.log(threads > previous ? "线程数加到 " + threads : "线程数退回 " + threads, `${previous} → ${threads}：${reason}。`, "info", "", undefined, "download");
     remember("threads changed", `${previous} -> ${threads} (${reason})`);
     schedulePublish();
   });
@@ -185,7 +176,7 @@
   let previousTimeline = null;
 
   // A media clock alone cannot show a stale picture (#45). Keep the most recently presented
-  // frame's timestamp for the diagnostic copy, Debug 模式 on or off; no canvas/readback involved.
+  // frame's timestamp for the diagnostic copy; no canvas/readback involved.
   let frameWatch = null;
   function stopFrameWatch() {
     const previous = frameWatch;
@@ -238,8 +229,6 @@
 
   function recordTakeoverFailure(route, stage, error, fatal = false) {
     const message = String(error?.message || error || "未知接管错误").slice(0, 180);
-    const stageLabel = { playinfo: "读取视频信息", mse: "播放视频", create: "启动播放器", "playinfo-update": "更新播放信息", quality: "切换清晰度" }[stage] || "接管视频";
-    notices?.log("没能接管这个视频", `${stageLabel}时出了问题。\n${message}`, "error", "", route, "takeover");
     remember("takeover failed", `${["playinfo", "mse", "create", "playinfo-update", "quality"].includes(stage) ? stage : "takeover"}: ${errorText(error) || "unknown error"}`, "error");
     const now = Date.now();
     if (takeoverFailureRoute !== route) {
@@ -255,12 +244,8 @@
     const permanentClientError = status >= 400 && status < 500 && ![408, 425, 429].includes(status);
     const shouldExpose = fatal || permanentClientError || takeoverFailureCount >= 2 || now - takeoverFailureStartedAt >= 8000;
     if (shouldExpose || stats.takeoverError?.route === route) {
-      const previous = stats.takeoverError;
       stats.playerState = "error";
       stats.takeoverError = {
-        id: previous?.route === route && previous?.stage === stage && previous?.message === message
-          ? previous.id
-          : takeoverErrorSequence++,
         at: now,
         route,
         stage: String(stage || "unknown").slice(0, 32),
@@ -288,7 +273,6 @@
     autoRetakeTimer = setTimeout(() => {
       autoRetakeTimer = null;
       if (!settings.enabled || player || failedRoute !== route || routeIdentity()?.key !== route) return;
-      notices?.log("正在自动重新接管", `刚才的下载出了问题，现在重新接管这个视频（第 ${attempt} 次）。`, "info", "", route, "takeover");
       remember("retake", `attempt ${attempt}`, "warn");
       failedRoute = "";
       restartPlayer(true);
@@ -368,7 +352,6 @@
       const now = Date.now();
       let host = "";
       try { host = new URL(event.url).hostname; } catch (_error) {}
-      notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
       const kind = ["video", "audio", "meta"].includes(event.kind) ? event.kind : "video";
       downloads.byKind[kind].started += 1;
       transfers.set(id, {
@@ -397,9 +380,6 @@
     const item = transfers.get(Number(event?.id));
     if (!item || item.state !== "active") return event?.id;
     const now = Date.now();
-    const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
-    const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
-    notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
     countTransfer(item, event);
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
@@ -594,8 +574,8 @@
   }
 
   function unsupportedEpisode(playinfo) {
-    if (playinfo?.data?.is_drm) return "这一集有数字版权保护，交给 B 站自己的播放器。";
-    if (playinfo?.data?.is_preview) return "这一集只能试看，交给 B 站自己的播放器。";
+    if (playinfo?.data?.is_drm) return "DRM protected";
+    if (playinfo?.data?.is_preview) return "preview only";
     return "";
   }
 
@@ -855,7 +835,6 @@
     state.at = now;
     state.controller = controller;
     const stale = () => state !== deadlineRefresh || lifecycle !== playerLifecycle || player !== current || playerRoute !== route || routeIdentity()?.key !== route;
-    notices?.log("下载地址快要过期了", "正在向 B 站请求新的下载地址，播放不受影响。", "info", "", route, "download");
     remember("playinfo refresh");
     try {
       const playinfo = await fetchRoutePlayinfo(identity, controller.signal, true);
@@ -867,7 +846,6 @@
     } catch (error) {
       if (stale()) return;
       state.failures += 1;
-      notices?.log("没能提前换新下载地址", `${String(error?.message || error).slice(0, 120)}\n播放继续使用现在的地址，稍后再试。`, "info", "", route, "download");
       remember("playinfo refresh failed", errorText(error), "warn");
     } finally {
       clearTimeout(timer);
@@ -876,7 +854,7 @@
   }
 
   // refresh: new addresses for the video that is already playing. Its CID is known by then,
-  // so the video information is not asked for again, and the takeover notices stay quiet.
+  // so the video information is not asked for again, and it is not recorded as "playinfo fetched".
   async function fetchRoutePlayinfo(identity, signal, refresh = false) {
     if (identity.epId) return fetchEpisodePlayinfo(identity, signal, refresh);
     // A branch of an interactive video carries its own CID; the video information only
@@ -885,7 +863,6 @@
     let canonicalBvid = String(identity.bvid || "");
     let canonicalAid = Number(identity.aid) || 0;
     if (!cid) {
-      if (!refresh) notices?.log("正在读取视频信息", "确认你要看的视频和分 P。", "info", "", identity.key, "takeover");
       const query = identity.bvid
         ? `bvid=${encodeURIComponent(identity.bvid)}`
         : `aid=${encodeURIComponent(identity.aid)}`;
@@ -914,10 +891,7 @@
     if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
     if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
     cachePlayinfo(identity, playinfo, cid);
-    if (!refresh) {
-      notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
-      remember("playinfo fetched", "", "debug");
-    }
+    if (!refresh) remember("playinfo fetched", "", "debug");
     return playinfo;
   }
 
@@ -934,10 +908,7 @@
     if (unsupportedEpisode(playinfo)) return playinfo;
     if (!isDashPlayinfo(playinfo)) throw new Error("这一集没有 DASH 播放清单");
     cachePlayinfo(identity, playinfo);
-    if (!refresh) {
-      notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
-      remember("playinfo fetched", "", "debug");
-    }
+    if (!refresh) remember("playinfo fetched", "", "debug");
     return playinfo;
   }
 
@@ -1158,7 +1129,7 @@
       handedBack: resumeNative,
       time: current.playbackPosition ? current.playbackPosition() : Number(current.video?.currentTime) || 0
     };
-    notices?.detach(resumeNative ? "已停止加速，交回 B 站原来的连接" : "已停止接管上一个视频");
+    notices?.detach();
     playerLifecycle += 1;
     cancelDeadlineRefresh();
     player = null;
@@ -1290,7 +1261,6 @@
       if (wanted) handPickedQuality = wanted;
       const target = wanted ? 0 : auto || syncedAutoQuality;
       if (target) syncedAutoQuality = target;
-      notices?.log("跟随播放器切换清晰度", wanted ? `正在换成播放器选的清晰度（${wanted}）。` : target ? `播放器改回了自动，按自动的清晰度（${target}）播放。` : "播放器改回了自动，使用这个视频默认的清晰度。", "info", "", route, "playback");
       remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
       // The quality for 自动 first, so that going back to 自动 restarts at most once.
       settle((async () => {
@@ -1303,7 +1273,6 @@
     // and then: once it is known after a very early takeover, or after it is reloaded.
     if (!auto || auto === syncedAutoQuality || typeof current.setAutoQuality !== "function") return;
     syncedAutoQuality = auto;
-    notices?.log("跟随播放器的自动清晰度", `播放器的自动选了 ${auto}，按它显示的清晰度播放。`, "info", "", route, "playback");
     remember("auto quality follow", String(auto));
     settle(current.setAutoQuality(auto));
   }
@@ -1339,7 +1308,6 @@
       if (!confirmRenderedQuality(wrapper, pending, target || playingId)) {
         pending.resolve({ type: "qualityChangeRendered", mediaType: "video", oldQuality: pending.oQn, newQuality: target || playingId, isMediaSegment: true, requestType: "MediaSegment" });
       }
-      notices?.log("清晰度切换完成", "新清晰度已经在播放，已通知 B 站播放器。", "success", "", playerRoute, "playback");
       remember("quality switched");
     } catch (_error) {}
   }
@@ -1531,7 +1499,6 @@
     const current = player, route = playerRoute, lifecycle = playerLifecycle;
     codecPlayer = current;
     syncedCodec = wanted;
-    notices?.log("跟随播放器切换编码", wanted ? `正在换成播放策略里选的 ${wanted.toUpperCase()}。` : "播放策略改回了默认，按 AV1、HEVC、AVC 的顺序选。", "info", "", route, "playback");
     remember("codec follow", wanted || "default");
     current.setCodec(wanted).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
@@ -1709,7 +1676,6 @@
     // Bilibili rather than taken over in full.
     if (identity.epId && !rangeTransport?.supports(container)) {
       failedRoute = route;
-      notices?.log("没有接管这一集", "剧集只用兼容模式加速，但现在接不上 B 站的播放器，这一集交给 B 站自己播放。", "info", "", route, "takeover");
       remember("episode not taken over", "episodes use the compat mode, which cannot reach Bilibili's player here");
       if (player) stopPlayer(true);
       stats.playerState = "native-fallback";
@@ -1718,7 +1684,6 @@
     }
     const generation = routeGeneration;
     let playinfo = currentPlayinfo(identity);
-    notices?.log("准备接管这个视频", playinfo ? "已经有下载地址，可以继续准备播放。" : "还没有下载地址，正在向 B 站请求。", "info", "", route, "takeover");
     if (!playinfo) {
       // A request that keeps failing (an episode Bilibili will not serve here, its risk
       // control) is asked again after a growing pause, up to a minute. The loop that calls
@@ -1752,8 +1717,7 @@
     const unsupported = identity.epId ? unsupportedEpisode(playinfo) : "";
     if (unsupported) {
       failedRoute = route;
-      notices?.log("没有接管这一集", unsupported, "info", "", route, "takeover");
-      remember("episode not taken over", playinfo?.data?.is_drm ? "DRM protected" : "preview only");
+      remember("episode not taken over", unsupported);
       if (player) stopPlayer(true);
       stats.playerState = "native-fallback";
       publish();
@@ -1803,18 +1767,13 @@
         poster: String(root.__INITIAL_STATE__?.videoData?.pic || ""),
         onTransfer,
         cdnBans,
-        onLog(title, detail, level = "info", category = "other") {
-          if (lifecycle !== playerLifecycle) return;
-          notices?.log(title, detail, level, "", route, category);
-        },
         onNativeSourceChange() {
           if (lifecycle !== playerLifecycle) return;
-          notices?.detach("B 站正在切换视频，准备重新接管");
+          notices?.detach();
           handleNativeSourceChange(route, lifecycle);
         },
         onSegment(event) {
           if (lifecycle !== playerLifecycle) return;
-          notices?.log("下载好的数据已经交给播放器", `这段${KIND_LABELS[event.kind] || "视频"}数据有 ${Math.round(event.bytes / 1024)} KiB，由 ${event.pieces} 路下载完成。`, "success", `segment-${event.kind}`, route, "buffer");
           if (takeoverFailureRoute === route || stats.takeoverError?.route === route) {
             clearTakeoverFailure();
             stats.lastError = "";
@@ -1826,14 +1785,13 @@
         },
         onState(next) {
           if (lifecycle !== playerLifecycle) return;
-          // The compatibility mode names a quality it does not know "native" (Bilibili's own).
-          if (next.playerState !== stats.playerState || next.quality !== stats.quality) notices?.log(STATE_LABELS[next.playerState] || "播放状态发生变化", `当前清晰度是 ${next.quality === "native" ? "原生画质" : next.quality || "默认清晰度"}，已经缓冲 ${(Number(next.bufferedAhead) || 0).toFixed(1)} 秒。`, next.playerState === "error" ? "error" : ["ready", "ended"].includes(next.playerState) ? "success" : "info", "", route, "playback");
           stats.mode = next.mode || settings.mode;
           stats.playerState = next.playerState || stats.playerState;
           if (next.playerState === "ready" && (takeoverFailureRoute === route || stats.takeoverError?.route === route)) {
             clearTakeoverFailure();
             stats.lastError = "";
           }
+          // The compatibility mode names a quality it does not know "native" (Bilibili's own).
           stats.quality = next.quality || stats.quality;
           stats.bufferedAhead = Number(next.bufferedAhead) || 0;
           if (typeof next.lastError === "string") stats.lastError = next.lastError.slice(0, 180);
@@ -1917,11 +1875,6 @@
       syncFrameWatch();
       const serversChanged = settings.mode === "custom" && previous.customHosts.join(",") !== settings.customHosts.join(",");
       if (!hadLoadedSettings || previous.enabled !== settings.enabled || previous.takeover !== settings.takeover || previous.mode !== settings.mode || previous.concurrency !== settings.concurrency || previous.autoConcurrency !== settings.autoConcurrency || serversChanged) {
-        const cdn = settings.mode === "overseas" ? "海外 CDN"
-          : settings.mode !== "custom" ? "大陆 CDN"
-            : settings.customHosts.length ? `自定义的 ${settings.customHosts.length} 个服务器` : "大陆 CDN（自定义里还没选服务器）";
-        const threads = settings.autoConcurrency ? `线程数自动调整（当前 ${autoThreads?.threads() || 8}，8 到 64）` : `开启 ${settings.concurrency} 条下载线程`;
-        notices?.log("设置已经生效", `${settings.takeover === "compat" ? "兼容模式" : "全接管"}，使用${cdn}，${threads}。`, "success", "", undefined, "settings");
         remember("settings applied", `${settings.takeover === "compat" ? "compat" : "full"}, ${settings.mode === "overseas" ? "overseas" : settings.mode === "custom" ? `custom ${settings.customHosts?.length || 0}` : "mainland"}, threads ${settings.autoConcurrency ? "auto" : settings.concurrency}`);
       }
       stats.autoThreads = settings.autoConcurrency ? autoThreads?.threads() || 0 : 0;
