@@ -66,8 +66,16 @@
     cdnHosts: [],
     lastHost: "",
     lastError: "",
+    lastErrorAt: null,
     takeoverError: null
   };
+  // What the module did, in English for the diagnostic copy (diagnostic-report.js), next to
+  // the Chinese notices for the screen; error messages go in as they were thrown.
+  const events = [];
+  function remember(level, what, detail = "") {
+    events.push({ at: Math.round(performance.now()), level, what, detail: String(detail).slice(0, 200) });
+    if (events.length > 60) events.shift();
+  }
   const activeTransfers = new Map();
   let transferSequence = 1;
   let publishTimer = null;
@@ -112,7 +120,10 @@
     if (context?.key === key) return context;
     dropContext();
     const pool = core.createHostPool({
-      onBan(host) { notices?.log("已停用一个直播节点", `${host} 两次没有返回数据，这个直播接下来不再使用它。`, "error", "", "live", "download"); }
+      onBan(host) {
+        notices?.log("已停用一个直播节点", `${host} 两次没有返回数据，这个直播接下来不再使用它。`, "error", "", "live", "download");
+        remember("warn", "node banned", `${host}, 2 failures with no data`);
+      }
     });
     let origin = "";
     try { origin = new URL(playlistUrl).hostname; } catch (_error) {}
@@ -124,6 +135,7 @@
     context = { key, pool, cache: new Map(), lastNum: 0, mapUrl: "", probing: false, speculativeMisses: 0, prefetchQueue: [], inflightPrefetch: 0, urgentInflight: 0, abort: new AbortController() };
     stats.playerState = "ready";
     notices?.log("已接管这个直播", "直播分片改为多节点竞速下载，并提前缓存即将播放的分片。", "success", "", "live", "takeover");
+    remember("info", "took over", origin ? `stream from ${origin}` : "");
     schedulePublish();
     return context;
   }
@@ -402,7 +414,9 @@
     } catch (error) {
       if (error?.name === "AbortError") throw error;
       stats.lastError = String(error?.message || error).slice(0, 160);
+      stats.lastErrorAt = Math.round(performance.now());
       notices?.log("直播分片下载失败", `${stats.lastError}\n这一片交回给 B 站原来的连接。`, "error", "seg-fallback", "live", "download");
+      remember("warn", "segment failed", stats.lastError);
       schedulePublish();
       return nativeFetch(input, init);
     } finally {
@@ -493,6 +507,7 @@
       if (!settingsLoaded || previous.enabled !== settings.enabled || previous.liveEnabled !== settings.liveEnabled) {
         settingsLoaded = true;
         notices?.log("直播加速设置已生效", liveOn() ? "直播分片使用多节点竞速下载。" : "直播加速已关闭，使用 B 站原来的连接。", "success", "", "live", "settings");
+        remember("info", "settings applied", liveOn() ? "on" : "off");
       }
       if (!liveOn()) {
         dropContext();
@@ -516,6 +531,7 @@
         hosts: context.pool.status()
       },
       getStats: () => ({ ...stats }),
+      getEvents: () => events.map((event) => ({ ...event })),
       version: "__BTR_VERSION__"
     })
   });

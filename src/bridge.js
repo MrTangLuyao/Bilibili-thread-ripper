@@ -216,7 +216,38 @@
     const target = site.domesticAddress(location.href);
     if (!target) return;
     if (site.mayRedirect()) location.replace(target);
-    else console.warn("BTR：B 站一直把这个标签页送回国际版（可能是账号只能用国际版），这个标签页先不再跳转。");
+    else {
+      document.documentElement.dataset.btrSiteGaveUp = "true";
+      console.warn("BTR：B 站一直把这个标签页送回国际版（可能是账号只能用国际版），这个标签页先不再跳转。");
+    }
+  }
+
+  // Once Bilibili's page code knows who is signed in, it may send a domestic page on to the
+  // same page on the international site. For a signed-in viewer it decides by the account (its
+  // default_sites cookie) and not by user_site, so the page went back and forth until the
+  // trips back stopped, and stayed international (#68). With 阻止使用国际版 on, that one
+  // navigation is cancelled where the browser lets a page do so (the Navigation API); nothing
+  // of Bilibili's is changed. It is registered before Bilibili's code runs; until the settings
+  // are in, this site's copy of them decides.
+  function blockingInternational() {
+    if (loaded) return latestSettings.enabled !== false && latestSettings.blockInternational === true;
+    try {
+      const copy = JSON.parse(localStorage.getItem("BTR_Userscript.sync") || "{}");
+      return copy?.enabled !== false && copy?.blockInternational === true;
+    } catch (_error) { return false; }
+  }
+  if (site?.isSiteRedirect && window.top === window && typeof globalThis.navigation?.addEventListener === "function") {
+    let blocked = 0;
+    globalThis.navigation.addEventListener("navigate", (event) => {
+      if (!event.cancelable || event.navigationType === "traverse" || event.hashChange || event.downloadRequest) return;
+      if (!blockingInternational() || !site.isSiteRedirect(event.destination?.url, location.href)) return;
+      event.preventDefault();
+      site.keepDomestic();
+      blocked += 1;
+      document.documentElement.dataset.btrSiteRedirectsBlocked = String(blocked);
+    });
+    // For the diagnostic copy (settings-panel.js): the guard is in place on this page.
+    if (document.documentElement) document.documentElement.dataset.btrSiteGuard = "on";
   }
 
   chrome.storage.sync.get(null, (stored) => {

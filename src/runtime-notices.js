@@ -14,6 +14,22 @@
   let lastProgress = -Infinity;
   let lastReportedPlaying = null;
   const pending = new Map();
+  // The element's own events, in English, for the diagnostic copy (diagnostic-report.js): the
+  // notices above are Chinese and only for the screen. Kept with Debug 模式 on or off, like the
+  // notices, and capped so a stuttering stream cannot crowd out everything else; a repeat of
+  // the same event within a second only counts up.
+  const media = [];
+  const MEDIA_LIMIT = 150;
+  function remember(name, detail = "") {
+    const at = Math.round(performance.now());
+    const last = media.at(-1);
+    if (last && last.name === name && last.detail === detail && at - last.at < 1000) {
+      last.count = (last.count || 1) + 1;
+      return;
+    }
+    media.push({ at, name, time: Math.round((Number(attachment?.video?.currentTime) || 0) * 10) / 10, detail });
+    if (media.length > MEDIA_LIMIT) media.shift();
+  }
 
   function post(type, payload) {
     root.postMessage({ channel: CHANNEL, type, payload }, "*");
@@ -33,10 +49,11 @@
     pending.clear();
   }
 
-  // Every message is kept, with Debug 模式 on or off: the diagnostic copy carries the recent
-  // ones (settings-panel.js), so a problem can be reported right after it happened, without
-  // switching anything on and making it happen again. Only the on-screen view
-  // (notification-view.js) asks whether Debug 模式 is on.
+  // Every message is published, with Debug 模式 on or off; only the on-screen view
+  // (notification-view.js) asks whether Debug 模式 is on. The diagnostic copy does not carry
+  // these Chinese messages: it reads English records kept next to them (remember above, and
+  // the page events in page-hook.js), so a problem can still be reported right after it
+  // happened, without switching anything on and making it happen again.
   function log(title, detail = "", level = "info", group = "", route = attachment?.route || "", category = "other") {
     category = ["takeover", "playback", "download", "buffer", "settings", "other"].includes(category) ? category : "other";
     if (!settings.enabled) return;
@@ -69,6 +86,8 @@
     const playing = valid && !video.paused && !video.ended && !video.seeking && !video.error && video.readyState >= 2 && now - lastProgress < 1800;
     if (force || playing !== lastReportedPlaying) {
       if (valid && playing !== lastReportedPlaying) log(playing ? "画面正在正常播放" : "加速已接管，正在等视频播放", `当前播放到 ${time.toFixed(2)} 秒。`, playing ? "success" : "info", "", attachment?.route || "", "playback");
+      // The first sample after attaching only says where the watch started.
+      if (valid && lastReportedPlaying !== null && playing !== lastReportedPlaying) remember("progress", playing ? "advancing" : "not advancing");
       lastReportedPlaying = playing;
     }
     // Heartbeats let the isolated UI expire status if the page hook disappears.
@@ -104,6 +123,8 @@
         const detail = `当前播放到 ${Number(video.currentTime).toFixed(2)} 秒。${name === "error" ? `\n${errorReason}。\n${video.error?.message || ""}` : ""}`;
         const level = name === "error" ? "error" : ["playing", "seeked", "ended", "loadedmetadata", "canplay"].includes(name) ? "success" : "info";
         log(EVENT_LABELS[name], detail, level, "", captured.route, category);
+        remember(name, name === "error" ? `code ${video.error?.code || 0}${video.error?.message ? `: ${video.error.message}` : ""}`
+          : name === "ratechange" ? `${Math.round((Number(video.playbackRate) || 0) * 100) / 100}x` : "");
         sample(true);
       }, { signal: controller.signal });
     }
@@ -114,6 +135,7 @@
 
   root.__BTR_RUNTIME_NOTICES__ = Object.freeze({
     log,
+    history: () => media.map((entry) => ({ ...entry })),
     configure(next) {
       const changed = settings.enabled !== (next.enabled !== false);
       const wasDebug = settings.enabled && settings.debugNotices;

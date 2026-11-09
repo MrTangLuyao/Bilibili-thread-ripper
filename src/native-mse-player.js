@@ -120,10 +120,16 @@
     catch (_error) { return false; }
   }
 
-  // preferredQuality is the quality chosen in the native menu; 0 is "auto" and keeps the
-  // quality the playinfo itself asks for. preferredCodec is the codec chosen there, "" for
-  // "默认". preferredAudio is the audio chosen there (see normalizeAudio).
-  function selectRepresentations(playinfo, preferredQuality = 0, preferredCodec = "", preferredAudio = 0) {
+  // The height of each quality, for a quality this browser cannot play in the codecs given.
+  const QUALITY_HEIGHTS = Object.freeze({ 127: 4320, 126: 2160, 125: 2160, 120: 2160, 116: 1080, 112: 1080, 80: 1080, 74: 720, 64: 720, 32: 480, 16: 360, 6: 240 });
+
+  // preferredQuality is the quality chosen in the native menu, 0 for 自动. In 自动 the menu shows
+  // the quality the native player picked itself (autoQuality, its realQ); the playinfo only
+  // names the one it was asked for, which the native player soon leaves (#69). Without it the
+  // quality already playing (currentId) stays, then the playinfo's own. preferredCodec is the
+  // codec chosen there, "" for "默认". preferredAudio is the audio chosen there (see
+  // normalizeAudio).
+  function selectRepresentations(playinfo, preferredQuality = 0, preferredCodec = "", preferredAudio = 0, autoQuality = 0, currentId = 0) {
     const body = dashBody(playinfo);
     const dash = body?.dash;
     if (!dash) throw new Error("页面没有 DASH 播放清单");
@@ -150,9 +156,16 @@
     const audio = audioOf(picked) || audioOf(dash.audio) || audioOf(dash.flac?.audio) || audioOf(dash.dolby?.audio);
     if (!videos.length || !audio) throw new Error("浏览器不支持清单中的视频或音频编码");
     const requestedQuality = Number(body?.quality || body?.qn) || 0;
-    const preferred = [Number(preferredQuality) || 0, requestedQuality]
-      .map((quality) => quality && videos.find((item) => Number(item.id) === quality))
-      .find(Boolean)
+    const byId = (quality) => (quality ? videos.find((item) => Number(item.id) === quality) : null);
+    const chosen = Number(preferredQuality) || 0;
+    const shown = chosen ? 0 : Number(autoQuality) || 0;
+    // The quality shown, or the best this browser plays at or below its height.
+    const shownHeight = shown ? Number((dash.video || []).find((item) => Number(item.id) === shown)?.height) || QUALITY_HEIGHTS[shown] || 0 : 0;
+    const preferred = byId(chosen)
+      || byId(shown)
+      || (shownHeight ? videos.find((item) => (Number(item.height) || 0) <= shownHeight) : null)
+      || (!chosen && !shown ? byId(Number(currentId) || 0) : null)
+      || byId(requestedQuality)
       || videos.find((item) => (Number(item.height) || 0) <= 2160)
       || videos[0];
     return { audio, dash, preferred, videos };
@@ -388,7 +401,9 @@
     let preferredQuality = Math.max(0, Math.trunc(Number(options.preferredQuality)) || 0);
     let preferredCodec = normalizeCodec(options.preferredCodec);
     const preferredAudio = normalizeAudio(options.preferredAudio);
-    let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec, preferredAudio);
+    // In 自动, the quality the native player shows (see selectRepresentations).
+    let autoQuality = Math.max(0, Math.trunc(Number(options.autoQuality)) || 0);
+    let selection = selectRepresentations(currentPlayinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality);
     // The two representation objects the running session downloads from. Its resolvers keep
     // reading them, so fresh addresses always go into these two and never into a newer
     // selection's copies.
@@ -419,6 +434,7 @@
       seekStartedAt = 0;
       seekSettledAt = performance.now();
       stallsAfterSeek = 0;
+      note("seek settled", `${Math.round(lastSeekMs)} ms`);
       options.onLog?.("跳转后的数据准备好了", `从点击进度条到可以继续播放用了 ${Math.round(lastSeekMs)} 毫秒。`, "success", "buffer");
     }
     // The initialization segment and the index of a representation never change, and a later
@@ -690,6 +706,7 @@
         if (!sessionIsCurrent(candidate)) throw new DOMException("播放任务已取消", "AbortError");
         const parsed = sidxTools.parseSidx(indexBytes.bytes, ranges.index.start);
         if (!parsed?.segments?.length) throw new Error(`${kind === "video" ? "视频" : "音频"} SIDX 解析失败`);
+        note("index parsed", `${kind} ${parsed.segments.length} segments`);
         options.onLog?.("已经确认数据的下载位置", `找到了 ${parsed.segments.length} 段${kind === "audio" ? "声音" : "画面"}数据。`, "success", "download");
         header = { initialization: initialization.bytes, sidx: parsed };
         trackHeaders.set(headerKey, header);
@@ -995,7 +1012,10 @@
         else if (sessionIsCurrent(candidate)) {
           // A buffer that just started updating is retried. Say so if it keeps failing.
           candidate.endAttempts = (candidate.endAttempts || 0) + 1;
-          if (candidate.endAttempts === 40) options.onLog?.("视频结尾没能正常收尾", `结束媒体流一直失败，播放器可能停在结尾。\n原因：${String(error?.message || error).slice(0, 160)}`, "error", "playback");
+          if (candidate.endAttempts === 40) {
+            note("end of stream failed", `${candidate.endAttempts} attempts: ${String(error?.message || error).slice(0, 160)}`);
+            options.onLog?.("视频结尾没能正常收尾", `结束媒体流一直失败，播放器可能停在结尾。\n原因：${String(error?.message || error).slice(0, 160)}`, "error", "playback");
+          }
           candidate.endRetryTimer = setTimeout(() => maybeEndStream(candidate), 50);
         }
       });
@@ -1019,6 +1039,8 @@
         const text = String(node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160);
         if (!text || text === reportedNativeError) continue;
         reportedNativeError = text;
+        // Bilibili's own words; the report keeps only their numbers (an error code).
+        note("Bilibili error overlay", text);
         options.onLog?.("B 站原生播放器报错", `线程撕裂者接管时，B 站自己的播放内核不再下载视频，这类报错通常可以忽略。\n原文：${text}`, "info", "playback");
       }
     }
@@ -1056,6 +1078,7 @@
         candidate.resumeWanted = false;
         candidate.ownPauses += 1;
         video.dispatchEvent(new Event("pause"));
+        note("autoplay refused", String(error?.message || error?.name || "NotAllowedError").slice(0, 160));
         options.onLog?.("浏览器没有让视频自动播放", "点一下播放键就能继续。", "info", "playback");
       });
     }
@@ -1135,6 +1158,7 @@
             candidate.seekPending = false;
             noteSeekSettled();
           }
+          note("rebuffer done", `${ahead.toFixed(1)} s ahead`);
           options.onLog?.("缓冲补好了，可以继续播放", `已经备好接下来 ${ahead.toFixed(1)} 秒的数据。`, "success", "buffer");
           candidate.playAttempted = false;
           attemptAutoplay(candidate);
@@ -1199,7 +1223,8 @@
       selectedVideo = representation;
       selectedAudio = audio;
       sessionStarts += 1;
-      note("session", `${qualityLabel(representation)} ${codecFamily(representation)} from ${Number(playbackState.time || 0).toFixed(1)}`);
+      // The quality by its id: the label is for the screen (1080P 60帧).
+      note("session", `qn ${Number(representation?.id) || 0} ${codecFamily(representation)} from ${Number(playbackState.time || 0).toFixed(1)}`);
       const mediaSource = new MediaSource();
       ownMediaSources.add(mediaSource);
       const objectUrl = URL.createObjectURL(mediaSource);
@@ -1354,6 +1379,7 @@
         return;
       }
       if (candidate.tracks.every((track) => isBufferedAt(track.sourceBuffer, target))) {
+        note("seek inside buffer", `to ${target.toFixed(1)}`);
         options.onLog?.("你跳到的位置已经有缓冲", `可以直接从 ${target.toFixed(2)} 秒继续播放。`, "success", "buffer");
         ensureBuffer(candidate);
         return;
@@ -1585,9 +1611,11 @@
       catch (_error) { return false; }
     }
 
-    async function updatePlayinfo(playinfo) {
+    async function updatePlayinfo(playinfo, leavingHandPick = false) {
       if (destroyed) return;
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio);
+      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays, unless
+      // it is a quality picked by hand that the viewer just left for 自动.
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality || leavingHandPick ? 0 : Number(selectedVideo?.id) || 0);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -1612,7 +1640,16 @@
     async function setQuality(quality) {
       const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
       if (destroyed || wanted === preferredQuality) return;
+      const leavingHandPick = !wanted && preferredQuality > 0;
       preferredQuality = wanted;
+      await updatePlayinfo(currentPlayinfo, leavingHandPick);
+    }
+
+    // In 自动 the native player may settle on another quality (see selectRepresentations).
+    async function setAutoQuality(quality) {
+      const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
+      if (destroyed || wanted === autoQuality) return;
+      autoQuality = wanted;
       await updatePlayinfo(currentPlayinfo);
     }
 
@@ -1714,6 +1751,7 @@
       destroy,
       setCodec,
       setQuality,
+      setAutoQuality,
       updatePlayinfo,
       urlDeadlineSeconds,
       ownsMediaUrl,
@@ -1723,7 +1761,12 @@
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
+        // Every quality the playinfo offers, whether this browser plays it or not.
+        qualities: [...new Set((selection.dash?.video || []).map((item) => Number(item?.id) || 0).filter(Boolean))].sort((a, b) => b - a),
+        // The element's own paused state; video.paused answers for the page (see above).
+        elementPaused: elementPaused(),
         preferredQuality,
+        autoQuality,
         preferredCodec,
         preferredAudio,
         codecFailuresBlocked: codecFailures.blocked,

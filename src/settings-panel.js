@@ -457,52 +457,105 @@
   // bridge.js sends the stored settings when they load or change, and the page its stats.
   let latestSettings = null;
   let latestStats = null;
-  // BTR's messages on this page, newest last, for the diagnostic copy: they are all kept, Debug
-  // 模式 on or off (runtime-notices.js). The download threads send many more than everything
-  // else together, so only their latest stay; their errors are kept like any other message.
-  const noticeHistory = [];
-  const HISTORY_LIMIT = 200;
-  const DOWNLOAD_HISTORY_LIMIT = 40;
-  function keepNotice(item) {
-    noticeHistory.push(item);
-    const downloads = noticeHistory.filter((entry) => entry.category === "download" && entry.level !== "error");
-    if (downloads.length > DOWNLOAD_HISTORY_LIMIT) noticeHistory.splice(noticeHistory.indexOf(downloads[0]), 1);
-    if (noticeHistory.length > HISTORY_LIMIT) noticeHistory.shift();
-  }
 
-  // Everything needed to look into a report, as text to paste into an issue. The page's own
-  // reports already leave out download addresses and account data; any address that is left
-  // is cut down to its host and path, so no signature or token goes along.
+  // Everything needed to look into a report, as English text to paste into an issue. This only
+  // gathers the facts; diagnostic-report.js lays them out (and translates what is left in
+  // Chinese, such as BTR's own error messages). The facts carry no cookie values, no account
+  // and no download address: only the derived site choices, whether someone is signed in, and
+  // node names. A source that cannot be read leaves its part empty and says why in readErrors.
   function diagnostics() {
-    const safely = (read) => { try { return read(); } catch (error) { return `读取失败：${String(error?.message || error)}`; } };
-    const parse = (text) => { try { return JSON.parse(text); } catch (_error) { return text; } };
-    const sections = [
-      ["环境", {
-        BTR: "__BTR_VERSION__",
-        渠道: CHANNEL_NAMES[SCRIPT_CHANNEL],
-        同时启用: otherScript() ? CHANNEL_NAMES[otherScript()] || otherScript() : "没有",
-        脚本管理器: document.documentElement?.getAttribute("data-btr-userscript-manager") || "未知",
-        浏览器: navigator.userAgent,
-        页面: `${location.origin}${location.pathname}`,
-        时间: new Date().toISOString(),
-        语言: navigator.language,
-        窗口: `${root.innerWidth}x${root.innerHeight}`
-      }],
-      ["设置", latestSettings || "设置还没加载"]
-    ];
-    const video = root.__biliThreadRipperDebug;
-    if (typeof video?.report === "function") sections.push(["视频接管", safely(() => parse(video.report()))]);
-    const auto = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency;
-    if (typeof auto?.status === "function") sections.push(["自动线程数", safely(() => auto.status())]);
-    // The live player often sits in a live.bilibili.com iframe, where its module runs.
-    const liveModules = [root, ...[...document.querySelectorAll("iframe")].map((frame) => safely(() => frame.contentWindow))]
-      .map((view) => safely(() => view?.__biliThreadRipperLiveDebug)).filter((api) => api && typeof api.getStats === "function");
-    liveModules.forEach((api, index) => sections.push([liveModules.length > 1 ? `直播模块 ${index + 1}` : "直播模块", safely(() => ({ stats: api.getStats(), context: api.getContext?.() }))]));
-    sections.push(["最近的 Debug 提示", noticeHistory.length
-      ? noticeHistory.map((item) => `${new Date(item.at).toISOString().slice(11, 19)} [${item.level}/${item.category}] ${item.title}${item.count > 1 ? ` ×${item.count}` : ""}${item.detail ? ` — ${item.detail}` : ""}`).join("\n")
-      : "（还没有）"]);
-    const text = sections.map(([title, value]) => `## ${title}\n${typeof value === "string" ? value : JSON.stringify(value, null, 1)}`).join("\n\n");
-    return text.replace(/(https?:\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
+    const readErrors = [];
+    const errorText = (error) => String(error?.message || error?.name || error || "unknown error").slice(0, 160);
+    const read = (name, fact, fallback = null) => {
+      try { return fact(); } catch (error) {
+        readErrors.push(`${name}: ${errorText(error)}`);
+        return fallback;
+      }
+    };
+    const cookie = (name) => {
+      const value = (new RegExp(`(?:^|;\\s*)${name}=([^;]*)`).exec(document.cookie) || [])[1];
+      if (value === undefined) return undefined;
+      try { return decodeURIComponent(value); } catch (_error) { return value; }
+    };
+    const snapshot = {
+      capturedAt: Date.now(),
+      timeOrigin: performance.timeOrigin,
+      now: performance.now(),
+      btr: read("btr", () => ({
+        version: "__BTR_VERSION__",
+        channel: SCRIPT_CHANNEL,
+        otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
+        scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
+        host: hostApp ? "desktop" : "userscript"
+      })),
+      env: read("env", () => ({ userAgent: navigator.userAgent, language: navigator.language, viewport: `${root.innerWidth}x${root.innerHeight}`, page: `${location.origin}${location.pathname}` })),
+      settings: latestSettings ? { ...latestSettings } : null,
+      // Which site Bilibili shows and why (#68). The site cookies only as the choices they
+      // stand for; signed in or not, never who.
+      site: read("site", () => {
+        const marks = document.documentElement?.dataset || {};
+        const userSite = String(cookie("user_site") ?? "").toUpperCase();
+        let accountSites = null;
+        try {
+          const sites = JSON.parse(cookie("default_sites") ?? "null");
+          if (Array.isArray(sites)) accountSites = sites.map((item) => (["CN", "OVERSEAS"].includes(String(item).toUpperCase()) ? String(item).toUpperCase() : "other"));
+        } catch (_error) {}
+        const lang = cookie("lang") ?? "";
+        return {
+          international: Boolean(root.__BTR_BILIBILI_SITE__?.domesticAddress(location.href)),
+          signedIn: /(?:^|;\s*)DedeUserID=/.test(document.cookie),
+          userSite: ["", "CN", "OVERSEAS"].includes(userSite) ? userSite : "other",
+          accountSites,
+          lang: /^[A-Za-z]{1,8}(?:[-_][A-Za-z0-9]{1,8}){0,3}$/.test(lang) || !lang ? lang : "other",
+          // bridge.js marks the page once it watches for the trips to the international site.
+          guard: marks.btrSiteGuard === "on" ? "on" : typeof root.navigation?.addEventListener === "function" ? "off" : "unsupported",
+          redirectsBlocked: Number(marks.btrSiteRedirectsBlocked) || 0,
+          gaveUp: marks.btrSiteGaveUp === "true"
+        };
+      }),
+      // The video takeover runs on the www and m pages only (page-hook.js).
+      video: read("video", () => {
+        const api = root.__biliThreadRipperDebug;
+        return typeof api?.report === "function" ? JSON.parse(api.report()) : null;
+      }),
+      stats: read("stats", () => root.__biliThreadRipperDebug?.getStats?.() ?? null),
+      autoThreads: read("autoThreads", () => root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency?.status?.() ?? null),
+      media: read("media", () => root.__BTR_RUNTIME_NOTICES__?.history?.() ?? [], []),
+      live: read("live", () => {
+        // The live player often sits in a live.bilibili.com iframe, where its module runs with
+        // its own clock. Another site's frame cannot be read, and is no module of ours.
+        const modules = [];
+        const views = [root];
+        for (const frame of document.querySelectorAll("iframe")) {
+          try { if (frame.contentWindow) views.push(frame.contentWindow); } catch (_error) {}
+        }
+        let frames = 0;
+        for (const view of views) {
+          let api = null;
+          try { api = view.__biliThreadRipperLiveDebug; } catch (_error) {}
+          if (!api || typeof api.getStats !== "function") continue;
+          const frame = view === root ? "top" : `iframe ${++frames}`;
+          read(`live ${frame}`, () => modules.push({
+            frame,
+            timeOriginDelta: Math.round((Number(view.performance?.timeOrigin) || performance.timeOrigin) - performance.timeOrigin),
+            stats: api.getStats(),
+            context: api.getContext?.() ?? null,
+            events: api.getEvents?.() ?? []
+          }));
+        }
+        return modules;
+      }, []),
+      readErrors
+    };
+    try {
+      const formatter = root.__BTR_DIAGNOSTIC_REPORT__;
+      if (typeof formatter?.render !== "function") throw new Error("the formatter is not loaded");
+      return String(formatter.render(snapshot));
+    } catch (error) {
+      // The facts as they are, still without any address's query or text in Chinese.
+      const text = `BTR diagnostics: formatter failed: ${errorText(error)}\n${JSON.stringify(snapshot, null, 1)}`;
+      return text.replace(/((?:https?:)?\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1").replace(/[^\x00-\x7f]/g, "?");
+    }
   }
   const post = (type, payload) => root.postMessage({ channel: CHANNEL, type, payload }, "*");
 
@@ -1206,10 +1259,6 @@
       current?.render(latestSettings);
     } else if (event.data.type === "stats") {
       latestStats = event.data.payload;
-    } else if (event.data.type === "debug-notices") {
-      for (const item of [].concat(event.data.payload || [])) {
-        keepNotice({ at: Number(item?.at) || Date.now(), level: String(item?.level || "info"), category: String(item?.category || "other"), title: String(item?.title || ""), detail: String(item?.detail || ""), count: Number(item?.count) || 1 });
-      }
     } else if (event.data.type === "open-settings" && root.top === root) {
       // "自定义" in the gear menu: the custom servers are under 高级设置.
       open({ advanced: true });

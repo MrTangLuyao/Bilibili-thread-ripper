@@ -52,6 +52,21 @@ test("an explicitly chosen 8K representation is used; auto avoids 8K",()=>{
   assert.equal(Number(factory.selectRepresentations(noRequested,0,"").preferred.id),120,"otherwise auto stays at 4K or below");
 });
 
+test("自动 plays the quality the native player shows, not the one the playinfo asked for (#69)",()=>{
+  const factory=load(["avc1.64002a"]);
+  const playinfo={data:{quality:64,dash:{
+    video:[video(116,"avc1.64002a",1080),video(80,"av01.0.08M.08",1080),video(80,"avc1.640028",1080),video(64,"av01.0.05M.08",720),video(32,"avc1.64001f",480)],
+    audio:[audio(30280,"mp4a.40.2",320000)]
+  }}};
+  const pick=(...args)=>{const chosen=factory.selectRepresentations(playinfo,...args).preferred;return `${chosen.id} ${chosen.codecs}`;};
+  assert.equal(pick(0,"",0,80),"80 av01.0.08M.08","the shown quality, in the preferred codec");
+  assert.equal(pick(0,"",0,0),"64 av01.0.05M.08","not known yet: the playinfo's own, as before");
+  assert.equal(pick(32,"",0,80),"32 avc1.64001f","a quality chosen by hand wins");
+  assert.equal(pick(0,"",0,116),"80 av01.0.08M.08","a shown quality this browser cannot play: the best at or below its height");
+  assert.equal(pick(0,"",0,0,32),"32 avc1.64001f","not known: the quality already playing stays when the playinfo is refreshed");
+  assert.equal(pick(0,"",0,80,32),"80 av01.0.08M.08","known: the shown quality wins over the one playing");
+});
+
 test("playback deadlines are absolute and account for playback speed",()=>{
   const factory=load([]);
   assert.equal(factory.playbackDeadlineAt(10,4,2,1000),4000,"six media seconds at 2x are three wall-clock seconds");

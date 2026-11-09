@@ -36,20 +36,43 @@
     return isLanguage(first) ? `/${rest.join("/")}` : String(pathname || "/");
   }
 
-  // The same page on the domestic site, or "" when this already is one.
+  // The same page on the domestic site, or "" when this already is one. Space pages have an
+  // international site too (space.bilibili.com/en/2); there only the site's own languages are
+  // taken off, as its router has them.
   function domesticAddress(href) {
     let url;
     try { url = new URL(String(href)); } catch (_error) { return ""; }
-    if (url.hostname !== "www.bilibili.com") return "";
-    let changed = false;
-    const path = withoutLanguage(url.pathname);
-    if (path !== url.pathname) { url.pathname = path; changed = true; }
-    if (String(url.searchParams.get("site") || "").toUpperCase() === "OVERSEAS") {
-      url.searchParams.delete("site");
-      url.searchParams.delete("lang");
-      changed = true;
-    }
-    return changed ? url.href : "";
+    let path = url.pathname;
+    if (url.hostname === "www.bilibili.com") path = withoutLanguage(path);
+    else if (url.hostname === "space.bilibili.com") {
+      const [, first = "", ...rest] = path.split("/");
+      if (KNOWN.includes(first.toLowerCase())) path = `/${rest.join("/")}`;
+    } else return "";
+    if (path === url.pathname && String(url.searchParams.get("site") || "").toUpperCase() !== "OVERSEAS") return "";
+    url.pathname = path;
+    url.search = withoutSiteParameters(url.search);
+    return url.href;
+  }
+
+  // The query without the international site's own parameters (site=, lang=), the rest kept as
+  // written, as Bilibili's page code does.
+  function withoutSiteParameters(search) {
+    const kept = String(search || "").replace(/^\?/, "").split("&").filter((part) => !/^(site|lang)=/i.test(part));
+    return kept.join("&") ? `?${kept.join("&")}` : "";
+  }
+
+  // Whether a navigation goes from a domestic page to the same page on the international
+  // site: the redirect Bilibili's page code makes once it knows who is signed in. For a signed-
+  // in viewer it decides by the account (its default_sites cookie) and not by user_site, so
+  // keeping user_site on CN does not stop it (#68).
+  function isSiteRedirect(destination, current) {
+    let from, to;
+    try { from = new URL(String(current)); to = new URL(String(destination)); } catch (_error) { return false; }
+    if (from.host !== to.host || domesticAddress(from.href)) return false;
+    const twin = domesticAddress(to.href);
+    if (!twin) return false;
+    const page = (url) => { const parsed = new URL(url); return `${parsed.pathname.replace(/\/+$/, "") || "/"}${withoutSiteParameters(parsed.search)}`; };
+    return page(twin) === page(from.href);
   }
 
   function readCookie(name) {
@@ -96,5 +119,5 @@
     return chars.join("");
   }
 
-  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, keepDomestic, stopKeepingDomestic, mayRedirect, avToBv });
+  root.__BTR_BILIBILI_SITE__ = Object.freeze({ isLanguage, withoutLanguage, domesticAddress, isSiteRedirect, keepDomestic, stopKeepingDomestic, mayRedirect, avToBv });
 })(globalThis);

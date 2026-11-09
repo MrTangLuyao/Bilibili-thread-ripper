@@ -10,8 +10,8 @@ const net = require("node:net");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const unit = ["shared-core-test", "vod-selection-test", "auto-concurrency-test", "live-core-test", "optimization-test", "canary-test", "contributors-test", "bilibili-site-test"];
-const browser = ["notification-smoke-test", "notification-error-test", "userscript-test", "regression-smoke-test"];
+const unit = ["shared-core-test", "vod-selection-test", "auto-concurrency-test", "live-core-test", "optimization-test", "canary-test", "contributors-test", "bilibili-site-test", "diagnostic-report-test"];
+const browser = ["notification-smoke-test", "notification-error-test", "userscript-test", "regression-smoke-test", "international-site-test"];
 const network = process.env.BTR_TEST_BVID && process.env.BTR_TEST_CID ? ["native-mse-end-test"] : [];
 
 // `node dev/run-tests.js --list` prints the groups, for the workflow that runs them in parallel.

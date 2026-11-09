@@ -255,6 +255,23 @@ async function showMain(panel) {
     await page.waitForFunction(() => __userscriptTest.statusRequests > 0);
     assert.match(await panel.locator("#active-count").textContent(), /^\d+$/);
     await page.evaluate(() => __BTR_RUNTIME_NOTICES__.log("Debug 关闭时记下的错误", "这一小段没能下载下来", "error"));
+    // The diagnostic copy is English and carries no notices: it reads what BTR records next to
+    // them, Debug 模式 on or off. Two errors while it is off: a range that failed, through the
+    // page's own download path (the fake player is handed the same onTransfer as the real
+    // one), and an error event of the element.
+    await page.waitForFunction(() => __biliThreadRipperDebug.getPlayer()?.video && __userscriptTest.calls.length > 0 && __biliThreadRipperDebug.getStats().playerState === "ready");
+    await page.evaluate(() => {
+      const { onTransfer } = __userscriptTest.calls.at(-1).options;
+      const signed = "https://upos-sz-mirrorali.bilivideo.com/a.m4s?deadline=1&upsig=secret";
+      const id = onTransfer({ phase: "start", kind: "video", url: signed, totalBytes: 65536 });
+      onTransfer({ phase: "error", id, error: new Error(`Debug off test failure at ${signed}`) });
+      __biliThreadRipperDebug.getPlayer().video.dispatchEvent(new Event("error"));
+    });
+    const recorded = await page.evaluate(() => ({ report: __biliThreadRipperDebug.report(), media: __BTR_RUNTIME_NOTICES__.history() }));
+    assert.ok(JSON.parse(recorded.report).page.some(event => event.what === "range failed" && event.level === "warn"
+      && event.detail === "video upos-sz-mirrorali.bilivideo.com after 0 KiB: Debug off test failure at https://upos-sz-mirrorali.bilivideo.com/a.m4s"), "the failed range is not among the page events");
+    assert.equal(/upsig|deadline=/.test(recorded.report), false, "a signed address got into report()");
+    assert.ok(recorded.media.some(event => event.name === "error"), "the element's error event was not recorded");
     await page.waitForTimeout(600);
     assert.equal(await page.locator(".bubble").count(), 0);
     // The slider only counts once the automatic mode is switched off.
@@ -275,10 +292,20 @@ async function showMain(panel) {
     const github = panel.locator("#github-link");
     assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/MrTangLuyao/Bilibili-thread-ripper", "_blank"]);
     assert.equal(await panel.locator("h1").textContent(), "线程撕裂者");
-    // "复制诊断信息" copies what a bug report needs, the messages from before Debug 模式 was
-    // switched on included, without signed addresses.
-    // A download error stays in the copy, however many download messages come after it.
+    // "复制诊断信息" copies what a bug report needs, in English: the errors from before Debug 模式
+    // was switched on included, and no signed addresses.
+    // The errors stay in the copy, however many downloads come after them: 60 that finish and
+    // 60 copies that lose the race, which no longer leave an event each. The Chinese notices
+    // (one with a signed address) are for the screen and stay out of the copy.
     await page.evaluate(() => {
+      const { onTransfer } = __userscriptTest.calls.at(-1).options;
+      for (let i = 0; i < 60; i++) {
+        const done = onTransfer({ phase: "start", kind: "video", url: "https://upos-sz-mirrorhw.bilivideo.com/v.m4s?deadline=1&upsig=secret", totalBytes: 1024 });
+        onTransfer({ phase: "progress", id: done, bytes: 1024 });
+        onTransfer({ phase: "done", id: done });
+        const lost = onTransfer({ phase: "start", kind: "audio", url: "https://upos-sz-mirrorbd.bilivideo.com/a.m4s?deadline=1&upsig=secret", totalBytes: 1024 });
+        onTransfer({ phase: "cancel", id: lost, error: new DOMException("并发副本已取消", "AbortError") });
+      }
       __BTR_RUNTIME_NOTICES__.log("下载出错的提示", "原因：测试", "error", "", "", "download");
       for (let i = 0; i < 60; i++) __BTR_RUNTIME_NOTICES__.log("下载流水 " + i, "", "info", "flood-" + i, "", "download");
     });
@@ -289,17 +316,28 @@ async function showMain(panel) {
       __BTR_RUNTIME_NOTICES__.log("测试用的提示", "https://upos-sz-mirrorali.bilivideo.com/a.m4s?deadline=1&upsig=secret", "info", "", "", "download");
     });
     await page.waitForTimeout(400);
+    const counted = JSON.parse(await page.evaluate(() => __biliThreadRipperDebug.report())).downloads;
+    assert.deepEqual([counted.byKind.video, counted.byKind.audio], [{ started: 61, ok: 60, failed: 1, cancelled: 0, bytes: 61440 }, { started: 60, ok: 0, failed: 0, cancelled: 60, bytes: 0 }]);
+    assert.deepEqual(counted.cancelReasons, { 并发副本已取消: 60 });
     await panel.locator("#debug-copy").click();
     await page.waitForFunction(() => typeof window.__copied === "string");
     const copied = await page.evaluate(() => window.__copied);
-    for (const part of ["## 环境", `"BTR": "${version}"`, "## 设置", "## 视频接管", "## 最近的 Debug 提示", "测试用的提示", "Debug 关闭时记下的错误", "下载出错的提示"]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
+    assert.ok(copied.startsWith("BTR diagnostics (format 1) | "), "the copy does not start with its header");
+    for (const part of [`BTR ${version}`, "== Summary ==", "== Environment ==", "== Settings ==", "== Downloads ==", "== Events ==", "== End =="]) assert.ok(copied.includes(part), `the copy lacks ${part}`);
+    assert.match(copied, new RegExp(`^btr +${version.replace(/\./g, "\\.")} stable\\b`, "m"));
+    assert.match(copied, /^ *\d+\.\d{3} +WARN +page +.*range failed: video upos-sz-mirrorali\.bilivideo\.com after 0 KiB: Debug off test failure at https:\/\/upos-sz-mirrorali\.bilivideo\.com\/a\.m4s/m, "the failed range is not in the copy");
+    assert.match(copied, /^ *\d+\.\d{3} +[A-Z]+ +media +.*\berror\b/m, "the element's error event is not in the copy");
+    assert.match(copied, /^video +61 started, 60 ok, 1 failed, 0 cancelled\b/m);
+    assert.match(copied, /^audio +60 started, 0 ok, 0 failed, 60 cancelled\b/m);
     assert.equal(/upsig|deadline=/.test(copied), false, "a signed address got into the copy");
+    const notAscii = copied.split("\n").find(line => /[^\x00-\x7f]/.test(line));
+    assert.equal(notAscii, undefined, `the copy is not plain English text: ${notAscii}`);
     // The button says so in place for a moment, then goes back.
     assert.equal(await panel.locator("#debug-copy").textContent(), "已复制");
     assert.equal(await panel.locator("#debug-copy-status").textContent(), "");
     await page.waitForTimeout(2700);
     assert.equal(await panel.locator("#debug-copy").textContent(), "复制诊断信息");
-    console.log("PASS 设置面板：开关、线程、Debug 模式和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息里有 Debug 关闭时记下的消息，没有带签名的地址");
+    console.log("PASS 设置面板：开关、线程、Debug 模式和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息是英文的，里面有 Debug 关闭时记下的错误，没有带签名的地址");
 
     // Closing stops the status polling; opening again starts clean.
     await page.keyboard.press("Escape");

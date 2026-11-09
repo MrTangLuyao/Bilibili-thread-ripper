@@ -27,20 +27,75 @@
   let settingsLoaded = false;
   let player = null;
   let playerRoute = "";
+
+  // What happened to the takeover on this page: each player keeps its own timeline, which is
+  // gone once it is replaced, and that is exactly when a report is needed (a video that went
+  // black and came back at another position). Positions, states and failures only, in
+  // English: the diagnostic copy prints them as they are (diagnostic-report.js translates the
+  // error messages), while the Chinese notices next to them are only for the screen.
+  // level is debug, info, warn or error. One kind of event cannot crowd out the others: each
+  // keeps its newest 30, and a full list gives up its oldest debug and info entries first. A
+  // repeat within two seconds only counts up.
+  const pageEvents = [];
+  const PAGE_EVENT_LIMIT = 200;
+  const PAGE_EVENTS_PER_KIND = 30;
+  function remember(what, detail = "", level = "info") {
+    const video = player?.video || document.querySelector("#bilibili-player video, .bpx-player-container video");
+    const at = Math.round(performance.now());
+    detail = withoutQuery(detail).slice(0, 200);
+    const last = pageEvents.at(-1);
+    if (last && last.what === what && last.detail === detail && at - last.at < 2000) {
+      last.count = (last.count || 1) + 1;
+      return;
+    }
+    pageEvents.push({ at, time: Math.round((Number(video?.currentTime) || 0) * 10) / 10, what, detail, level });
+    const sameKind = pageEvents.filter((event) => event.what === what);
+    if (sameKind.length > PAGE_EVENTS_PER_KIND) pageEvents.splice(pageEvents.indexOf(sameKind[0]), 1);
+    if (pageEvents.length > PAGE_EVENT_LIMIT) {
+      const index = ["debug", "info"].map((minor) => pageEvents.findIndex((event) => event.level === minor)).find((found) => found >= 0);
+      pageEvents.splice(index ?? 0, 1);
+    }
+  }
+  // An error as the text it was thrown with, less any address's query.
+  function errorText(error) {
+    return withoutQuery(error?.message || error?.name || error || "").slice(0, 180);
+  }
+  // An address keeps its host and path: its query holds the signature and the expiry.
+  function withoutQuery(text) {
+    return String(text ?? "").replace(/((?:https?:)?\/\/[^\s"'?#]+)[?#][^\s"']*/gi, "$1");
+  }
+
   // A CDN node that twice sends nothing, and a download address the nodes keep refusing, is
   // skipped until the page moves to another video.
   // Restarting the takeover for the same video keeps the list.
   let cdnBanRoute = "";
+  // The bans of this video, for the diagnostic copy; they go with the list when it resets.
+  let bans = [];
   const cdnBans = root.__BILI_CDN_RESOLVER_FACTORY__?.createBanList({
-    onBan(host, _count, _error, kind) {
-      if (kind === "address") notices?.log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "", cdnBanRoute, "download");
-      else notices?.log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "", cdnBanRoute, "download");
+    onBan(host, count, error, kind) {
+      const address = kind === "address";
+      bans.push({ at: Math.round(performance.now()), kind: address ? "address" : "node", host: String(host || ""), count: Number(count) || 0, error: errorText(error) });
+      if (bans.length > 40) bans.shift();
+      // The ban is decided while the failed range is still being reported: its event comes
+      // after that range's, which is the one that caused it.
+      const record = (what, detail) => queueMicrotask(() => remember(what, detail, "warn"));
+      if (address) {
+        notices?.log("已停用一个下载地址", "B 站给的一个下载地址一直被服务器拒绝，这个视频接下来改用其他地址。", "info", "", cdnBanRoute, "download");
+        record("address banned", "refused by the nodes");
+      } else {
+        notices?.log("已停用这个 CDN 节点", `${host} 两次没有返回任何数据，这个视频接下来不再使用它。`, "error", "", cdnBanRoute, "download");
+        record("node banned", `${host}, ${Number(count) || 0} failures with no data`);
+      }
     }
   }) || null;
   let playerContainer = null;
   let playerLifecycle = 0;
   let qualityPlayer = null;
   let syncedQuality = 0;
+  let syncedAutoQuality = 0;
+  // The quality last picked by hand. Bilibili's player goes on reporting it as its pick in
+  // 自动 too: its own choice only moves when it downloads, which it does not while BTR plays.
+  let handPickedQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
   let infoPanel = null;
@@ -69,12 +124,27 @@
   let autoRetakeAt = 0;
   let transferSequence = 1;
   const transfers = new Map();
+  // Every download since the page loaded, for the diagnostic copy: per kind, why the cancelled
+  // ones were cancelled (the message they were cancelled with), and per node.
+  const downloads = {
+    byKind: Object.fromEntries(["video", "audio", "meta"].map((kind) => [kind, { started: 0, ok: 0, failed: 0, cancelled: 0, bytes: 0 }])),
+    cancelReasons: {},
+    hosts: {},
+    lastBytesAt: null
+  };
+  function downloadHost(host) {
+    const key = host || "unknown";
+    if (!downloads.hosts[key] && Object.keys(downloads.hosts).length >= 64) return null;
+    downloads.hosts[key] ||= { ok: 0, failed: 0, cancelled: 0, bytes: 0, lastError: "", lastErrorAt: null };
+    return downloads.hosts[key];
+  }
   // 自动线程数 lives in the downloader; its steps are reported here.
   const autoThreads = root.__BILI_IDM_DOWNLOADER_FACTORY__?.autoConcurrency || null;
   autoThreads?.subscribe(({ threads, previous, reason }) => {
     if (!settings.autoConcurrency) return;
     stats.autoThreads = threads;
     notices?.log(threads > previous ? "线程数加到 " + threads : "线程数退回 " + threads, `${previous} → ${threads}：${reason}。`, "info", "", undefined, "download");
+    remember("threads changed", `${previous} -> ${threads} (${reason})`);
     schedulePublish();
   });
 
@@ -102,15 +172,6 @@
     takeoverError: null
   };
 
-  // What happened to the takeover on this page: each player keeps its own timeline, which is
-  // gone once it is replaced, and that is exactly when a report is needed (a video that went
-  // black and came back at another position). Positions and states only.
-  const pageEvents = [];
-  function remember(what, detail = "") {
-    const video = player?.video || document.querySelector("#bilibili-player video, .bpx-player-container video");
-    pageEvents.push({ at: Math.round(performance.now()), time: Math.round((Number(video?.currentTime) || 0) * 10) / 10, what, detail: String(detail).slice(0, 120) });
-    if (pageEvents.length > 60) pageEvents.shift();
-  }
   // The tab going to the background and coming back, which Bilibili's player reacts to (#66):
   // one entry when it comes back, while BTR plays a video.
   let hiddenAt = 0;
@@ -149,6 +210,24 @@
     watch.id = video.requestVideoFrameCallback(sample);
   }
 
+  // The element as the browser has it, for the diagnostic copy. BTR's full takeover answers
+  // video.paused for the page (native-mse-player.js), so the real state is read from the
+  // prototype; the buffered ranges are the ones the page sees.
+  const realPaused = Object.getOwnPropertyDescriptor(root.HTMLMediaElement?.prototype || {}, "paused")?.get;
+  function elementState(video) {
+    const read = (value, fallback = null) => { try { return value(); } catch (_error) { return fallback; } };
+    const tenths = (value) => Math.round((Number(value) || 0) * 10) / 10;
+    return {
+      elementPaused: read(() => (realPaused ? realPaused.call(video) : video.paused)),
+      networkState: read(() => video.networkState),
+      mediaError: read(() => (video.error ? { code: Number(video.error.code) || 0, message: String(video.error.message || "") } : null)),
+      buffered: read(() => {
+        const ranges = video.buffered;
+        return Array.from({ length: Math.min(8, Number(ranges?.length) || 0) }, (_item, index) => [tenths(ranges.start(index)), tenths(ranges.end(index))]);
+      }, [])
+    };
+  }
+
   function clearTakeoverFailure() {
     takeoverFailureRoute = "";
     takeoverFailureCount = 0;
@@ -161,6 +240,7 @@
     const message = String(error?.message || error || "未知接管错误").slice(0, 180);
     const stageLabel = { playinfo: "读取视频信息", mse: "播放视频", create: "启动播放器", "playinfo-update": "更新播放信息", quality: "切换清晰度" }[stage] || "接管视频";
     notices?.log("没能接管这个视频", `${stageLabel}时出了问题。\n${message}`, "error", "", route, "takeover");
+    remember("takeover failed", `${["playinfo", "mse", "create", "playinfo-update", "quality"].includes(stage) ? stage : "takeover"}: ${errorText(error) || "unknown error"}`, "error");
     const now = Date.now();
     if (takeoverFailureRoute !== route) {
       takeoverFailureRoute = route;
@@ -209,6 +289,7 @@
       autoRetakeTimer = null;
       if (!settings.enabled || player || failedRoute !== route || routeIdentity()?.key !== route) return;
       notices?.log("正在自动重新接管", `刚才的下载出了问题，现在重新接管这个视频（第 ${attempt} 次）。`, "info", "", route, "takeover");
+      remember("retake", `attempt ${attempt}`, "warn");
       failedRoute = "";
       restartPlayer(true);
     }, 4000 * (2 ** (attempt - 1)));
@@ -253,6 +334,34 @@
     publishTimer = setTimeout(publish, 120);
   }
 
+  // A transfer that ended, or brought data, in the counters of the diagnostic copy.
+  function countTransfer(item, event) {
+    const now = Math.round(performance.now());
+    if (event.phase === "progress") {
+      if (Number(event.bytes) > 0) downloads.lastBytesAt = now;
+      return;
+    }
+    const kind = downloads.byKind[item.kind] || downloads.byKind.video;
+    const host = downloadHost(item.host);
+    if (event.phase === "done") {
+      kind.ok += 1;
+      kind.bytes += item.loaded;
+      if (host) { host.ok += 1; host.bytes += item.loaded; }
+    } else if (event.phase === "cancel") {
+      kind.cancelled += 1;
+      if (host) host.cancelled += 1;
+      const reasons = downloads.cancelReasons;
+      let reason = errorText(event.error) || "unknown";
+      if (!(reason in reasons) && Object.keys(reasons).length >= 20) reason = "other";
+      reasons[reason] = (reasons[reason] || 0) + 1;
+    } else if (event.phase === "error") {
+      kind.failed += 1;
+      const message = errorText(event.error);
+      if (host) { host.failed += 1; host.lastError = message; host.lastErrorAt = now; }
+      remember("range failed", `${item.kind} ${item.host || "unknown"} after ${Math.round(item.loaded / 1024)} KiB: ${message}`, "warn");
+    }
+  }
+
   function onTransfer(event) {
     if (event?.phase === "start") {
       const id = transferSequence++;
@@ -261,6 +370,7 @@
       try { host = new URL(event.url).hostname; } catch (_error) {}
       notices?.log("开始下载一小段数据", `第 ${id} 条线程正在下载${KIND_LABELS[event.kind] || "画面"}。\n下载节点：${host}`, "info", `range-start-${event.kind}`, undefined, "download");
       const kind = ["video", "audio", "meta"].includes(event.kind) ? event.kind : "video";
+      downloads.byKind[kind].started += 1;
       transfers.set(id, {
         id,
         kind,
@@ -290,6 +400,7 @@
     const transferLabel = { progress: "正在接收视频数据", done: "这一小段下载好了", cancel: "这次下载已取消", error: "这一小段没能下载下来" }[event.phase] || "下载状态发生变化";
     const detail = `第 ${item.id} 条线程已收到 ${Math.round((item.loaded + (Number(event.bytes) || 0)) / 1024)} KiB ${KIND_LABELS[item.kind] || "视频"}数据。\n下载节点：${item.host}${event.error ? `\n原因：${event.error.message || event.error}` : ""}`;
     notices?.log(transferLabel, detail, event.phase === "error" ? "error" : event.phase === "done" ? "success" : "info", `range-${event.phase}-${item.kind}`, undefined, "download");
+    countTransfer(item, event);
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
       recentBytes.push({ at: now, bytes });
@@ -745,6 +856,7 @@
     state.controller = controller;
     const stale = () => state !== deadlineRefresh || lifecycle !== playerLifecycle || player !== current || playerRoute !== route || routeIdentity()?.key !== route;
     notices?.log("下载地址快要过期了", "正在向 B 站请求新的下载地址，播放不受影响。", "info", "", route, "download");
+    remember("playinfo refresh");
     try {
       const playinfo = await fetchRoutePlayinfo(identity, controller.signal, true);
       if (stale()) return;
@@ -756,6 +868,7 @@
       if (stale()) return;
       state.failures += 1;
       notices?.log("没能提前换新下载地址", `${String(error?.message || error).slice(0, 120)}\n播放继续使用现在的地址，稍后再试。`, "info", "", route, "download");
+      remember("playinfo refresh failed", errorText(error), "warn");
     } finally {
       clearTimeout(timer);
       if (state.controller === controller) state.controller = null;
@@ -801,7 +914,10 @@
     if (Number(playinfo?.code) !== 0 || !isDashPlayinfo(playinfo)) throw new Error(playinfo?.message || "新视频没有 DASH 播放清单");
     if (signal?.aborted) throw signal.reason || new DOMException("播放清单请求已取消", "AbortError");
     cachePlayinfo(identity, playinfo, cid);
-    if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+    if (!refresh) {
+      notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+      remember("playinfo fetched", "", "debug");
+    }
     return playinfo;
   }
 
@@ -818,7 +934,10 @@
     if (unsupportedEpisode(playinfo)) return playinfo;
     if (!isDashPlayinfo(playinfo)) throw new Error("这一集没有 DASH 播放清单");
     cachePlayinfo(identity, playinfo);
-    if (!refresh) notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+    if (!refresh) {
+      notices?.log("已经拿到视频下载地址", "接下来开始准备多线程下载。", "success", "", identity.key, "takeover");
+      remember("playinfo fetched", "", "debug");
+    }
     return playinfo;
   }
 
@@ -1135,20 +1254,58 @@
     catch (_error) { return 0; }
   }
 
+  // In 自动 the menu shows the quality Bilibili's player picked itself (its realQ), and that
+  // is what BTR plays: the playinfo only names the one the player asked for, often 720P, which
+  // it soon leaves for 1080P (#69). 0 when a quality is chosen by hand or none is known yet.
+  function nativeAutoQuality() {
+    try {
+      const quality = root.player?.getQuality?.();
+      if (Number(quality?.newQ) > 0) return 0;
+      const real = Math.trunc(Number(quality?.realQ));
+      return real > 0 ? real : 0;
+    } catch (_error) { return 0; }
+  }
+
   function syncNativeQuality() {
     // In the compatibility mode Bilibili's own player owns quality and codec.
     if (player?.nativeTransport) return;
     const wanted = nativeQuality();
-    if (!player?.setQuality || (qualityPlayer === player && syncedQuality === wanted)) return;
+    if (!player?.setQuality) return;
     const current = player, route = playerRoute, lifecycle = playerLifecycle;
-    qualityPlayer = current;
-    syncedQuality = wanted;
-    notices?.log("跟随播放器切换清晰度", wanted ? `正在换成播放器选的清晰度（${wanted}）。` : "播放器改回了自动，使用这个视频默认的清晰度。", "info", "", route, "playback");
-    current.setQuality(wanted).then(() => {
+    const settle = (work) => work.then(() => {
       if (lifecycle === playerLifecycle && player === current) resolveNativeQualitySwitch();
     }).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
     });
+    const reported = wanted ? 0 : nativeAutoQuality();
+    // Right after a quality picked by hand, what 自动 reports is that quality, not a pick of
+    // its own: going back to 自动 after a dip to 360P stayed at 360P. The quality 自动 showed
+    // before stands then, or else the video's default quality, as before.
+    const auto = reported && reported !== handPickedQuality ? reported : 0;
+    // Once it reports another quality, the pick is its own again.
+    if (auto) handPickedQuality = 0;
+    if (qualityPlayer !== current || syncedQuality !== wanted) {
+      qualityPlayer = current;
+      syncedQuality = wanted;
+      if (wanted) handPickedQuality = wanted;
+      const target = wanted ? 0 : auto || syncedAutoQuality;
+      if (target) syncedAutoQuality = target;
+      notices?.log("跟随播放器切换清晰度", wanted ? `正在换成播放器选的清晰度（${wanted}）。` : target ? `播放器改回了自动，按自动的清晰度（${target}）播放。` : "播放器改回了自动，使用这个视频默认的清晰度。", "info", "", route, "playback");
+      remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
+      // The quality for 自动 first, so that going back to 自动 restarts at most once.
+      settle((async () => {
+        if (target) await current.setAutoQuality?.(target);
+        await current.setQuality(wanted);
+      })());
+      return;
+    }
+    // While BTR plays, Bilibili's own player downloads nothing, so its pick only changes now
+    // and then: once it is known after a very early takeover, or after it is reloaded.
+    if (!auto || auto === syncedAutoQuality || typeof current.setAutoQuality !== "function") return;
+    syncedAutoQuality = auto;
+    notices?.log("跟随播放器的自动清晰度", `播放器的自动选了 ${auto}，按它显示的清晰度播放。`, "info", "", route, "playback");
+    remember("auto quality follow", String(auto));
+    settle(current.setAutoQuality(auto));
   }
 
   // While BTR plays the video, Bilibili's core never receives its "new quality rendered"
@@ -1183,6 +1340,7 @@
         pending.resolve({ type: "qualityChangeRendered", mediaType: "video", oldQuality: pending.oQn, newQuality: target || playingId, isMediaSegment: true, requestType: "MediaSegment" });
       }
       notices?.log("清晰度切换完成", "新清晰度已经在播放，已通知 B 站播放器。", "success", "", playerRoute, "playback");
+      remember("quality switched");
     } catch (_error) {}
   }
 
@@ -1311,7 +1469,7 @@
         // Its own wake-ups are refused from now on, so it is started again with the video.
         const scheduler = processor.getScheduleController?.();
         if (scheduler) stoppedSchedulers.add(scheduler);
-        remember("native buffer locked", String(processor.getType?.() || ""));
+        remember("native buffer locked", String(processor.getType?.() || ""), "debug");
       } catch (_error) {}
     }
   }
@@ -1331,7 +1489,7 @@
         if (scheduler?.isStarted?.() && typeof scheduler.stop === "function") {
           scheduler.stop();
           stoppedSchedulers.add(scheduler);
-          remember("native scheduler stopped", String(processor.getType?.() || ""));
+          remember("native scheduler stopped", String(processor.getType?.() || ""), "debug");
         }
       } catch (_error) {}
     }
@@ -1374,6 +1532,7 @@
     codecPlayer = current;
     syncedCodec = wanted;
     notices?.log("跟随播放器切换编码", wanted ? `正在换成播放策略里选的 ${wanted.toUpperCase()}。` : "播放策略改回了默认，按 AV1、HEVC、AVC 的顺序选。", "info", "", route, "playback");
+    remember("codec follow", wanted || "default");
     current.setCodec(wanted).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
     });
@@ -1551,6 +1710,7 @@
     if (identity.epId && !rangeTransport?.supports(container)) {
       failedRoute = route;
       notices?.log("没有接管这一集", "剧集只用兼容模式加速，但现在接不上 B 站的播放器，这一集交给 B 站自己播放。", "info", "", route, "takeover");
+      remember("episode not taken over", "episodes use the compat mode, which cannot reach Bilibili's player here");
       if (player) stopPlayer(true);
       stats.playerState = "native-fallback";
       publish();
@@ -1593,6 +1753,7 @@
     if (unsupported) {
       failedRoute = route;
       notices?.log("没有接管这一集", unsupported, "info", "", route, "takeover");
+      remember("episode not taken over", playinfo?.data?.is_drm ? "DRM protected" : "preview only");
       if (player) stopPlayer(true);
       stats.playerState = "native-fallback";
       publish();
@@ -1607,6 +1768,7 @@
     const lifecycle = ++playerLifecycle;
     if (cdnBanRoute !== route) {
       cdnBans?.reset();
+      bans = [];
       cdnBanRoute = route;
     }
     const preferredQuality = nativeQuality();
@@ -1623,6 +1785,7 @@
         container,
         identity,
         preferredQuality,
+        autoQuality: preferredQuality ? 0 : nativeAutoQuality(),
         preferredCodec,
         preferredAudio,
         // A collection item is a different video. Its native <video> element
@@ -1663,7 +1826,8 @@
         },
         onState(next) {
           if (lifecycle !== playerLifecycle) return;
-          if (next.playerState !== stats.playerState || next.quality !== stats.quality) notices?.log(STATE_LABELS[next.playerState] || "播放状态发生变化", `当前清晰度是 ${next.quality || "默认清晰度"}，已经缓冲 ${(Number(next.bufferedAhead) || 0).toFixed(1)} 秒。`, next.playerState === "error" ? "error" : ["ready", "ended"].includes(next.playerState) ? "success" : "info", "", route, "playback");
+          // The compatibility mode names a quality it does not know "native" (Bilibili's own).
+          if (next.playerState !== stats.playerState || next.quality !== stats.quality) notices?.log(STATE_LABELS[next.playerState] || "播放状态发生变化", `当前清晰度是 ${next.quality === "native" ? "原生画质" : next.quality || "默认清晰度"}，已经缓冲 ${(Number(next.bufferedAhead) || 0).toFixed(1)} 秒。`, next.playerState === "error" ? "error" : ["ready", "ended"].includes(next.playerState) ? "success" : "info", "", route, "playback");
           stats.mode = next.mode || settings.mode;
           stats.playerState = next.playerState || stats.playerState;
           if (next.playerState === "ready" && (takeoverFailureRoute === route || stats.takeoverError?.route === route)) {
@@ -1686,7 +1850,7 @@
         },
         onFatal(error) {
           if (lifecycle !== playerLifecycle) return;
-          remember("playback failed", error?.message || error);
+          remember("playback failed", error?.message || error, "error");
           failedRoute = route;
           recordTakeoverFailure(route, "mse", error, true);
           setTimeout(() => {
@@ -1705,13 +1869,15 @@
         return;
       }
       player = nextPlayer;
-      remember("took over", `${route}${nextPlayer.nativeTransport ? " (兼容模式)" : ""}`);
+      remember("took over", `${route}${nextPlayer.nativeTransport ? " (compat)" : ""}`);
       stats.architecture = nextPlayer.nativeTransport ? "native-player-range-transport" : FULL_ARCHITECTURE;
       playerRoute = route;
       playerContainer = container;
       suppressNativeSchedulers();
       qualityPlayer = nextPlayer;
       syncedQuality = preferredQuality;
+      syncedAutoQuality = preferredQuality ? 0 : Number(nextPlayer.getDebug?.()?.autoQuality) || 0;
+      handPickedQuality = preferredQuality;
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));
@@ -1756,6 +1922,7 @@
             : settings.customHosts.length ? `自定义的 ${settings.customHosts.length} 个服务器` : "大陆 CDN（自定义里还没选服务器）";
         const threads = settings.autoConcurrency ? `线程数自动调整（当前 ${autoThreads?.threads() || 8}，8 到 64）` : `开启 ${settings.concurrency} 条下载线程`;
         notices?.log("设置已经生效", `${settings.takeover === "compat" ? "兼容模式" : "全接管"}，使用${cdn}，${threads}。`, "success", "", undefined, "settings");
+        remember("settings applied", `${settings.takeover === "compat" ? "compat" : "full"}, ${settings.mode === "overseas" ? "overseas" : settings.mode === "custom" ? `custom ${settings.customHosts?.length || 0}` : "mainland"}, threads ${settings.autoConcurrency ? "auto" : settings.concurrency}`);
       }
       stats.autoThreads = settings.autoConcurrency ? autoThreads?.threads() || 0 : 0;
       stats.mode = settings.mode;
@@ -1869,12 +2036,27 @@
         return JSON.stringify({
           version: stats.version, channel: "__BTR_CHANNEL__" === "canary" ? "canary" : "stable", scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "", at: Math.round(performance.now()), settings: { takeover: settings.takeover, mode: settings.mode, customHosts: settings.customHosts.slice(), concurrency: settings.concurrency, codec: nativeCodec() || "default" },
           actualTakeover: !player ? "native" : player.nativeTransport ? "compat" : "full",
+          // Whether this address is a video at all (the home page and search are not).
+          videoPage: (() => { try { return Boolean(routeIdentity()); } catch (_error) { return true; } })(),
+          // The native menu's quality: newQ chosen (0 for 自动), realQ what 自动 shows (#69).
+          nativeQuality: (() => { try { const quality = root.player?.getQuality?.(); return quality ? { nowQ: quality.nowQ, newQ: quality.newQ, realQ: quality.realQ } : null; } catch (_error) { return null; } })(),
           nativeCore: { buffersLocked: lockedBuffers.size, mediaRequests: nativeMedia.requests },
           playback: video ? { currentTime: video.currentTime, duration: video.duration, ended: video.ended,
             paused: video.paused, seeking: video.seeking, readyState: video.readyState, playbackRate: video.playbackRate,
             width: video.videoWidth, height: video.videoHeight, visibility: document.visibilityState, frames,
-            lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null } : null,
-          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.slice(), timeline, previousPlayer: previousTimeline
+            lastPresentedFrame: frame ? { ...frame, ageMs: Math.max(0, performance.now() - frame.observedAtMs) } : null,
+            ...elementState(video) } : null,
+          state: stats.playerState, lastError: stats.lastError, player: rest, nodes: stats.cdnHosts.map((item) => ({ ...item })), bannedNodes: cdnBans?.hosts?.() || [], page: pageEvents.map((event) => ({ ...event })), timeline, previousPlayer: previousTimeline,
+          timeOrigin: performance.timeOrigin,
+          route: playerRoute,
+          downloads: {
+            byKind: Object.fromEntries(Object.entries(downloads.byKind).map(([kind, counts]) => [kind, { ...counts }])),
+            cancelReasons: { ...downloads.cancelReasons },
+            hosts: Object.fromEntries(Object.entries(downloads.hosts).map(([host, counts]) => [host, { ...counts }])),
+            active: [...transfers.values()].filter((item) => item.state === "active").length,
+            lastBytesAt: downloads.lastBytesAt
+          },
+          bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
       version: "__BTR_VERSION__"

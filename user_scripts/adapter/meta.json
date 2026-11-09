@@ -32,6 +32,7 @@
     "src/native-mse-player.js",
     "src/native-range-transport.js",
     "src/runtime-notices.js",
+    "src/diagnostic-report.js",
     "src/settings-panel.js",
     "src/page-hook.js",
     "src/live-core.js",
