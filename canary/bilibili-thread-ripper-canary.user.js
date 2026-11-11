@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.9.2
+// @version      2026.11.11.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3807,11 +3807,12 @@ const chrome = (() => {
       catch (_error) { return false; }
     }
 
-    async function updatePlayinfo(playinfo, leavingHandPick = false) {
+    async function updatePlayinfo(playinfo) {
       if (destroyed) return;
-      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays, unless
-      // it is a quality picked by hand that the viewer just left for 自动.
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality || leavingHandPick ? 0 : Number(selectedVideo?.id) || 0);
+      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays. So does
+      // a quality picked by hand that the viewer just left for 自动: the menu goes on showing
+      // it there, and the playinfo's own quality is often a lower one (#69).
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality ? 0 : Number(selectedVideo?.id) || 0);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -3836,9 +3837,8 @@ const chrome = (() => {
     async function setQuality(quality) {
       const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
       if (destroyed || wanted === preferredQuality) return;
-      const leavingHandPick = !wanted && preferredQuality > 0;
       preferredQuality = wanted;
-      await updatePlayinfo(currentPlayinfo, leavingHandPick);
+      await updatePlayinfo(currentPlayinfo);
     }
 
     // In 自动 the native player may settle on another quality (see selectRepresentations).
@@ -3953,7 +3953,7 @@ const chrome = (() => {
       ownsMediaUrl,
       video,
       getDebug: () => ({
-        version: "2026.11.9.2",
+        version: "2026.11.11.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -5676,7 +5676,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.9.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.11.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -6062,7 +6062,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.9.2",
+        version: "2026.11.11.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -6939,9 +6939,6 @@ const chrome = (() => {
   let qualityPlayer = null;
   let syncedQuality = 0;
   let syncedAutoQuality = 0;
-  // The quality last picked by hand. Bilibili's player goes on reporting it as its pick in
-  // 自动 too: its own choice only moves when it downloads, which it does not while BTR plays.
-  let handPickedQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
   let infoPanel = null;
@@ -6994,7 +6991,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.9.2",
+    version: "2026.11.11.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -8101,18 +8098,18 @@ const chrome = (() => {
     }).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
     });
-    const reported = wanted ? 0 : nativeAutoQuality();
-    // Right after a quality picked by hand, what 自动 reports is that quality, not a pick of
-    // its own: going back to 自动 after a dip to 360P stayed at 360P. The quality 自动 showed
-    // before stands then, or else the video's default quality, as before.
-    const auto = reported && reported !== handPickedQuality ? reported : 0;
-    // Once it reports another quality, the pick is its own again.
-    if (auto) handPickedQuality = 0;
+    // What 自动 shows in the menu is what plays, with no exception. Bilibili's player keeps
+    // its pick where it is while BTR plays (the pick only moves when that player downloads),
+    // so right after a quality picked by hand the pick is that quality: the menu then reads
+    // "1080P 60帧 自动" and 1080P 60帧 goes on playing. Leaving it for the pick 自动 had
+    // before, or for the video's default quality, played less than the menu showed (#69).
+    const auto = wanted ? 0 : nativeAutoQuality();
     if (qualityPlayer !== current || syncedQuality !== wanted) {
+      // A pick that cannot be read just now: the quality being left for 自动 is still it.
+      const left = qualityPlayer === current ? syncedQuality : 0;
       qualityPlayer = current;
       syncedQuality = wanted;
-      if (wanted) handPickedQuality = wanted;
-      const target = wanted ? 0 : auto || syncedAutoQuality;
+      const target = wanted ? 0 : auto || left || syncedAutoQuality;
       if (target) syncedAutoQuality = target;
       remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
       // The quality for 自动 first, so that going back to 自动 restarts at most once.
@@ -8688,7 +8685,6 @@ const chrome = (() => {
       qualityPlayer = nextPlayer;
       syncedQuality = preferredQuality;
       syncedAutoQuality = preferredQuality ? 0 : Number(nextPlayer.getDebug?.()?.autoQuality) || 0;
-      handPickedQuality = preferredQuality;
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));
@@ -8865,7 +8861,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.9.2"
+      version: "2026.11.11.1"
     })
   });
   publish();
@@ -9118,7 +9114,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.9.2",
+    version: "2026.11.11.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -9597,7 +9593,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.9.2"
+      version: "2026.11.11.1"
     })
   });
   publish();
