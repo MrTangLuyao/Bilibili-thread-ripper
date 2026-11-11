@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>BTR 全接管自动清晰度测试</title>
+</head>
+<body>
+  <div id="bilibili-player"><div class="bpx-player-container" style="width:960px;height:540px"><video></video><div class="bpx-player-ctrl-setting-menu-right"><div class="bpx-player-ctrl-setting-others">其他设置</div></div>
+    <ul class="bpx-player-ctrl-quality-menu">
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="120"><span>4K</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="116"><span>1080P 60帧</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="80"><span>1080P</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="64"><span>720P</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="32"><span>480P</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="16"><span>360P</span></li>
+      <li class="bpx-player-ctrl-quality-menu-item" data-value="0"><span>自动</span></li>
+    </ul>
+  </div></div>
+  <pre id="auto-quality-result">starting</pre>
+  <script src="/dev/auto-quality-test.js"></script>
+  <script src="/src/page-hook.js"></script>
+</body>
+</html>

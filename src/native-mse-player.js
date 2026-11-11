@@ -1742,6 +1742,9 @@
       updatePlayinfo,
       urlDeadlineSeconds,
       ownsMediaUrl,
+      // The qualities this browser plays, each in the codec that would be used, with its
+      // bitrate: what the page chooses among for 自动 (driveAutoQuality in page-hook.js).
+      playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
         version: "__BTR_VERSION__",
