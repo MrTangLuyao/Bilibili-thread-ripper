@@ -86,9 +86,6 @@
   let qualityPlayer = null;
   let syncedQuality = 0;
   let syncedAutoQuality = 0;
-  // The quality last picked by hand. Bilibili's player goes on reporting it as its pick in
-  // 自动 too: its own choice only moves when it downloads, which it does not while BTR plays.
-  let handPickedQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
   let infoPanel = null;
@@ -1248,18 +1245,18 @@
     }).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
     });
-    const reported = wanted ? 0 : nativeAutoQuality();
-    // Right after a quality picked by hand, what 自动 reports is that quality, not a pick of
-    // its own: going back to 自动 after a dip to 360P stayed at 360P. The quality 自动 showed
-    // before stands then, or else the video's default quality, as before.
-    const auto = reported && reported !== handPickedQuality ? reported : 0;
-    // Once it reports another quality, the pick is its own again.
-    if (auto) handPickedQuality = 0;
+    // What 自动 shows in the menu is what plays, with no exception. Bilibili's player keeps
+    // its pick where it is while BTR plays (the pick only moves when that player downloads),
+    // so right after a quality picked by hand the pick is that quality: the menu then reads
+    // "1080P 60帧 自动" and 1080P 60帧 goes on playing. Leaving it for the pick 自动 had
+    // before, or for the video's default quality, played less than the menu showed (#69).
+    const auto = wanted ? 0 : nativeAutoQuality();
     if (qualityPlayer !== current || syncedQuality !== wanted) {
+      // A pick that cannot be read just now: the quality being left for 自动 is still it.
+      const left = qualityPlayer === current ? syncedQuality : 0;
       qualityPlayer = current;
       syncedQuality = wanted;
-      if (wanted) handPickedQuality = wanted;
-      const target = wanted ? 0 : auto || syncedAutoQuality;
+      const target = wanted ? 0 : auto || left || syncedAutoQuality;
       if (target) syncedAutoQuality = target;
       remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
       // The quality for 自动 first, so that going back to 自动 restarts at most once.
@@ -1835,7 +1832,6 @@
       qualityPlayer = nextPlayer;
       syncedQuality = preferredQuality;
       syncedAutoQuality = preferredQuality ? 0 : Number(nextPlayer.getDebug?.()?.autoQuality) || 0;
-      handPickedQuality = preferredQuality;
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));

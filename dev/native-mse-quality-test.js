@@ -33,7 +33,7 @@
   const output = { standard: Number(standard.id), lower: Number(lower?.id) || 0, steps: {}, errors };
   const finish = () => {
     output.pass = Boolean(lower)
-      && Object.values(output.steps).length === 6
+      && Object.values(output.steps).length === 7
       && Object.values(output.steps).every((step) => step.ok)
       && errors.length === 0;
     output.summary = `${output.standard} → ${output.lower} → ${output.standard}，切换中拖动进度，重复选择和改回自动都不重建`;
@@ -100,7 +100,17 @@
   await wait(1500);
   output.steps.auto = { ok: debug().sessionStarts === sessions && debug().qualityId === output.standard && debug().preferredQuality === 0 };
 
-  // 6. Playback continues after all of this.
+  // 6. A quality picked by hand that is not the playinfo's own, then "auto": the menu shows
+  //    that quality in 自动, the page passes it on, and it goes on playing (#69).
+  await player.setQuality(output.lower);
+  ok = await waitFor(() => ready(output.lower), 30000);
+  sessions = debug().sessionStarts;
+  await player.setAutoQuality(output.lower);
+  await player.setQuality(0);
+  await wait(1500);
+  output.steps.autoKeepsHandPick = { ok: ok && debug().sessionStarts === sessions && debug().qualityId === output.lower && debug().preferredQuality === 0, quality: debug().qualityId };
+
+  // 7. Playback continues after all of this.
   const playingFrom = video.currentTime;
   video.play().catch(() => {});
   ok = await waitFor(() => video.currentTime > playingFrom + 2, 20000);

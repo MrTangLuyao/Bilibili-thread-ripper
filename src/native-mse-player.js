@@ -1598,11 +1598,12 @@
       catch (_error) { return false; }
     }
 
-    async function updatePlayinfo(playinfo, leavingHandPick = false) {
+    async function updatePlayinfo(playinfo) {
       if (destroyed) return;
-      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays, unless
-      // it is a quality picked by hand that the viewer just left for 自动.
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality || leavingHandPick ? 0 : Number(selectedVideo?.id) || 0);
+      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays. So does
+      // a quality picked by hand that the viewer just left for 自动: the menu goes on showing
+      // it there, and the playinfo's own quality is often a lower one (#69).
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality ? 0 : Number(selectedVideo?.id) || 0);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -1627,9 +1628,8 @@
     async function setQuality(quality) {
       const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
       if (destroyed || wanted === preferredQuality) return;
-      const leavingHandPick = !wanted && preferredQuality > 0;
       preferredQuality = wanted;
-      await updatePlayinfo(currentPlayinfo, leavingHandPick);
+      await updatePlayinfo(currentPlayinfo);
     }
 
     // In 自动 the native player may settle on another quality (see selectRepresentations).

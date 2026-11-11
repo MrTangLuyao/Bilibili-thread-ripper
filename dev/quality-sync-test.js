@@ -167,33 +167,50 @@
     click(0);
     await wait(150);
     output.steps.backToAuto = qualityCalls.at(-1)?.quality === 0 && qualityCalls.length === 3;
-    // Back in 自动 right after a quality picked by hand, what 自动 reports is that quality, not a
-    // pick of its own; with no earlier pick of 自动 known, the video's default quality plays, as
-    // before (no setAutoQuality).
-    output.steps.handPickNotTakenForAuto = autoCalls.length === 0;
+    // Back in 自动 right after a quality picked by hand, the menu shows that quality ("360P
+    // 自动"), so it goes on playing: it is given to the player as what 自动 shows, before 自动
+    // itself, and nothing restarts. Playing the video's default quality instead was the
+    // lower resolution of #69.
+    output.steps.handPickKeptInAuto = JSON.stringify(calls.slice(-2)) === JSON.stringify(["auto 16", "quality 0"]) && autoCalls.length === 1;
 
     // The native player's own pick changes (known only after an early takeover, or after it
     // is reloaded): it is followed once, a pick not known yet changes nothing.
     realQuality = 64;
     await wait(1300);
-    output.steps.autoFollowsPick = autoCalls.length === 1 && autoCalls[0] === 64;
+    output.steps.autoFollowsPick = autoCalls.length === 2 && autoCalls[1] === 64;
     realQuality = NaN;
     await wait(1300);
     realQuality = 64;
     await wait(1300);
-    output.steps.unknownPickIgnored = autoCalls.length === 1 && qualityCalls.length === 3;
+    output.steps.unknownPickIgnored = autoCalls.length === 2 && qualityCalls.length === 3;
 
     // A quality chosen by hand wins; the native player's pick is not followed then.
     click(32);
     await wait(1300);
-    output.steps.manualIgnoresPick = qualityCalls.at(-1)?.quality === 32 && autoCalls.length === 1;
+    output.steps.manualIgnoresPick = qualityCalls.at(-1)?.quality === 32 && autoCalls.length === 2;
 
-    // Back to 自动 again: the pick 自动 had before the dip to 32 plays, set before 自动 itself so
-    // that the player restarts at most once.
-    const before = calls.length;
+    // Back to 自动 again: the 32 just picked stays, not the 64 that 自动 had before it. The
+    // viewer of #69 picked 1080P 60帧, went back to 自动, and got the earlier, lower pick
+    // under a menu reading "1080P 60帧 自动".
+    let before = calls.length;
     click(0);
     await wait(150);
-    output.steps.backToEarlierAutoPick = JSON.stringify(calls.slice(before)) === JSON.stringify(["auto 64", "quality 0"]);
+    output.steps.backToAutoKeepsLastPick = JSON.stringify(calls.slice(before)) === JSON.stringify(["auto 32", "quality 0"]);
+    await wait(1300);
+    output.steps.nothingMoreWhileShownStays = calls.length === before + 2;
+
+    // The pick cannot be read at the moment 自动 is chosen: the quality being left is still
+    // it, and once the pick is readable again and says the same, nothing more is asked.
+    click(16);
+    await wait(150);
+    realQuality = NaN;
+    before = calls.length;
+    click(0);
+    await wait(150);
+    output.steps.unreadablePickKeepsLastPick = JSON.stringify(calls.slice(before)) === JSON.stringify(["auto 16", "quality 0"]);
+    realQuality = 16;
+    await wait(1300);
+    output.steps.readableAgainChangesNothing = calls.length === before + 2;
 
     output.steps.onePlayer = created.length === 1;
     output.pass = output.steps.initial === 64 && created[0]?.autoQuality === 0
@@ -206,11 +223,14 @@
       && output.steps.renderedThroughCore
       && output.steps.mismatchFallsBack
       && output.steps.backToAuto
-      && output.steps.handPickNotTakenForAuto
+      && output.steps.handPickKeptInAuto
       && output.steps.autoFollowsPick
       && output.steps.unknownPickIgnored
       && output.steps.manualIgnoresPick
-      && output.steps.backToEarlierAutoPick
+      && output.steps.backToAutoKeepsLastPick
+      && output.steps.nothingMoreWhileShownStays
+      && output.steps.unreadablePickKeepsLastPick
+      && output.steps.readableAgainChangesNothing
       && output.steps.onePlayer
       && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
     render();

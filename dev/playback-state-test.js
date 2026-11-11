@@ -54,6 +54,31 @@
     await switched("pending start position: quality", { initialTime: 120, initialResume: true }, "setQuality", 64, 120, true, true);
     await switched("pending start position: codec", { initialTime: 120, initialResume: true }, "setCodec", "av1", 120, true, true);
     await switched("playing in the first second: quality", { initialTime: 0.5, initialResume: true }, "setQuality", 64, 0.5, true);
+    // #69: a quality picked by hand and then left for 自动 goes on playing, with no new
+    // session: the menu shows it there. The playinfo asked for 720P here, and going to that
+    // instead was the drop in resolution. shown is what the page passes on from the menu.
+    const asked720 = { data: { ...playinfo.data, quality: 64 } };
+    async function leftForAuto(name, shown, later = 0) {
+      const player = create({ playinfo: asked720 });
+      try {
+        await ready(player);
+        if (shown) await player.setAutoQuality(shown);
+        await player.setQuality(0);
+        await ready(player);
+        const kept = player.getDebug();
+        let pass = kept.sessionStarts === 1 && kept.qualityId === 80 && kept.preferredQuality === 0;
+        // 自动 showing another quality later is followed, as before.
+        if (later) {
+          await player.setAutoQuality(later);
+          await ready(player);
+          pass = pass && player.getDebug().sessionStarts === 2 && player.getDebug().qualityId === later;
+        }
+        checks.push({ name, sessions: player.getDebug().sessionStarts, quality: player.getDebug().qualityId, pass });
+      } finally { player.destroy({ resumeNative: false }); }
+    }
+    await leftForAuto("1080P picked by hand, then 自动 showing 1080P: stays", 80);
+    await leftForAuto("1080P picked by hand, then 自动 with nothing shown yet: stays", 0);
+    await leftForAuto("自动 shows 720P later: followed", 80, 64);
     const player = create({});
     let handedBack = null;
     try {
@@ -64,7 +89,7 @@
   } catch (error) { errors.push(String(error?.message || error)); }
 
   const result = document.getElementById("playback-state-result");
-  const pass = errors.length === 0 && checks.length === 7 && checks.every(check => check.pass);
+  const pass = errors.length === 0 && checks.length === 10 && checks.every(check => check.pass);
   result.textContent = JSON.stringify({ checks, errors, pass });
   result.dataset.pass = String(pass);
 })(globalThis);
