@@ -208,6 +208,7 @@
     const cancel = () => controller.abort(signal.reason);
     signal?.addEventListener("abort", cancel, { once: true });
     owner.jobs.add(controller);
+    track.jobs?.add(controller);
     let received = 0, total = null;
     const chunks = [];
     // Only a start gets the startup treatment (racing the head on every node, copying each
@@ -242,12 +243,13 @@
       }) };
     } catch (error) {
       track.warmEnd = 0;
-      if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
+      if (!controller.signal.aborted && !owner.disposed) owner.failed(error, track);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       controller.abort();
       signal?.removeEventListener("abort", cancel);
       owner.jobs.delete(controller);
+      track.jobs?.delete(controller);
     }
   }
 
@@ -450,6 +452,62 @@
     update(options.playinfo);
     const urls = representation => [representation.baseUrl || representation.base_url, ...[].concat(representation.backupUrl || representation.backup_url || [])].filter(Boolean);
     const pathOf = url => { try { return new URL(url).pathname; } catch (_error) { return ""; } };
+    // A file of this video that the playinfo BTR holds does not list (#71). Another script
+    // can hand Bilibili's player a playinfo of its own, with a quality or an address BTR
+    // never saw; BTR reads Bilibili's answers before such a script changes them. The
+    // request is still the player's own and goes to a Bilibili video server, so it is sped
+    // up like the others, from its own address: the servers of the list are asked for the
+    // same file. It used to be left alone, and with it the whole video track, while the
+    // audio next to it was sped up.
+    //
+    // Only files of the video being played: a file is named after the video's cid, and the
+    // files BTR knows give that away. A preview or an advertisement elsewhere on the page
+    // is not this player's business. A file the other servers refuse is left to Bilibili
+    // from then on.
+    const outside = new Map();
+    // Their refusals are counted apart from the ban list of the listed files: an address
+    // another script brought along must not get a server banned for the rest of the video.
+    const outsideBans = resolvers.createBanList();
+    // After this many refusals (HTTP 4xx) the file is left to Bilibili at once: the
+    // downloader would otherwise try every server for every piece, three rounds each.
+    const OUTSIDE_REFUSALS = 3;
+    const watched = new Map();
+    let transferIds = 0;
+    function watchTransfer(event) {
+      if (event?.phase === "start") {
+        const id = options.onTransfer ? options.onTransfer(event) : ++transferIds;
+        const track = outside.get(pathOf(event.url));
+        if (track) watched.set(id, track);
+        return id;
+      }
+      const track = watched.get(event?.id);
+      if (track && event.phase !== "progress") {
+        watched.delete(event.id);
+        const status = Number(event.error?.status) || 0;
+        if (event.phase === "error" && status >= 400 && status < 500 && !track.refused && ++track.refusals >= OUTSIDE_REFUSALS) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", `HTTP ${status} from the other servers`);
+          for (const controller of track.jobs) controller.abort(new Error("其他服务器没有这个文件"));
+        }
+      }
+      return options.onTransfer ? options.onTransfer(event) : event?.id;
+    }
+    const cidOf = url => /\/(\d+)[^/]*-\d+-\d+\.m4s$/.exec(pathOf(url))?.[1] || "";
+    function outsideTrack(url) {
+      const path = pathOf(url), cid = cidOf(url);
+      if (!cid || !tracks.some(track => urls(track.representation).some(candidate => cidOf(candidate) === cid))) return null;
+      let track = outside.get(path);
+      if (!track) {
+        if (outside.size >= 16) outside.delete(outside.keys().next().value);
+        // Bilibili numbers its audio files 30216, 30232, 30280 (AAC), 30250 (Dolby) and 30251 (Hi-Res).
+        const id = Number(/-(\d+)\.m4s$/.exec(path)?.[1]) || 0;
+        track = { kind: [30216, 30232, 30280, 30250, 30251].includes(id) ? "audio" : "video", representation: { id: 0, baseUrl: url, base_url: url },
+          outside: true, refused: false, refusals: 0, failures: 0, jobs: new Set() };
+        outside.set(path, track);
+        note("file outside the playinfo", `${track.kind} ${path.slice(path.lastIndexOf("/") + 1)}`);
+      }
+      return track.refused ? null : track;
+    }
     function unavailable(error) {
       if (owner.disposed) return;
       owner.destroy();
@@ -505,12 +563,13 @@
     }
     const owner = {
       disposed: false, jobs, settings, sampleQuality,
-      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || null,
+      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || outsideTrack(url),
       resolver(url, track) {
         const parsed = new URL(url), key = parsed.pathname + parsed.search;
         if (!cache.has(key)) {
           if (cache.size >= 64) cache.delete(cache.keys().next().value);
-          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode, options.cdnBans, () => settings().customHosts));
+          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode,
+            track.outside ? outsideBans : options.cdnBans, () => settings().customHosts));
         }
         return cache.get(key);
       },
@@ -518,6 +577,7 @@
         if (owner.disposed) return;
         if (track.kind === "video") lastVideo = track.representation;
         else lastAudio = track.representation;
+        if (track.outside) track.failures = 0;
         lastError = "";
         delivered++;
         note("native range delivered", `${track.kind} ${result.byteLength} bytes / ${result.pieceCount} pieces`);
@@ -528,7 +588,13 @@
         nativeSwitchRequests++;
         note("quality switch: accelerated request");
       },
-      failed(error) {
+      failed(error, track) {
+        // One failure can be the network's, and Bilibili's player asks again. Two in a row:
+        // from now on it gets this file from where it asked.
+        if (track?.outside && !track.refused && ++track.failures >= 2) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", String(error?.message || error));
+        }
         failures++;
         lastError = String(error?.message || error);
         note("native range failed", lastError);
@@ -546,7 +612,7 @@
         // The native media source, buffers, playback position and pause state are untouched.
       }
     };
-    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: options.onTransfer });
+    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: watchTransfer });
     const events = new AbortController();
     for (const name of ["playing", "waiting", "stalled", "seeking", "seeked", "ended", "loadedmetadata", "error", "progress", "timeupdate"]) video.addEventListener(name, () => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
@@ -576,7 +642,7 @@
           const [n, d = 1] = String(lastVideo?.frameRate || lastVideo?.frame_rate || 0).split("/").map(Number);
           return d ? n / d : 0;
         })(),
-        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests,
+        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });

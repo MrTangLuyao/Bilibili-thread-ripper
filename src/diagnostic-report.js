@@ -81,6 +81,7 @@
     [/原生调度接口不兼容/g, "native scheduler API incompatible"],
     [/原生内核未恢复/g, "native core not restored"],
     [/加速任务已停止/g, "transport stopped"],
+    [/其他服务器没有这个文件/g, "the other servers do not have this file"],
     // The page: page-hook.js.
     [/视频已经换了/g, "video changed"],
     [/B ?站 ?15 ?秒内没有回应/g, "Bilibili did not answer within 15 s"],
