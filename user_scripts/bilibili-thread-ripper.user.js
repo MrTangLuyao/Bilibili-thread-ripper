@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.10.1
-// @description  保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
+// @version      2026.11.13.1
+// @description  解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
 // @license      MIT
@@ -2454,6 +2454,17 @@ const chrome = (() => {
     catch (_error) { return fallback; }
   }
 
+  function kbpsAhead(track, from, seconds = 30) {
+    let bytes = 0, duration = 0;
+    for (const segment of track?.sidx?.segments || []) {
+      if (segment.endTime <= from) continue;
+      if (segment.startTime >= from + seconds) break;
+      bytes += Number(segment.length) || 0;
+      duration += Number(segment.durationSeconds) || 0;
+    }
+    return duration > 0 ? Math.round(bytes * 8 / duration / 1000) : 0;
+  }
+
   function mediaBytesPerSecond(track) {
     const segment = track?.sidx?.segments?.[track.startupIndex];
     if (segment?.durationSeconds > 0 && segment?.length > 0) return segment.length / segment.durationSeconds;
@@ -3807,11 +3818,12 @@ const chrome = (() => {
       catch (_error) { return false; }
     }
 
-    async function updatePlayinfo(playinfo, leavingHandPick = false) {
+    async function updatePlayinfo(playinfo) {
       if (destroyed) return;
-      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays, unless
-      // it is a quality picked by hand that the viewer just left for 自动.
-      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality || leavingHandPick ? 0 : Number(selectedVideo?.id) || 0);
+      // A refreshed playinfo names a quality of its own; in 自动 the one playing stays. So does
+      // a quality picked by hand that the viewer just left for 自动: the menu goes on showing
+      // it there, and the playinfo's own quality is often a lower one (#69).
+      const next = selectRepresentations(playinfo, preferredQuality, preferredCodec, preferredAudio, autoQuality, preferredQuality ? 0 : Number(selectedVideo?.id) || 0);
       // Bilibili's page and the timed refresh both bring playinfos, and the one that arrives
       // last is not always the newer one. An older one is dropped whole: kept as the current
       // playinfo it would hand its addresses to the next session, after a seek or a quality
@@ -3836,9 +3848,8 @@ const chrome = (() => {
     async function setQuality(quality) {
       const wanted = Math.max(0, Math.trunc(Number(quality)) || 0);
       if (destroyed || wanted === preferredQuality) return;
-      const leavingHandPick = !wanted && preferredQuality > 0;
       preferredQuality = wanted;
-      await updatePlayinfo(currentPlayinfo, leavingHandPick);
+      await updatePlayinfo(currentPlayinfo);
     }
 
     // In 自动 the native player may settle on another quality (see selectRepresentations).
@@ -3951,9 +3962,12 @@ const chrome = (() => {
       updatePlayinfo,
       urlDeadlineSeconds,
       ownsMediaUrl,
+      // The qualities this browser plays, each in the codec that would be used, with its
+      // bitrate: what the page chooses among for 自动 (driveAutoQuality in page-hook.js).
+      playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.10.1",
+        version: "2026.11.13.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -3974,6 +3988,10 @@ const chrome = (() => {
         videoType: mimeFor(selectedVideo, "video"),
         audioType: mimeFor(selection.audio, "audio"),
         videoBandwidth: Number(selectedVideo?.bandwidth) || 0,
+        // The bitrate of the next half minute of the video being played, in kbit/s, from its
+        // index. The bandwidth above is an average over the whole video: a busy stretch was
+        // measured at nearly three times as much, and 自动 chooses by what is coming.
+        videoKbpsAhead: kbpsAhead(session?.tracks?.find((track) => track.kind === "video"), Number(video.currentTime) || session?.startTime || 0),
         audioBandwidth: Number(selection.audio?.bandwidth) || 0,
         currentTime: Number(video.currentTime) || 0,
         mediaSourceState: session?.mediaSource?.readyState || "closed",
@@ -4226,6 +4244,7 @@ const chrome = (() => {
     const cancel = () => controller.abort(signal.reason);
     signal?.addEventListener("abort", cancel, { once: true });
     owner.jobs.add(controller);
+    track.jobs?.add(controller);
     let received = 0, total = null;
     const chunks = [];
     // Only a start gets the startup treatment (racing the head on every node, copying each
@@ -4260,12 +4279,13 @@ const chrome = (() => {
       }) };
     } catch (error) {
       track.warmEnd = 0;
-      if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
+      if (!controller.signal.aborted && !owner.disposed) owner.failed(error, track);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       controller.abort();
       signal?.removeEventListener("abort", cancel);
       owner.jobs.delete(controller);
+      track.jobs?.delete(controller);
     }
   }
 
@@ -4468,6 +4488,62 @@ const chrome = (() => {
     update(options.playinfo);
     const urls = representation => [representation.baseUrl || representation.base_url, ...[].concat(representation.backupUrl || representation.backup_url || [])].filter(Boolean);
     const pathOf = url => { try { return new URL(url).pathname; } catch (_error) { return ""; } };
+    // A file of this video that the playinfo BTR holds does not list (#71). Another script
+    // can hand Bilibili's player a playinfo of its own, with a quality or an address BTR
+    // never saw; BTR reads Bilibili's answers before such a script changes them. The
+    // request is still the player's own and goes to a Bilibili video server, so it is sped
+    // up like the others, from its own address: the servers of the list are asked for the
+    // same file. It used to be left alone, and with it the whole video track, while the
+    // audio next to it was sped up.
+    //
+    // Only files of the video being played: a file is named after the video's cid, and the
+    // files BTR knows give that away. A preview or an advertisement elsewhere on the page
+    // is not this player's business. A file the other servers refuse is left to Bilibili
+    // from then on.
+    const outside = new Map();
+    // Their refusals are counted apart from the ban list of the listed files: an address
+    // another script brought along must not get a server banned for the rest of the video.
+    const outsideBans = resolvers.createBanList();
+    // After this many refusals (HTTP 4xx) the file is left to Bilibili at once: the
+    // downloader would otherwise try every server for every piece, three rounds each.
+    const OUTSIDE_REFUSALS = 3;
+    const watched = new Map();
+    let transferIds = 0;
+    function watchTransfer(event) {
+      if (event?.phase === "start") {
+        const id = options.onTransfer ? options.onTransfer(event) : ++transferIds;
+        const track = outside.get(pathOf(event.url));
+        if (track) watched.set(id, track);
+        return id;
+      }
+      const track = watched.get(event?.id);
+      if (track && event.phase !== "progress") {
+        watched.delete(event.id);
+        const status = Number(event.error?.status) || 0;
+        if (event.phase === "error" && status >= 400 && status < 500 && !track.refused && ++track.refusals >= OUTSIDE_REFUSALS) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", `HTTP ${status} from the other servers`);
+          for (const controller of track.jobs) controller.abort(new Error("其他服务器没有这个文件"));
+        }
+      }
+      return options.onTransfer ? options.onTransfer(event) : event?.id;
+    }
+    const cidOf = url => /\/(\d+)[^/]*-\d+-\d+\.m4s$/.exec(pathOf(url))?.[1] || "";
+    function outsideTrack(url) {
+      const path = pathOf(url), cid = cidOf(url);
+      if (!cid || !tracks.some(track => urls(track.representation).some(candidate => cidOf(candidate) === cid))) return null;
+      let track = outside.get(path);
+      if (!track) {
+        if (outside.size >= 16) outside.delete(outside.keys().next().value);
+        // Bilibili numbers its audio files 30216, 30232, 30280 (AAC), 30250 (Dolby) and 30251 (Hi-Res).
+        const id = Number(/-(\d+)\.m4s$/.exec(path)?.[1]) || 0;
+        track = { kind: [30216, 30232, 30280, 30250, 30251].includes(id) ? "audio" : "video", representation: { id: 0, baseUrl: url, base_url: url },
+          outside: true, refused: false, refusals: 0, failures: 0, jobs: new Set() };
+        outside.set(path, track);
+        note("file outside the playinfo", `${track.kind} ${path.slice(path.lastIndexOf("/") + 1)}`);
+      }
+      return track.refused ? null : track;
+    }
     function unavailable(error) {
       if (owner.disposed) return;
       owner.destroy();
@@ -4523,12 +4599,13 @@ const chrome = (() => {
     }
     const owner = {
       disposed: false, jobs, settings, sampleQuality,
-      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || null,
+      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || outsideTrack(url),
       resolver(url, track) {
         const parsed = new URL(url), key = parsed.pathname + parsed.search;
         if (!cache.has(key)) {
           if (cache.size >= 64) cache.delete(cache.keys().next().value);
-          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode, options.cdnBans, () => settings().customHosts));
+          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode,
+            track.outside ? outsideBans : options.cdnBans, () => settings().customHosts));
         }
         return cache.get(key);
       },
@@ -4536,6 +4613,7 @@ const chrome = (() => {
         if (owner.disposed) return;
         if (track.kind === "video") lastVideo = track.representation;
         else lastAudio = track.representation;
+        if (track.outside) track.failures = 0;
         lastError = "";
         delivered++;
         note("native range delivered", `${track.kind} ${result.byteLength} bytes / ${result.pieceCount} pieces`);
@@ -4546,7 +4624,13 @@ const chrome = (() => {
         nativeSwitchRequests++;
         note("quality switch: accelerated request");
       },
-      failed(error) {
+      failed(error, track) {
+        // One failure can be the network's, and Bilibili's player asks again. Two in a row:
+        // from now on it gets this file from where it asked.
+        if (track?.outside && !track.refused && ++track.failures >= 2) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", String(error?.message || error));
+        }
         failures++;
         lastError = String(error?.message || error);
         note("native range failed", lastError);
@@ -4564,7 +4648,7 @@ const chrome = (() => {
         // The native media source, buffers, playback position and pause state are untouched.
       }
     };
-    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: options.onTransfer });
+    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: watchTransfer });
     const events = new AbortController();
     for (const name of ["playing", "waiting", "stalled", "seeking", "seeked", "ended", "loadedmetadata", "error", "progress", "timeupdate"]) video.addEventListener(name, () => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
@@ -4594,7 +4678,7 @@ const chrome = (() => {
           const [n, d = 1] = String(lastVideo?.frameRate || lastVideo?.frame_rate || 0).split("/").map(Number);
           return d ? n / d : 0;
         })(),
-        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests,
+        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });
@@ -4796,6 +4880,7 @@ const chrome = (() => {
     [/原生调度接口不兼容/g, "native scheduler API incompatible"],
     [/原生内核未恢复/g, "native core not restored"],
     [/加速任务已停止/g, "transport stopped"],
+    [/其他服务器没有这个文件/g, "the other servers do not have this file"],
     // The page: page-hook.js.
     [/视频已经换了/g, "video changed"],
     [/B ?站 ?15 ?秒内没有回应/g, "Bilibili did not answer within 15 s"],
@@ -5676,7 +5761,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.10.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.13.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5696,7 +5781,7 @@ const chrome = (() => {
             <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
             <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
           </section>
-          <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+          <p class="takeover-note"><span class="safari-note" hidden>Safari 用户建议使用兼容模式。<br><br></span>全接管：速度最快，几乎不兼容所有的第三方插件。<br>安装第三方增强插件，或遇到任何的问题，请使用兼容模式。</p>
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
@@ -6062,7 +6147,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.10.1",
+        version: "2026.11.13.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -6171,6 +6256,9 @@ const chrome = (() => {
     closeButton.textContent = "关闭";
     panel.querySelector(".btr-footer").append(closeButton);
     shadow.append(style, backdrop, panel);
+    // The line for Safari users only where it applies: Safari, and every browser on iOS
+    // (all of them WebKit underneath).
+    panel.querySelector(".safari-note").hidden = !/apple/i.test(navigator.vendor || "");
 
     const $ = (id) => shadow.getElementById(id);
     // The released script and the Canary are both switched on: only this one runs.
@@ -6939,15 +7027,18 @@ const chrome = (() => {
   let qualityPlayer = null;
   let syncedQuality = 0;
   let syncedAutoQuality = 0;
-  // The quality last picked by hand. Bilibili's player goes on reporting it as its pick in
-  // 自动 too: its own choice only moves when it downloads, which it does not while BTR plays.
-  let handPickedQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
   let infoPanel = null;
   let infoPanelObserver = null;
   const lastHostByKind = { video: "", audio: "" };
   const recentBytes = [];
+  // Every video byte downloaded, for the speed 自动 chooses by (measureAutoSpeed).
+  let videoBytesIn = 0;
+  // The video bytes of requests that are over, and those of them in pieces that were
+  // completed and used (a second copy that loses its race is cancelled).
+  let videoBytesEnded = 0;
+  let videoBytesUsed = 0;
   let failedRoute = "";
   let startingRoute = "";
   let routeGeneration = 0;
@@ -6994,7 +7085,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.10.1",
+    version: "2026.11.13.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7239,6 +7330,7 @@ const chrome = (() => {
       recentBytes.push({ at: now, bytes });
       while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
       speedMeters[item.kind]?.samples.push({ at: now, bytes });
+      if (item.kind === "video") videoBytesIn += bytes;
       item.loaded += bytes;
       item.sampleBytes += bytes;
       item.lastByteAt = now;
@@ -7252,6 +7344,7 @@ const chrome = (() => {
       }
       schedulePublish();
     } else {
+      if (item.kind === "video") videoBytesEnded += item.loaded;
       if (event.phase === "cancel") {
         transfers.delete(item.id);
         trackBusy(item.kind, now);
@@ -7259,6 +7352,7 @@ const chrome = (() => {
         return event.id;
       }
       item.state = event.phase === "done" ? "done" : "error";
+      if (event.phase === "done" && item.kind === "video") videoBytesUsed += item.loaded;
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
       trackBusy(item.kind, now);
@@ -8101,18 +8195,20 @@ const chrome = (() => {
     }).catch((error) => {
       if (lifecycle === playerLifecycle && player === current) recordTakeoverFailure(route, "quality", error, true);
     });
-    const reported = wanted ? 0 : nativeAutoQuality();
-    // Right after a quality picked by hand, what 自动 reports is that quality, not a pick of
-    // its own: going back to 自动 after a dip to 360P stayed at 360P. The quality 自动 showed
-    // before stands then, or else the video's default quality, as before.
-    const auto = reported && reported !== handPickedQuality ? reported : 0;
-    // Once it reports another quality, the pick is its own again.
-    if (auto) handPickedQuality = 0;
+    // What 自动 shows in the menu is what plays, with no exception. Bilibili's player keeps
+    // its pick where it is while BTR plays (the pick only moves when that player downloads),
+    // so right after a quality picked by hand the pick is that quality: the menu then reads
+    // "1080P 60帧 自动" and 1080P 60帧 goes on playing. Leaving it for the pick 自动 had
+    // before, or for the video's default quality, played less than the menu showed (#69).
+    const auto = wanted ? 0 : nativeAutoQuality();
     if (qualityPlayer !== current || syncedQuality !== wanted) {
+      // A pick that cannot be read just now: the quality being left for 自动 is still it.
+      const left = qualityPlayer === current ? syncedQuality : 0;
       qualityPlayer = current;
       syncedQuality = wanted;
-      if (wanted) handPickedQuality = wanted;
-      const target = wanted ? 0 : auto || syncedAutoQuality;
+      // Back in 自动 after a quality picked by hand: BTR may choose at once (driveAutoQuality).
+      if (left && !wanted) { autoDrive.picked = false; autoDrive.changedAt = 0; }
+      const target = wanted ? 0 : auto || left || syncedAutoQuality;
       if (target) syncedAutoQuality = target;
       remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
       // The quality for 自动 first, so that going back to 自动 restarts at most once.
@@ -8128,6 +8224,258 @@ const chrome = (() => {
     syncedAutoQuality = auto;
     remember("auto quality follow", String(auto));
     settle(current.setAutoQuality(auto));
+  }
+
+  // 自动 in the full takeover (#69). Bilibili's player starts 自动 at a quality taken from the
+  // viewer's history and then moves it by the speed of its own downloads. While BTR plays,
+  // that player downloads nothing, so its pick never moved again and the whole video stayed
+  // at the first quality.
+  //
+  // BTR therefore makes the choice itself, from the speed of its own downloads, inside the
+  // range Bilibili allows 自动 on this account and device (its core keeps both ends), and
+  // sets it on Bilibili's core: the menu shows it at once ("4K 超高清 自动"), and
+  // syncNativeQuality plays it like any other pick of 自动.
+  //
+  // A change of quality restarts BTR's playback at the same position, a pause of a few
+  // seconds, so the choice is made early and seldom:
+  //   - The first one of a video as soon as a speed is known, up or down: with the speed kept
+  //     from the last videos that is while the video is still loading.
+  //   - Up later when the connection carries a higher quality with room to spare.
+  //   - Down when video has been downloading without a break for some seconds, still brings
+  //     less than the quality needs, and little is left ahead: the pause of the restart then
+  //     replaces the stall that was coming.
+  //   - Down one quality when little is left ahead and it has not grown for ten seconds of
+  //     downloading without a break, or when the video ran out of data twice within two
+  //     minutes and the speed does not say the connection is fine.
+  //
+  // Only the bytes that end up in the video count. A piece that takes long gets a second
+  // copy on another server, and the one that loses the race is thrown away: on a connection
+  // with little bandwidth that was nearly half of everything downloaded (measured), and a
+  // speed that counted it tried a quality the connection could not keep up.
+  //
+  // A quality's stated bandwidth is an average over the whole video, and a busy stretch
+  // needs far more (measured: 8 Mbit/s where 2.9 was stated). The index of the video being
+  // played says what the next half minute really needs, and the other qualities are taken
+  // to need more in the same proportion; a calm stretch is not counted as needing less.
+  //
+  // Two speeds are told apart, both measured against a throttled connection. While the
+  // buffer is full the downloads come in short bursts, and what a second of them brings is
+  // only a lower bound of what the connection can do: it may raise the quality, never lower
+  // it. While little is buffered and video downloads all the time, the speed is what the
+  // connection can do, and it alone lowers the quality and the speed kept for the next
+  // videos. (Choosing from one speed for both climbed in two or three steps on a fast
+  // connection, and on a slow one tried 4K from a speed kept on a faster day, over and over.)
+  //
+  // A quality that was too much is not tried again until the speed is clearly beyond the one
+  // it failed at; a limit that only ran out with time went up and came down again every few
+  // minutes on a connection that carries the quality almost, but not quite.
+  const AUTO_SPEED_HEADROOM = 1.5;
+  // Below this share of the playing quality's bitrate the connection cannot keep it up.
+  const AUTO_SUSTAIN = 1.1;
+  const AUTO_SETTLE_MS = 10000;
+  const AUTO_STALL_WINDOW_MS = 120000;
+  // A burst overrides a speed measured while downloading flat out only when it is this many
+  // times beyond it: a second of downloads is not what a connection keeps up.
+  const AUTO_BURST_BEYOND = 2;
+  const AUTO_REFUSED_MS = 5000;
+  const AUTO_PEAK_WINDOW_MS = 30000;
+  // Seconds of video downloading without a break, with less than AUTO_STARVED_SECONDS
+  // buffered, before the speed counts as what the connection can do.
+  const AUTO_SATURATED_TICKS = 4;
+  const AUTO_STARVED_SECONDS = 15;
+  const AUTO_LOW_BUFFER_SECONDS = 10;
+  // Seconds of downloading without a break after which a buffer that has not grown shows
+  // that the quality is too much.
+  const AUTO_DRAINED_TICKS = 10;
+  // Bilibili's core gives a switch twenty seconds to appear and then goes back to the quality
+  // it rendered last, which under the takeover is a stale one (360P, seen live). BTR is the
+  // one playing, and decides itself when a quality is too much.
+  const AUTO_SWITCH_TIMEOUT_SECONDS = 600;
+  const AUTO_SPEED_KEY = "BTR_AutoQualitySpeed";
+  const AUTO_SPEED_VALID_MS = 7 * 24 * 3600 * 1000;
+  const AUTO_SPEED_REFRESH_MS = 24 * 3600 * 1000;
+  function freshAutoDrive(route) {
+    // proven: the last speed measured while downloading flat out. tooMuch: the quality
+    // that had to be left, and the speed it was left at.
+    // usedIn, usedOf: the bytes used and the bytes of finished requests lately, fading over
+    // half a minute.
+    return { route, picked: false, proven: 0, tooMuch: null, stalls: [], session: 0, rebuffers: 0, changedAt: 0, refusedUntil: 0, samples: [], saturated: 0,
+      usedIn: 0, usedOf: 0, seenEnded: videoBytesEnded, seenUsed: videoBytesUsed };
+  }
+  let autoDrive = freshAutoDrive("");
+
+  // { kbps, at }: the video download speed known from the last videos, in this site's
+  // localStorage, so that the next video and the other tabs start from it. Zeros when none.
+  function keptAutoSpeed(now) {
+    try {
+      const [kbps, at] = String(root.localStorage.getItem(AUTO_SPEED_KEY) || "").split(":").map(Number);
+      if (kbps > 0 && at > 0 && now - at < AUTO_SPEED_VALID_MS) return { kbps, at };
+    } catch (_error) {}
+    return { kbps: 0, at: 0 };
+  }
+  function keepAutoSpeed(kbps, now) {
+    try { root.localStorage.setItem(AUTO_SPEED_KEY, `${Math.max(1, Math.round(kbps))}:${now}`); } catch (_error) {}
+  }
+
+  // The two speeds in kbit/s, from the video bytes counted at every tick (a second apart).
+  // peak: the best second of the last half minute. sustained: the average while video has
+  // been downloading without a break and little is buffered, 0 otherwise.
+  function measureAutoSpeed(drive, now, starved) {
+    const busy = [...transfers.values()].some((item) => item.kind === "video" && item.state === "active");
+    drive.saturated = busy && starved ? drive.saturated + 1 : 0;
+    drive.samples.push({ at: now, bytes: videoBytesIn, ahead: Number(stats.bufferedAhead) || 0 });
+    while (drive.samples.length > 2 && now - drive.samples[0].at > AUTO_PEAK_WINDOW_MS) drive.samples.shift();
+    let peak = 0;
+    for (let index = 1; index < drive.samples.length; index += 1) {
+      const ms = drive.samples[index].at - drive.samples[index - 1].at;
+      // A tick that came late (a tab in the background) says nothing about one second.
+      if (ms >= 500 && ms <= 2500) peak = Math.max(peak, (drive.samples[index].bytes - drive.samples[index - 1].bytes) * 8 / ms);
+    }
+    let sustained = 0;
+    if (drive.saturated >= AUTO_SATURATED_TICKS) {
+      // Without the first of those seconds: it holds the wait for the first bytes.
+      const from = drive.samples[Math.max(0, drive.samples.length - Math.min(drive.saturated, 10))];
+      if (now > from.at) sustained = (videoBytesIn - from.bytes) * 8 / (now - from.at);
+      // What the connection does now, whatever it did half a minute ago.
+      drive.samples = drive.samples.slice(-Math.min(drive.saturated, 10));
+    }
+    // The share of the downloaded bytes that was used, once enough has come in to tell.
+    drive.usedOf = drive.usedOf * 0.97 + videoBytesEnded - drive.seenEnded;
+    drive.usedIn = drive.usedIn * 0.97 + videoBytesUsed - drive.seenUsed;
+    drive.seenEnded = videoBytesEnded;
+    drive.seenUsed = videoBytesUsed;
+    const used = drive.usedOf > 2000000 ? Math.max(0.5, Math.min(1, drive.usedIn / drive.usedOf)) : 1;
+    return { peak: Math.round(peak * used), sustained: Math.round(sustained * used), used };
+  }
+
+  // What Bilibili's core allows 自动: its qualities in its own order, lowest first, cut to
+  // the lowest and the top it was given. null when 自动 is off or the core does not say.
+  function nativeAutoRange() {
+    try {
+      const core = root.player?.__core?.();
+      const state = core?.state;
+      if (!state?.isAutoSwitch?.video || typeof core.setQualityFor !== "function") return null;
+      // Between two videos the core still holds the last one's range while the new stream
+      // is not there yet.
+      if (state.initialized !== true || state.appendingSourceState) return null;
+      const list = (core.getQualityList?.("video") || []).map((item) => Math.trunc(Number(item?.id)) || 0);
+      const top = state.autoSwitchTopQualityMap?.video, lowest = state.autoSwitchLowestQualityMap?.video;
+      if (!Number.isInteger(top) || top < 0 || top >= list.length) return null;
+      return { core, list, qualities: list.slice(Number.isInteger(lowest) && lowest > 0 && lowest <= top ? lowest : 0, top + 1).filter(Boolean) };
+    } catch (_error) { return null; }
+  }
+
+  // The best of these qualities (lowest first) that the speed carries with room to spare;
+  // the lowest of them when it carries none.
+  function fitAutoQuality(qualities, kbpsOf, speedKbps) {
+    let best = 0;
+    for (let index = 1; index < qualities.length; index += 1) {
+      if (kbpsOf(qualities[index]) * AUTO_SPEED_HEADROOM <= speedKbps) best = index;
+    }
+    return qualities[best] || 0;
+  }
+
+  // Sets the quality 自动 shows on Bilibili's core, with a timeout BTR never reaches.
+  // The core refuses the quality it believes is on screen ("equal current quality"), and
+  // under the takeover that is the one it rendered itself, long ago: it is first told which
+  // quality BTR has been playing, the one its menu shows.
+  function setNativeAutoQuality(range, quality, shown, refused) {
+    try {
+      const { core, list } = range;
+      const index = list.indexOf(quality), shownIndex = list.indexOf(shown);
+      if (index < 0) return false;
+      if (core.state?.currentQualityIndex?.video === index && shownIndex >= 0 && shownIndex !== index
+        && typeof core.fire === "function" && typeof core.getQualityChangedData === "function") {
+        const rendered = { type: "qualityChangeRendered", mediaType: "video", oldQuality: index, newQuality: shownIndex, isMediaSegment: true, requestType: "MediaSegment" };
+        core.fire("qualityChangeRendered", core.getQualityChangedData(rendered));
+      }
+      Promise.resolve(core.setQualityFor("video", quality, AUTO_SWITCH_TIMEOUT_SECONDS)).catch(refused);
+      return true;
+    } catch (error) { refused(error); return false; }
+  }
+
+  function driveAutoQuality() {
+    if (!player || player.nativeTransport || typeof player.playableQualities !== "function") return;
+    if (autoDrive.route !== playerRoute) autoDrive = freshAutoDrive(playerRoute);
+    // A quality picked by hand: nothing to choose, and going back to 自动 chooses at once.
+    if (nativeQuality()) { autoDrive.picked = false; autoDrive.stalls = []; autoDrive.saturated = 0; return; }
+    const range = nativeAutoRange();
+    if (!range) return;
+    const now = Date.now();
+    const debug = player.getDebug?.() || {};
+    const playable = new Map(player.playableQualities().map((item) => [Number(item.id), Number(item.bandwidth) || 0]));
+    // What the stretch ahead needs, against what the quality being played states.
+    const stated = (playable.get(Number(debug.qualityId)) || 0) / 1000;
+    const busier = stated > 0 && debug.videoKbpsAhead > stated ? Math.min(4, debug.videoKbpsAhead / stated) : 1;
+    const kbpsOf = (quality) => (playable.get(quality) || 0) / 1000 * busier;
+    const allowed = range.qualities.filter((quality) => playable.has(quality));
+    if (!allowed.length) return;
+    const shown = nativeAutoQuality();
+    const current = allowed.indexOf(shown);
+    const ahead = Number(stats.bufferedAhead) || 0;
+    // A new quality or a new start is measured from its own first seconds.
+    const session = Number(debug.sessionStarts) || 0, rebuffers = Number(debug.underflowRebuffers) || 0;
+    if (session !== autoDrive.session) { autoDrive.session = session; autoDrive.saturated = 0; }
+    else if (rebuffers > autoDrive.rebuffers) autoDrive.stalls.push(now);
+    autoDrive.rebuffers = rebuffers;
+    autoDrive.stalls = autoDrive.stalls.filter((at) => now - at < AUTO_STALL_WINDOW_MS);
+
+    const starved = ahead < AUTO_STARVED_SECONDS;
+    const speed = measureAutoSpeed(autoDrive, now, starved);
+    const kept = keptAutoSpeed(now);
+    // The speed to choose by. A burst only counts once the buffer is well filled: before
+    // that it is the first few segments, which say little.
+    let known = kept.kbps;
+    if (speed.sustained) known = autoDrive.proven = speed.sustained;
+    else if (!starved && speed.peak > known && !(speed.peak < autoDrive.proven * AUTO_BURST_BEYOND)) known = speed.peak;
+    if (known && (Math.abs(known - kept.kbps) > kept.kbps * 0.1 || now - kept.at > AUTO_SPEED_REFRESH_MS)) keepAutoSpeed(known, now);
+
+    const failed = autoDrive.tooMuch && known < autoDrive.tooMuch.kbps * AUTO_SPEED_HEADROOM ? allowed.indexOf(autoDrive.tooMuch.quality) : -1;
+    const reachable = failed > 0 ? allowed.slice(0, failed) : allowed;
+    const fit = known ? fitAutoQuality(reachable, kbpsOf, known) : 0;
+    let target = 0, lowered = false, why = "";
+    if (current < 0 || !autoDrive.picked) {
+      // The first choice of a video (or of a return to 自动), and a pick of the core's that
+      // 自动 may not use here.
+      target = fit;
+      why = current < 0 ? "outside the range" : "first choice";
+    } else if (speed.sustained && current > 0 && speed.sustained < kbpsOf(shown) * AUTO_SUSTAIN
+      && (stats.playerState !== "ready" || ahead < AUTO_LOW_BUFFER_SECONDS)) {
+      target = fitAutoQuality(allowed.slice(0, current), kbpsOf, speed.sustained);
+      lowered = true;
+      why = "cannot keep up";
+    } else if (current > 0 && stats.playerState === "ready" && ahead < AUTO_LOW_BUFFER_SECONDS && autoDrive.saturated >= AUTO_DRAINED_TICKS
+      && ahead <= autoDrive.samples.at(-AUTO_DRAINED_TICKS)?.ahead) {
+      target = fitAutoQuality(allowed.slice(0, current), kbpsOf, known);
+      lowered = true;
+      why = "the buffer does not grow";
+    } else if (autoDrive.stalls.length >= 2) {
+      autoDrive.stalls = [];
+      if (current > 0 && speed.peak < kbpsOf(shown) * AUTO_SPEED_HEADROOM) {
+        target = allowed[current - 1];
+        lowered = true;
+        why = "ran out of data twice";
+      }
+    } else if (fit && reachable.indexOf(fit) > current && stats.playerState === "ready"
+      && now - autoDrive.changedAt >= AUTO_SETTLE_MS && document.visibilityState !== "hidden") {
+      // Not in a tab nobody is looking at: the pause would only be heard.
+      target = fit;
+      why = "room to spare";
+    }
+    if (known) autoDrive.picked = true;
+    if (!target || target === shown || now < autoDrive.refusedUntil) return;
+    autoDrive.changedAt = now;
+    if (lowered) autoDrive.tooMuch = { quality: shown, kbps: Math.max(1, known || speed.peak) };
+    remember(lowered ? "auto quality lowered" : "auto quality picked",
+      `${target}, ${known ? `${(known / 1000).toFixed(1)} Mbit/s${speed.sustained ? " sustained" : ""}` : "no speed"}${speed.used < 0.95 ? ` (${Math.round(speed.used * 100)}% of the bytes used)` : ""}, ${why}, allowed ${allowed[0]} to ${allowed.at(-1)}`);
+    const drive = autoDrive;
+    const refused = (error) => {
+      drive.refusedUntil = Date.now() + AUTO_REFUSED_MS;
+      remember("auto quality refused", String(error?.msg || error?.message || error || "").slice(0, 80), "warn");
+    };
+    if (!setNativeAutoQuality(range, target, shown, refused)) return;
+    // The core's pick moved with that call; play it now instead of at the next tick.
+    syncNativeQuality();
   }
 
   // While BTR plays the video, Bilibili's core never receives its "new quality rendered"
@@ -8154,7 +8502,10 @@ const chrome = (() => {
       if (!pending?.switching || typeof pending.resolve !== "function" || resolvedSwitchToken === pending) return;
       armFastResolve(pending);
       if (stats.playerState !== "ready") return;
-      const target = nativeQuality();
+      // In 自动 a switch can be pending as well: the pick BTR made itself (driveAutoQuality),
+      // which the menu already shows. It is confirmed once that quality plays; confirmed for
+      // the quality still playing, the core's timeout stayed armed and set the menu back.
+      const target = nativeQuality() || nativeAutoQuality();
       const playingId = Number(player.getDebug?.()?.qualityId) || 0;
       if (target && playingId !== target) return;
       resolvedSwitchToken = pending;
@@ -8688,7 +9039,6 @@ const chrome = (() => {
       qualityPlayer = nextPlayer;
       syncedQuality = preferredQuality;
       syncedAutoQuality = preferredQuality ? 0 : Number(nextPlayer.getDebug?.()?.autoQuality) || 0;
-      handPickedQuality = preferredQuality;
       codecPlayer = nextPlayer;
       syncedCodec = preferredCodec;
       notices?.attach(nextPlayer.video, route, lifecycle, () => lifecycle === playerLifecycle && player === nextPlayer && playerRoute === routeIdentity()?.key && playerContainer?.isConnected && !["error", "native-fallback", "disabled"].includes(stats.playerState));
@@ -8809,6 +9159,7 @@ const chrome = (() => {
     if (settingsLoaded && settings.enabled && (!player || playerRoute !== identity?.key || !playerContainer?.isConnected || !player.video?.isConnected)) startPlayer();
     else {
       syncNativeQuality();
+      driveAutoQuality();
       syncNativeCodec();
       resolveNativeQualitySwitch();
       suppressNativeSchedulers();
@@ -8865,7 +9216,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.10.1"
+      version: "2026.11.13.1"
     })
   });
   publish();
@@ -9118,7 +9469,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.10.1",
+    version: "2026.11.13.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -9597,7 +9948,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.10.1"
+      version: "2026.11.13.1"
     })
   });
   publish();
