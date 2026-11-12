@@ -92,6 +92,12 @@
   let infoPanelObserver = null;
   const lastHostByKind = { video: "", audio: "" };
   const recentBytes = [];
+  // Every video byte downloaded, for the speed 自动 chooses by (measureAutoSpeed).
+  let videoBytesIn = 0;
+  // The video bytes of requests that are over, and those of them in pieces that were
+  // completed and used (a second copy that loses its race is cancelled).
+  let videoBytesEnded = 0;
+  let videoBytesUsed = 0;
   let failedRoute = "";
   let startingRoute = "";
   let routeGeneration = 0;
@@ -383,6 +389,7 @@
       recentBytes.push({ at: now, bytes });
       while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
       speedMeters[item.kind]?.samples.push({ at: now, bytes });
+      if (item.kind === "video") videoBytesIn += bytes;
       item.loaded += bytes;
       item.sampleBytes += bytes;
       item.lastByteAt = now;
@@ -396,6 +403,7 @@
       }
       schedulePublish();
     } else {
+      if (item.kind === "video") videoBytesEnded += item.loaded;
       if (event.phase === "cancel") {
         transfers.delete(item.id);
         trackBusy(item.kind, now);
@@ -403,6 +411,7 @@
         return event.id;
       }
       item.state = event.phase === "done" ? "done" : "error";
+      if (event.phase === "done" && item.kind === "video") videoBytesUsed += item.loaded;
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
       trackBusy(item.kind, now);
@@ -1257,7 +1266,7 @@
       qualityPlayer = current;
       syncedQuality = wanted;
       // Back in 自动 after a quality picked by hand: BTR may choose at once (driveAutoQuality).
-      if (left && !wanted) autoDrive.changedAt = 0;
+      if (left && !wanted) { autoDrive.picked = false; autoDrive.changedAt = 0; }
       const target = wanted ? 0 : auto || left || syncedAutoQuality;
       if (target) syncedAutoQuality = target;
       remember("quality follow", `menu ${wanted || "auto"}, playing ${wanted || target || "default"}`);
@@ -1277,66 +1286,125 @@
   }
 
   // 自动 in the full takeover (#69). Bilibili's player starts 自动 at a quality taken from the
-  // viewer's history (720P without one, lower after a dip picked by hand) and then moves it
-  // by the speed of its own downloads: seen live, 1080P 60帧 at the start and 4K three
-  // seconds later. While BTR plays, that player downloads nothing, so its pick never moved
-  // again and the whole video stayed at the first quality, 360P after a dip to 360P.
+  // viewer's history and then moves it by the speed of its own downloads. While BTR plays,
+  // that player downloads nothing, so its pick never moved again and the whole video stayed
+  // at the first quality.
   //
   // BTR therefore makes the choice itself, from the speed of its own downloads, inside the
   // range Bilibili allows 自动 on this account and device (its core keeps both ends), and
   // sets it on Bilibili's core: the menu shows it at once ("4K 超高清 自动"), and
-  // syncNativeQuality plays it like any other pick of 自动. Verified against the live player:
-  // setQualityFor works with 自动 left on, and the switch is confirmed as for a manual one.
-  //
-  // Upwards by speed only, with room to spare; downwards only after the video really ran out
-  // of data twice, and then that quality is the limit for the rest of the video. A measured
-  // speed alone never lowers it: between segments it says little.
+  // syncNativeQuality plays it like any other pick of 自动.
   //
   // A change of quality restarts BTR's playback at the same position, a pause of a few
-  // seconds, so the choice should be right the first time. The speed measured while a low
-  // quality plays is far below what the connection can do (small segments are over before the
-  // connections get going), and choosing from it alone climbed in two or three steps. The
-  // best speed seen is therefore kept for the next videos and tabs: with it, the first pick
-  // is made while the video is still loading, and is the final one.
+  // seconds, so the choice is made early and seldom:
+  //   - The first one of a video as soon as a speed is known, up or down: with the speed kept
+  //     from the last videos that is while the video is still loading.
+  //   - Up later when the connection carries a higher quality with room to spare.
+  //   - Down when video has been downloading without a break for some seconds, still brings
+  //     less than the quality needs, and little is left ahead: the pause of the restart then
+  //     replaces the stall that was coming.
+  //   - Down one quality when little is left ahead and it has not grown for ten seconds of
+  //     downloading without a break, or when the video ran out of data twice within two
+  //     minutes and the speed does not say the connection is fine.
+  //
+  // Only the bytes that end up in the video count. A piece that takes long gets a second
+  // copy on another server, and the one that loses the race is thrown away: on a connection
+  // with little bandwidth that was nearly half of everything downloaded (measured), and a
+  // speed that counted it tried a quality the connection could not keep up.
+  //
+  // A quality's stated bandwidth is an average over the whole video, and a busy stretch
+  // needs far more (measured: 8 Mbit/s where 2.9 was stated). The index of the video being
+  // played says what the next half minute really needs, and the other qualities are taken
+  // to need more in the same proportion; a calm stretch is not counted as needing less.
+  //
+  // Two speeds are told apart, both measured against a throttled connection. While the
+  // buffer is full the downloads come in short bursts, and what a second of them brings is
+  // only a lower bound of what the connection can do: it may raise the quality, never lower
+  // it. While little is buffered and video downloads all the time, the speed is what the
+  // connection can do, and it alone lowers the quality and the speed kept for the next
+  // videos. (Choosing from one speed for both climbed in two or three steps on a fast
+  // connection, and on a slow one tried 4K from a speed kept on a faster day, over and over.)
+  //
+  // A quality that was too much is not tried again until the speed is clearly beyond the one
+  // it failed at; a limit that only ran out with time went up and came down again every few
+  // minutes on a connection that carries the quality almost, but not quite.
   const AUTO_SPEED_HEADROOM = 1.5;
+  // Below this share of the playing quality's bitrate the connection cannot keep it up.
+  const AUTO_SUSTAIN = 1.1;
   const AUTO_SETTLE_MS = 10000;
   const AUTO_STALL_WINDOW_MS = 120000;
-  const AUTO_REFUSED_MS = 30000;
+  // A burst overrides a speed measured while downloading flat out only when it is this many
+  // times beyond it: a second of downloads is not what a connection keeps up.
+  const AUTO_BURST_BEYOND = 2;
+  const AUTO_REFUSED_MS = 5000;
+  const AUTO_PEAK_WINDOW_MS = 30000;
+  // Seconds of video downloading without a break, with less than AUTO_STARVED_SECONDS
+  // buffered, before the speed counts as what the connection can do.
+  const AUTO_SATURATED_TICKS = 4;
+  const AUTO_STARVED_SECONDS = 15;
+  const AUTO_LOW_BUFFER_SECONDS = 10;
+  // Seconds of downloading without a break after which a buffer that has not grown shows
+  // that the quality is too much.
+  const AUTO_DRAINED_TICKS = 10;
+  // Bilibili's core gives a switch twenty seconds to appear and then goes back to the quality
+  // it rendered last, which under the takeover is a stale one (360P, seen live). BTR is the
+  // one playing, and decides itself when a quality is too much.
+  const AUTO_SWITCH_TIMEOUT_SECONDS = 600;
   const AUTO_SPEED_KEY = "BTR_AutoQualitySpeed";
   const AUTO_SPEED_VALID_MS = 7 * 24 * 3600 * 1000;
-  // With no speed kept yet (the first video after installing), a quality that comes in this
-  // many times faster than it plays counts as a connection with plenty to spare.
-  const AUTO_FIRST_USE_RATIO = 3;
-  let autoDrive = { route: "", limit: 0, stalls: [], session: 0, rebuffers: 0, changedAt: 0, refusedUntil: 0 };
-  let autoSpeedKept = null;
+  const AUTO_SPEED_REFRESH_MS = 24 * 3600 * 1000;
+  function freshAutoDrive(route) {
+    // proven: the last speed measured while downloading flat out. tooMuch: the quality
+    // that had to be left, and the speed it was left at.
+    // usedIn, usedOf: the bytes used and the bytes of finished requests lately, fading over
+    // half a minute.
+    return { route, picked: false, proven: 0, tooMuch: null, stalls: [], session: 0, rebuffers: 0, changedAt: 0, refusedUntil: 0, samples: [], saturated: 0,
+      usedIn: 0, usedOf: 0, seenEnded: videoBytesEnded, seenUsed: videoBytesUsed };
+  }
+  let autoDrive = freshAutoDrive("");
 
-  // { kbps, at }: the best video download speed seen lately, in this site's localStorage.
+  // { kbps, at }: the video download speed known from the last videos, in this site's
+  // localStorage, so that the next video and the other tabs start from it. Zeros when none.
   function keptAutoSpeed(now) {
-    if (!autoSpeedKept) {
-      autoSpeedKept = { kbps: 0, at: 0 };
-      try {
-        const [kbps, at] = String(root.localStorage.getItem(AUTO_SPEED_KEY) || "").split(":").map(Number);
-        if (kbps > 0 && at > 0) autoSpeedKept = { kbps, at };
-      } catch (_error) {}
-    }
-    return now - autoSpeedKept.at < AUTO_SPEED_VALID_MS ? autoSpeedKept.kbps : 0;
+    try {
+      const [kbps, at] = String(root.localStorage.getItem(AUTO_SPEED_KEY) || "").split(":").map(Number);
+      if (kbps > 0 && at > 0 && now - at < AUTO_SPEED_VALID_MS) return { kbps, at };
+    } catch (_error) {}
+    return { kbps: 0, at: 0 };
   }
   function keepAutoSpeed(kbps, now) {
-    autoSpeedKept = { kbps: Math.max(0, Math.round(kbps)), at: now };
-    try { root.localStorage.setItem(AUTO_SPEED_KEY, `${autoSpeedKept.kbps}:${now}`); } catch (_error) {}
+    try { root.localStorage.setItem(AUTO_SPEED_KEY, `${Math.max(1, Math.round(kbps))}:${now}`); } catch (_error) {}
   }
-  // The speed to choose by: what is measured now, or the best kept from before. playingKbps
-  // is the bitrate of the quality being downloaded.
-  function autoSpeed(now, playingKbps) {
-    const measured = measuredSpeed("video", now), kept = keptAutoSpeed(now);
-    // Small rises are not worth a write at every tick.
-    if (measured > kept * 1.1) keepAutoSpeed(measured, now);
-    // Nothing kept yet: the speed measured at a low quality would climb in several steps,
-    // each one a pause. A connection that has plenty to spare goes to the top of the range
-    // at once; if that is too much, the video running out of data lowers it again, and the
-    // speed measured up there is the true one for next time.
-    if (!kept && measured > 0 && playingKbps > 0 && measured >= playingKbps * AUTO_FIRST_USE_RATIO) return Infinity;
-    return Math.max(measured, kept);
+
+  // The two speeds in kbit/s, from the video bytes counted at every tick (a second apart).
+  // peak: the best second of the last half minute. sustained: the average while video has
+  // been downloading without a break and little is buffered, 0 otherwise.
+  function measureAutoSpeed(drive, now, starved) {
+    const busy = [...transfers.values()].some((item) => item.kind === "video" && item.state === "active");
+    drive.saturated = busy && starved ? drive.saturated + 1 : 0;
+    drive.samples.push({ at: now, bytes: videoBytesIn, ahead: Number(stats.bufferedAhead) || 0 });
+    while (drive.samples.length > 2 && now - drive.samples[0].at > AUTO_PEAK_WINDOW_MS) drive.samples.shift();
+    let peak = 0;
+    for (let index = 1; index < drive.samples.length; index += 1) {
+      const ms = drive.samples[index].at - drive.samples[index - 1].at;
+      // A tick that came late (a tab in the background) says nothing about one second.
+      if (ms >= 500 && ms <= 2500) peak = Math.max(peak, (drive.samples[index].bytes - drive.samples[index - 1].bytes) * 8 / ms);
+    }
+    let sustained = 0;
+    if (drive.saturated >= AUTO_SATURATED_TICKS) {
+      // Without the first of those seconds: it holds the wait for the first bytes.
+      const from = drive.samples[Math.max(0, drive.samples.length - Math.min(drive.saturated, 10))];
+      if (now > from.at) sustained = (videoBytesIn - from.bytes) * 8 / (now - from.at);
+      // What the connection does now, whatever it did half a minute ago.
+      drive.samples = drive.samples.slice(-Math.min(drive.saturated, 10));
+    }
+    // The share of the downloaded bytes that was used, once enough has come in to tell.
+    drive.usedOf = drive.usedOf * 0.97 + videoBytesEnded - drive.seenEnded;
+    drive.usedIn = drive.usedIn * 0.97 + videoBytesUsed - drive.seenUsed;
+    drive.seenEnded = videoBytesEnded;
+    drive.seenUsed = videoBytesUsed;
+    const used = drive.usedOf > 2000000 ? Math.max(0.5, Math.min(1, drive.usedIn / drive.usedOf)) : 1;
+    return { peak: Math.round(peak * used), sustained: Math.round(sustained * used), used };
   }
 
   // What Bilibili's core allows 自动: its qualities in its own order, lowest first, cut to
@@ -1352,83 +1420,119 @@
       const list = (core.getQualityList?.("video") || []).map((item) => Math.trunc(Number(item?.id)) || 0);
       const top = state.autoSwitchTopQualityMap?.video, lowest = state.autoSwitchLowestQualityMap?.video;
       if (!Number.isInteger(top) || top < 0 || top >= list.length) return null;
-      return { core, qualities: list.slice(Number.isInteger(lowest) && lowest > 0 && lowest <= top ? lowest : 0, top + 1).filter(Boolean) };
+      return { core, list, qualities: list.slice(Number.isInteger(lowest) && lowest > 0 && lowest <= top ? lowest : 0, top + 1).filter(Boolean) };
     } catch (_error) { return null; }
   }
 
-  // The quality 自动 should play now, 0 for "leave it". allowed is lowest first.
-  function pickAutoQuality(allowed, shown, bandwidthOf, speedKbps) {
-    if (!allowed.length || !(speedKbps > 0)) return 0;
+  // The best of these qualities (lowest first) that the speed carries with room to spare;
+  // the lowest of them when it carries none.
+  function fitAutoQuality(qualities, kbpsOf, speedKbps) {
     let best = 0;
-    for (let index = 0; index < allowed.length; index += 1) {
-      if (bandwidthOf(allowed[index]) / 1000 * AUTO_SPEED_HEADROOM <= speedKbps) best = index;
+    for (let index = 1; index < qualities.length; index += 1) {
+      if (kbpsOf(qualities[index]) * AUTO_SPEED_HEADROOM <= speedKbps) best = index;
     }
-    const playing = allowed.indexOf(shown);
-    // Inside the range the speed only ever raises it.
-    if (playing >= 0 && best <= playing) return 0;
-    return allowed[best];
+    return qualities[best] || 0;
+  }
+
+  // Sets the quality 自动 shows on Bilibili's core, with a timeout BTR never reaches.
+  // The core refuses the quality it believes is on screen ("equal current quality"), and
+  // under the takeover that is the one it rendered itself, long ago: it is first told which
+  // quality BTR has been playing, the one its menu shows.
+  function setNativeAutoQuality(range, quality, shown, refused) {
+    try {
+      const { core, list } = range;
+      const index = list.indexOf(quality), shownIndex = list.indexOf(shown);
+      if (index < 0) return false;
+      if (core.state?.currentQualityIndex?.video === index && shownIndex >= 0 && shownIndex !== index
+        && typeof core.fire === "function" && typeof core.getQualityChangedData === "function") {
+        const rendered = { type: "qualityChangeRendered", mediaType: "video", oldQuality: index, newQuality: shownIndex, isMediaSegment: true, requestType: "MediaSegment" };
+        core.fire("qualityChangeRendered", core.getQualityChangedData(rendered));
+      }
+      Promise.resolve(core.setQualityFor("video", quality, AUTO_SWITCH_TIMEOUT_SECONDS)).catch(refused);
+      return true;
+    } catch (error) { refused(error); return false; }
   }
 
   function driveAutoQuality() {
     if (!player || player.nativeTransport || typeof player.playableQualities !== "function") return;
-    if (autoDrive.route !== playerRoute) autoDrive = { route: playerRoute, limit: 0, stalls: [], session: 0, rebuffers: 0, changedAt: 0, refusedUntil: 0 };
-    // A quality picked by hand: nothing to choose, and going back to 自动 picks at once.
-    if (nativeQuality()) { autoDrive.stalls = []; autoDrive.changedAt = 0; return; }
-    // Not in a tab nobody is looking at: its timers run as rarely as once a minute, and the
-    // core would give up on the new quality (twenty seconds) before BTR could confirm it.
-    // The pick is made when the tab is looked at again.
-    if (document.visibilityState === "hidden") return;
+    if (autoDrive.route !== playerRoute) autoDrive = freshAutoDrive(playerRoute);
+    // A quality picked by hand: nothing to choose, and going back to 自动 chooses at once.
+    if (nativeQuality()) { autoDrive.picked = false; autoDrive.stalls = []; autoDrive.saturated = 0; return; }
     const range = nativeAutoRange();
     if (!range) return;
     const now = Date.now();
     const debug = player.getDebug?.() || {};
     const playable = new Map(player.playableQualities().map((item) => [Number(item.id), Number(item.bandwidth) || 0]));
-    let allowed = range.qualities.filter((quality) => playable.has(quality));
+    // What the stretch ahead needs, against what the quality being played states.
+    const stated = (playable.get(Number(debug.qualityId)) || 0) / 1000;
+    const busier = stated > 0 && debug.videoKbpsAhead > stated ? Math.min(4, debug.videoKbpsAhead / stated) : 1;
+    const kbpsOf = (quality) => (playable.get(quality) || 0) / 1000 * busier;
+    const allowed = range.qualities.filter((quality) => playable.has(quality));
+    if (!allowed.length) return;
     const shown = nativeAutoQuality();
-    // The video ran out of data while playing: twice within two minutes is one quality too many.
+    const current = allowed.indexOf(shown);
+    const ahead = Number(stats.bufferedAhead) || 0;
+    // A new quality or a new start is measured from its own first seconds.
     const session = Number(debug.sessionStarts) || 0, rebuffers = Number(debug.underflowRebuffers) || 0;
-    if (session !== autoDrive.session) autoDrive.session = session;
+    if (session !== autoDrive.session) { autoDrive.session = session; autoDrive.saturated = 0; }
     else if (rebuffers > autoDrive.rebuffers) autoDrive.stalls.push(now);
     autoDrive.rebuffers = rebuffers;
     autoDrive.stalls = autoDrive.stalls.filter((at) => now - at < AUTO_STALL_WINDOW_MS);
-    let lowered = false;
-    if (autoDrive.stalls.length >= 2) {
-      const playing = allowed.indexOf(shown);
+
+    const starved = ahead < AUTO_STARVED_SECONDS;
+    const speed = measureAutoSpeed(autoDrive, now, starved);
+    const kept = keptAutoSpeed(now);
+    // The speed to choose by. A burst only counts once the buffer is well filled: before
+    // that it is the first few segments, which say little.
+    let known = kept.kbps;
+    if (speed.sustained) known = autoDrive.proven = speed.sustained;
+    else if (!starved && speed.peak > known && !(speed.peak < autoDrive.proven * AUTO_BURST_BEYOND)) known = speed.peak;
+    if (known && (Math.abs(known - kept.kbps) > kept.kbps * 0.1 || now - kept.at > AUTO_SPEED_REFRESH_MS)) keepAutoSpeed(known, now);
+
+    const failed = autoDrive.tooMuch && known < autoDrive.tooMuch.kbps * AUTO_SPEED_HEADROOM ? allowed.indexOf(autoDrive.tooMuch.quality) : -1;
+    const reachable = failed > 0 ? allowed.slice(0, failed) : allowed;
+    const fit = known ? fitAutoQuality(reachable, kbpsOf, known) : 0;
+    let target = 0, lowered = false, why = "";
+    if (current < 0 || !autoDrive.picked) {
+      // The first choice of a video (or of a return to 自动), and a pick of the core's that
+      // 自动 may not use here.
+      target = fit;
+      why = current < 0 ? "outside the range" : "first choice";
+    } else if (speed.sustained && current > 0 && speed.sustained < kbpsOf(shown) * AUTO_SUSTAIN
+      && (stats.playerState !== "ready" || ahead < AUTO_LOW_BUFFER_SECONDS)) {
+      target = fitAutoQuality(allowed.slice(0, current), kbpsOf, speed.sustained);
+      lowered = true;
+      why = "cannot keep up";
+    } else if (current > 0 && stats.playerState === "ready" && ahead < AUTO_LOW_BUFFER_SECONDS && autoDrive.saturated >= AUTO_DRAINED_TICKS
+      && ahead <= autoDrive.samples.at(-AUTO_DRAINED_TICKS)?.ahead) {
+      target = fitAutoQuality(allowed.slice(0, current), kbpsOf, known);
+      lowered = true;
+      why = "the buffer does not grow";
+    } else if (autoDrive.stalls.length >= 2) {
       autoDrive.stalls = [];
-      if (playing > 0) {
-        autoDrive.limit = allowed[playing - 1];
+      if (current > 0 && speed.peak < kbpsOf(shown) * AUTO_SPEED_HEADROOM) {
+        target = allowed[current - 1];
         lowered = true;
-        // The speed kept from before was too good for today: start again from what is measured.
-        keepAutoSpeed(Math.max(1, measuredSpeed("video", now)), now);
+        why = "ran out of data twice";
       }
+    } else if (fit && reachable.indexOf(fit) > current && stats.playerState === "ready"
+      && now - autoDrive.changedAt >= AUTO_SETTLE_MS && document.visibilityState !== "hidden") {
+      // Not in a tab nobody is looking at: the pause would only be heard.
+      target = fit;
+      why = "room to spare";
     }
-    const limit = allowed.indexOf(autoDrive.limit);
-    if (limit >= 0) allowed = allowed.slice(0, limit + 1);
-    let pending = null;
-    try { pending = range.core.qnSwitchingInfo?.video; } catch (_error) {}
-    if (pending?.switching || now < autoDrive.refusedUntil) return;
-    // The first pick of a video may come while it is still loading (see above); later ones
-    // wait for playback and leave the last change time to settle.
-    if (!lowered && autoDrive.changedAt && (stats.playerState !== "ready" || now - autoDrive.changedAt < AUTO_SETTLE_MS)) return;
-    const speed = autoSpeed(now, (playable.get(Number(debug.qualityId)) || 0) / 1000);
-    const target = lowered ? autoDrive.limit : pickAutoQuality(allowed, shown, (quality) => playable.get(quality) || 0, speed);
-    if (!target || target === shown) return;
+    if (known) autoDrive.picked = true;
+    if (!target || target === shown || now < autoDrive.refusedUntil) return;
     autoDrive.changedAt = now;
-    remember(lowered ? "auto quality lowered" : "auto quality picked", `${target}, ${Number.isFinite(speed) ? `${(speed / 1000).toFixed(1)} Mbit/s` : "first use, plenty to spare"}, allowed ${allowed[0]} to ${allowed.at(-1)}${lowered ? ", ran out of data twice" : ""}`);
+    if (lowered) autoDrive.tooMuch = { quality: shown, kbps: Math.max(1, known || speed.peak) };
+    remember(lowered ? "auto quality lowered" : "auto quality picked",
+      `${target}, ${known ? `${(known / 1000).toFixed(1)} Mbit/s${speed.sustained ? " sustained" : ""}` : "no speed"}${speed.used < 0.95 ? ` (${Math.round(speed.used * 100)}% of the bytes used)` : ""}, ${why}, allowed ${allowed[0]} to ${allowed.at(-1)}`);
     const drive = autoDrive;
     const refused = (error) => {
       drive.refusedUntil = Date.now() + AUTO_REFUSED_MS;
-      // Bilibili's core gave up waiting for the new quality (twenty seconds) and went back:
-      // that quality is too much for this connection, whatever the speed kept from before.
-      if (/time\s*out/i.test(String(error?.msg || error?.message || "")) && document.visibilityState !== "hidden"
-        && shown && allowed.indexOf(shown) >= 0 && allowed.indexOf(shown) < allowed.indexOf(target)) {
-        drive.limit = shown;
-        keepAutoSpeed(Math.max(1, measuredSpeed("video", Date.now())), Date.now());
-        remember("auto quality given up", `${target} did not start in time, staying at ${shown}`, "warn");
-      }
+      remember("auto quality refused", String(error?.msg || error?.message || error || "").slice(0, 80), "warn");
     };
-    try { Promise.resolve(range.core.setQualityFor("video", target)).catch(refused); }
-    catch (error) { refused(error); return; }
+    if (!setNativeAutoQuality(range, target, shown, refused)) return;
     // The core's pick moved with that call; play it now instead of at the next tick.
     syncNativeQuality();
   }

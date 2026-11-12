@@ -245,6 +245,17 @@
     catch (_error) { return fallback; }
   }
 
+  function kbpsAhead(track, from, seconds = 30) {
+    let bytes = 0, duration = 0;
+    for (const segment of track?.sidx?.segments || []) {
+      if (segment.endTime <= from) continue;
+      if (segment.startTime >= from + seconds) break;
+      bytes += Number(segment.length) || 0;
+      duration += Number(segment.durationSeconds) || 0;
+    }
+    return duration > 0 ? Math.round(bytes * 8 / duration / 1000) : 0;
+  }
+
   function mediaBytesPerSecond(track) {
     const segment = track?.sidx?.segments?.[track.startupIndex];
     if (segment?.durationSeconds > 0 && segment?.length > 0) return segment.length / segment.durationSeconds;
@@ -1768,6 +1779,10 @@
         videoType: mimeFor(selectedVideo, "video"),
         audioType: mimeFor(selection.audio, "audio"),
         videoBandwidth: Number(selectedVideo?.bandwidth) || 0,
+        // The bitrate of the next half minute of the video being played, in kbit/s, from its
+        // index. The bandwidth above is an average over the whole video: a busy stretch was
+        // measured at nearly three times as much, and 自动 chooses by what is coming.
+        videoKbpsAhead: kbpsAhead(session?.tracks?.find((track) => track.kind === "video"), Number(video.currentTime) || session?.startTime || 0),
         audioBandwidth: Number(selection.audio?.bandwidth) || 0,
         currentTime: Number(video.currentTime) || 0,
         mediaSourceState: session?.mediaSource?.readyState || "closed",

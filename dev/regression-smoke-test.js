@@ -21,8 +21,10 @@ const { chromium } = require("playwright");
     ["quality-sync-test.html", "quality-sync-result", 30000],
     ["quality-sync-test.html?auto", "quality-sync-result"],
     // 自动 in the full takeover: waits out the ten seconds between two picks.
-    ["auto-quality-test.html", "auto-quality-result", 60000],
-    ["auto-quality-test.html?kept=5000", "auto-quality-result", 30000],
+    ["auto-quality-test.html", "auto-quality-result", 30000],
+    ["auto-quality-test.html?kept=5000", "auto-quality-result", 60000],
+    ["auto-quality-test.html?kept=50000", "auto-quality-result", 60000],
+    ["auto-quality-test.html?kept=3500", "auto-quality-result", 30000],
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],
