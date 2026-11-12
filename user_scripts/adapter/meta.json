@@ -3,7 +3,7 @@
     ["name", "Bilibili 线程撕裂者"],
     ["namespace", "https://github.com/MrTangLuyao/Bilibili-thread-ripper"],
     ["version", "{version}"],
-    ["description", "保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。"],
+    ["description", "解决海外B站卡顿的最后一个脚本"],
     ["icon", "https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png"],
     ["author", "MrTangLuyao"],
     ["license", "MIT"],
