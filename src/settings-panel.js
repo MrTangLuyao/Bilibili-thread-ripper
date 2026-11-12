@@ -115,7 +115,7 @@
             <label><input type="radio" name="takeover" value="full"><span>全接管</span></label>
             <label><input type="radio" name="takeover" value="compat"><span>兼容模式</span></label>
           </section>
-          <p class="takeover-note">Safari 用户建议使用兼容模式。<br><br>全接管：播放内核由BTR接管，速度最快。<br>兼容模式：遇到任何问题，尝试兼容模式。</p>
+          <p class="takeover-note"><span class="safari-note" hidden>Safari 用户建议使用兼容模式。<br><br></span>全接管：速度最快，几乎不兼容所有的第三方插件。<br>安装第三方增强插件，或遇到任何的问题，请使用兼容模式。</p>
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
@@ -590,6 +590,9 @@
     closeButton.textContent = "关闭";
     panel.querySelector(".btr-footer").append(closeButton);
     shadow.append(style, backdrop, panel);
+    // The line for Safari users only where it applies: Safari, and every browser on iOS
+    // (all of them WebKit underneath).
+    panel.querySelector(".safari-note").hidden = !/apple/i.test(navigator.vendor || "");
 
     const $ = (id) => shadow.getElementById(id);
     // The released script and the Canary are both switched on: only this one runs.

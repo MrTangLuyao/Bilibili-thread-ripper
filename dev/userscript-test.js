@@ -239,9 +239,20 @@ async function showMain(panel) {
     assert.equal(await panel.locator('input[name="mode"]').count(), 3);
     assert.equal(await panel.locator("#custom-hosts").isVisible(), false);
     // The takeover switch sits where the old compatibility modes were, full takeover by
-    // default, with the note for Safari users under it.
+    // default, with the two modes described under it: the full takeover does not get along
+    // with other Bilibili plugins. The line for Safari users is not shown in other browsers.
     assert.equal(await panel.locator('input[name="takeover"][value="full"]').isChecked(), true);
-    assert.match(await panel.locator(".takeover-note").textContent(), /Safari 用户建议使用兼容模式/);
+    assert.match(await panel.locator(".takeover-note").textContent(), /几乎不兼容所有的第三方插件/);
+    assert.equal(await panel.locator(".safari-note").isVisible(), false);
+    // In Safari, and in every browser on iOS (all of them WebKit underneath), it is.
+    const safariContext = await browser.newContext();
+    await safariContext.addInitScript(() => Object.defineProperty(Navigator.prototype, "vendor", { get: () => "Apple Computer, Inc." }));
+    const safari = await safariContext.newPage();
+    await safari.goto(origin);
+    await safari.waitForFunction(() => window.__biliThreadRipperDebug?.getSettings().concurrency === 8);
+    await openSettings(safari);
+    await safari.locator(`${settingsHost} .safari-note`).waitFor({ state: "visible", timeout: 5000 });
+    await safariContext.close();
     await showMain(panel);
     await panel.locator('input[name="takeover"][value="compat"]').check({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "compat");
