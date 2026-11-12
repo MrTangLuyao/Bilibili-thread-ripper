@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.12.2
-// @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。保留哔哩哔哩原生播放器，通过多 CDN、多 Range 并发下载改善视频缓冲速度。
+// @version      2026.11.13.1
+// @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
 // @license      MIT
@@ -3967,7 +3967,7 @@ const chrome = (() => {
       playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.12.2",
+        version: "2026.11.13.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4244,6 +4244,7 @@ const chrome = (() => {
     const cancel = () => controller.abort(signal.reason);
     signal?.addEventListener("abort", cancel, { once: true });
     owner.jobs.add(controller);
+    track.jobs?.add(controller);
     let received = 0, total = null;
     const chunks = [];
     // Only a start gets the startup treatment (racing the head on every node, copying each
@@ -4278,12 +4279,13 @@ const chrome = (() => {
       }) };
     } catch (error) {
       track.warmEnd = 0;
-      if (!controller.signal.aborted && !owner.disposed) owner.failed(error);
+      if (!controller.signal.aborted && !owner.disposed) owner.failed(error, track);
       throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       controller.abort();
       signal?.removeEventListener("abort", cancel);
       owner.jobs.delete(controller);
+      track.jobs?.delete(controller);
     }
   }
 
@@ -4486,6 +4488,62 @@ const chrome = (() => {
     update(options.playinfo);
     const urls = representation => [representation.baseUrl || representation.base_url, ...[].concat(representation.backupUrl || representation.backup_url || [])].filter(Boolean);
     const pathOf = url => { try { return new URL(url).pathname; } catch (_error) { return ""; } };
+    // A file of this video that the playinfo BTR holds does not list (#71). Another script
+    // can hand Bilibili's player a playinfo of its own, with a quality or an address BTR
+    // never saw; BTR reads Bilibili's answers before such a script changes them. The
+    // request is still the player's own and goes to a Bilibili video server, so it is sped
+    // up like the others, from its own address: the servers of the list are asked for the
+    // same file. It used to be left alone, and with it the whole video track, while the
+    // audio next to it was sped up.
+    //
+    // Only files of the video being played: a file is named after the video's cid, and the
+    // files BTR knows give that away. A preview or an advertisement elsewhere on the page
+    // is not this player's business. A file the other servers refuse is left to Bilibili
+    // from then on.
+    const outside = new Map();
+    // Their refusals are counted apart from the ban list of the listed files: an address
+    // another script brought along must not get a server banned for the rest of the video.
+    const outsideBans = resolvers.createBanList();
+    // After this many refusals (HTTP 4xx) the file is left to Bilibili at once: the
+    // downloader would otherwise try every server for every piece, three rounds each.
+    const OUTSIDE_REFUSALS = 3;
+    const watched = new Map();
+    let transferIds = 0;
+    function watchTransfer(event) {
+      if (event?.phase === "start") {
+        const id = options.onTransfer ? options.onTransfer(event) : ++transferIds;
+        const track = outside.get(pathOf(event.url));
+        if (track) watched.set(id, track);
+        return id;
+      }
+      const track = watched.get(event?.id);
+      if (track && event.phase !== "progress") {
+        watched.delete(event.id);
+        const status = Number(event.error?.status) || 0;
+        if (event.phase === "error" && status >= 400 && status < 500 && !track.refused && ++track.refusals >= OUTSIDE_REFUSALS) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", `HTTP ${status} from the other servers`);
+          for (const controller of track.jobs) controller.abort(new Error("其他服务器没有这个文件"));
+        }
+      }
+      return options.onTransfer ? options.onTransfer(event) : event?.id;
+    }
+    const cidOf = url => /\/(\d+)[^/]*-\d+-\d+\.m4s$/.exec(pathOf(url))?.[1] || "";
+    function outsideTrack(url) {
+      const path = pathOf(url), cid = cidOf(url);
+      if (!cid || !tracks.some(track => urls(track.representation).some(candidate => cidOf(candidate) === cid))) return null;
+      let track = outside.get(path);
+      if (!track) {
+        if (outside.size >= 16) outside.delete(outside.keys().next().value);
+        // Bilibili numbers its audio files 30216, 30232, 30280 (AAC), 30250 (Dolby) and 30251 (Hi-Res).
+        const id = Number(/-(\d+)\.m4s$/.exec(path)?.[1]) || 0;
+        track = { kind: [30216, 30232, 30280, 30250, 30251].includes(id) ? "audio" : "video", representation: { id: 0, baseUrl: url, base_url: url },
+          outside: true, refused: false, refusals: 0, failures: 0, jobs: new Set() };
+        outside.set(path, track);
+        note("file outside the playinfo", `${track.kind} ${path.slice(path.lastIndexOf("/") + 1)}`);
+      }
+      return track.refused ? null : track;
+    }
     function unavailable(error) {
       if (owner.disposed) return;
       owner.destroy();
@@ -4541,12 +4599,13 @@ const chrome = (() => {
     }
     const owner = {
       disposed: false, jobs, settings, sampleQuality,
-      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || null,
+      track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || outsideTrack(url),
       resolver(url, track) {
         const parsed = new URL(url), key = parsed.pathname + parsed.search;
         if (!cache.has(key)) {
           if (cache.size >= 64) cache.delete(cache.keys().next().value);
-          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode, options.cdnBans, () => settings().customHosts));
+          cache.set(key, resolvers.createResolver({ ...track.representation, baseUrl: url, base_url: url }, () => settings().mode,
+            track.outside ? outsideBans : options.cdnBans, () => settings().customHosts));
         }
         return cache.get(key);
       },
@@ -4554,6 +4613,7 @@ const chrome = (() => {
         if (owner.disposed) return;
         if (track.kind === "video") lastVideo = track.representation;
         else lastAudio = track.representation;
+        if (track.outside) track.failures = 0;
         lastError = "";
         delivered++;
         note("native range delivered", `${track.kind} ${result.byteLength} bytes / ${result.pieceCount} pieces`);
@@ -4564,7 +4624,13 @@ const chrome = (() => {
         nativeSwitchRequests++;
         note("quality switch: accelerated request");
       },
-      failed(error) {
+      failed(error, track) {
+        // One failure can be the network's, and Bilibili's player asks again. Two in a row:
+        // from now on it gets this file from where it asked.
+        if (track?.outside && !track.refused && ++track.failures >= 2) {
+          track.refused = true;
+          note("file outside the playinfo left to Bilibili", String(error?.message || error));
+        }
         failures++;
         lastError = String(error?.message || error);
         note("native range failed", lastError);
@@ -4582,7 +4648,7 @@ const chrome = (() => {
         // The native media source, buffers, playback position and pause state are untouched.
       }
     };
-    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: options.onTransfer });
+    owner.downloader = downloaders.createDownloader({ getSettings: settings, nativeFetch, onTransfer: watchTransfer });
     const events = new AbortController();
     for (const name of ["playing", "waiting", "stalled", "seeking", "seeked", "ended", "loadedmetadata", "error", "progress", "timeupdate"]) video.addEventListener(name, () => {
       if (name !== "timeupdate" && name !== "progress") note(`media ${name}`, `buffer ${bufferedAhead().toFixed(2)}s`);
@@ -4612,7 +4678,7 @@ const chrome = (() => {
           const [n, d = 1] = String(lastVideo?.frameRate || lastVideo?.frame_rate || 0).split("/").map(Number);
           return d ? n / d : 0;
         })(),
-        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests,
+        acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });
@@ -4814,6 +4880,7 @@ const chrome = (() => {
     [/原生调度接口不兼容/g, "native scheduler API incompatible"],
     [/原生内核未恢复/g, "native core not restored"],
     [/加速任务已停止/g, "transport stopped"],
+    [/其他服务器没有这个文件/g, "the other servers do not have this file"],
     // The page: page-hook.js.
     [/视频已经换了/g, "video changed"],
     [/B ?站 ?15 ?秒内没有回应/g, "Bilibili did not answer within 15 s"],
@@ -5694,7 +5761,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.12.2${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.13.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -6080,7 +6147,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.12.2",
+        version: "2026.11.13.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -7018,7 +7085,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.12.2",
+    version: "2026.11.13.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -9149,7 +9216,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.12.2"
+      version: "2026.11.13.1"
     })
   });
   publish();
@@ -9402,7 +9469,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.12.2",
+    version: "2026.11.13.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -9881,7 +9948,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.12.2"
+      version: "2026.11.13.1"
     })
   });
   publish();
