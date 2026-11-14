@@ -129,7 +129,12 @@
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
       // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
       // Experimental, off unless switched on.
-      secondaryBuffer: source.secondaryBuffer === true
+      secondaryBuffer: source.secondaryBuffer === true,
+      // 音频加速: switched off, only the video is sped up. The full takeover then fetches the
+      // audio as one piece over one connection; the compatibility mode leaves it to Bilibili.
+      audioAcceleration: source.audioAcceleration !== false,
+      // 自动清晰度的最高档: the best quality 自动 may choose in the full takeover; 0 for no limit.
+      autoQualityMax: [32, 64, 80, 116, 120].includes(Number(source.autoQualityMax)) ? Number(source.autoQualityMax) : 0
     };
   }
 

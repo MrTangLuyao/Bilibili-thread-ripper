@@ -1467,7 +1467,12 @@
     const stated = (playable.get(Number(debug.qualityId)) || 0) / 1000;
     const busier = stated > 0 && debug.videoKbpsAhead > stated ? Math.min(4, debug.videoKbpsAhead / stated) : 1;
     const kbpsOf = (quality) => (playable.get(quality) || 0) / 1000 * busier;
-    const allowed = range.qualities.filter((quality) => playable.has(quality));
+    // 自动清晰度的最高档 (高级设置): nothing above it is chosen; where a video has nothing at
+    // or below it, its lowest quality is.
+    const offered = range.qualities.filter((quality) => playable.has(quality));
+    const limit = Number(settings.autoQualityMax) || 0;
+    const within = limit ? offered.filter((quality) => quality <= limit) : offered;
+    const allowed = within.length ? within : offered.slice(0, 1);
     if (!allowed.length) return;
     const shown = nativeAutoQuality();
     const current = allowed.indexOf(shown);

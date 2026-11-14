@@ -20,6 +20,8 @@
   const BVID = "BV1autoQual01";
   const SPEED_KEY = "BTR_AutoQualitySpeed";
   const kept = Number(new URLSearchParams(location.search).get("kept")) || 0;
+  // &limit=80: 自动清晰度的最高档 set to 1080P (高级设置).
+  const limit = Number(new URLSearchParams(location.search).get("limit")) || 0;
   if (kept) localStorage.setItem(SPEED_KEY, `${kept}:${Date.now()}`);
   else localStorage.removeItem(SPEED_KEY);
   const QUALITIES = [16, 32, 64, 80, 116, 120];
@@ -58,7 +60,7 @@
   root.__playinfo__ = { data: { quality: 64, dash: { duration: 100, video: [], audio: [] } } };
   root.__BILI_RANGE_CORE__ = {
     normalizeSettings(value) {
-      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32, customHosts: [] };
+      return { enabled: value?.enabled !== false, mode: value?.mode || "mainland", concurrency: 32, customHosts: [], autoQualityMax: Number(value?.autoQualityMax) || 0 };
     }
   };
   root.player = { getQuality: () => ({ nowQ: 0, newQ: nativeQuality, realQ: realQuality }), __core: () => core };
@@ -142,12 +144,26 @@
   };
 
   document.addEventListener("DOMContentLoaded", () => {
-    root.postMessage({ channel: CHANNEL, type: "settings", payload: { enabled: true, mode: "mainland", concurrency: 32 } }, "*");
+    root.postMessage({ channel: CHANNEL, type: "settings", payload: { enabled: true, mode: "mainland", concurrency: 32, autoQualityMax: limit } }, "*");
   }, { once: true });
 
   (async () => {
     const startedAt = performance.now();
     while (!options && performance.now() - startedAt < 5000) await wait(25);
+
+    if (limit) {
+      // The speed kept carries 4K, the limit says 1080P: 1080P is chosen while the video
+      // loads, and a connection with room to spare does not take it any higher.
+      await wait(1500);
+      tell("ready", 30);
+      output.steps.limitChoosesBelowWhatTheSpeedCarries = same(coreCalls, [limit]) && playing === limit;
+      await wait(10500);
+      await burst(4000000);
+      await wait(2500);
+      output.steps.staysAtTheLimit = coreCalls.length === 1 && playing === limit;
+      finish();
+      return;
+    }
 
     if (kept === 3500) {
       // 3.5 Mbit/s carries 1080P (2 Mbit/s with room to spare). The video then runs out of

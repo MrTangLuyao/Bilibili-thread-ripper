@@ -192,6 +192,8 @@
     if (!range || !Number.isSafeInteger(range.length)) return null;
     const track = owner.track(url);
     if (!track || !owner.sampleQuality()) return null;
+    // 音频加速 off: the audio is Bilibili's own request again.
+    if (track.kind === "audio" && owner.settings().audioAcceleration === false) return null;
     if (nativeSwitchPending()) owner.nativeSwitchRequest();
     return { owner, url, range, track };
   }

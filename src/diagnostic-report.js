@@ -27,7 +27,7 @@
 
   // bridge.js DEFAULTS, the stored settings before anything is changed: Settings marks every
   // value that differs with *. dev/diagnostic-report-test.js checks that the two stay equal.
-  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false });
+  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, audioAcceleration: true, autoQualityMax: 0, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false });
 
   // English names of Bilibili's quality ids; the player's own labels are Chinese (1080P 60帧).
   const QUALITY_LABELS = Object.freeze({ 127: "8K", 126: "Dolby Vision", 125: "HDR", 120: "4K", 116: "1080P60", 112: "1080P+", 80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P", 6: "240P" });
@@ -555,6 +555,8 @@
       ["threads", !s ? "n/a" : s.autoConcurrency === true ? mark("auto", "autoConcurrency") : s.autoConcurrency === false ? mark(count(s.concurrency), "autoConcurrency", "concurrency") : "n/a"],
       ["buffer ahead", s ? mark(num(s.bufferAheadSeconds) === null ? "n/a" : `${count(s.bufferAheadSeconds)} s`, "bufferAheadSeconds") : "n/a"],
       ["secondary buffer", flag("secondaryBuffer")],
+      ["audio acceleration", flag("audioAcceleration")],
+      ["auto quality limit", !s || num(s.autoQualityMax) === null ? "n/a" : mark(s.autoQualityMax ? QUALITY_LABELS[s.autoQualityMax] || count(s.autoQualityMax) : "none", "autoQualityMax")],
       ["episodes", flag("episodeEnabled")],
       ["live", flag("liveEnabled")],
       ["block international", flag("blockInternational")]

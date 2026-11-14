@@ -769,14 +769,20 @@
       // Read again at every check of the downloader: a new playback rate, or the playhead
       // standing still during a stall, moves the deadline of pieces already on their way.
       const deadlineAt = () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
+      // 音频加速 off: an audio segment comes as one piece over one connection, without the
+      // race for the first bytes a start opens with; only the video is sped up. Nothing is
+      // scheduled in stages then, so the start is told at once that it may go on.
+      const plain = track.kind === "audio" && core.normalizeSettings(getSettings()).audioAcceleration === false;
+      if (plain && downloadOptions.onStartupScheduled) Promise.resolve().then(downloadOptions.onStartupScheduled);
       return downloader.downloadRange(segment, track.resolver, {
         signal: generationSignal(candidate),
         parallel: true,
+        maxConcurrency: plain ? 1 : undefined,
         kind: track.kind,
         priority: downloadOptions.priority,
         deadlineAt,
-        startup: downloadOptions.startup === true,
-        onStartupScheduled: downloadOptions.onStartupScheduled,
+        startup: !plain && downloadOptions.startup === true,
+        onStartupScheduled: plain ? undefined : downloadOptions.onStartupScheduled,
         onOrderedChunk: downloadOptions.onOrderedChunk || null
       }).then(
         (result) => {

@@ -25,6 +25,7 @@ const { chromium } = require("playwright");
     ["auto-quality-test.html?kept=5000", "auto-quality-result", 60000],
     ["auto-quality-test.html?kept=50000", "auto-quality-result", 60000],
     ["auto-quality-test.html?kept=3500", "auto-quality-result", 30000],
+    ["auto-quality-test.html?kept=50000&limit=80", "auto-quality-result", 40000],
     ["info-panel-test.html", "info-panel-result"],
     ["fast-takeover-test.html", "fast-takeover-result"],
     ["buffer-window-test.html", "buffer-window-result"],

@@ -163,7 +163,8 @@
         options.onStartupScheduled?.();
         await new Promise((resolve) => setTimeout(resolve, downloadDelayMs));
         if (options.signal?.aborted) throw new DOMException("aborted", "AbortError");
-        downloadedUrls.push({ kind: options.kind, url: resolver.urls()[0] || "", segment: Math.round(range.start / 1000) - 1 });
+        downloadedUrls.push({ kind: options.kind, url: resolver.urls()[0] || "", segment: Math.round(range.start / 1000) - 1,
+          startup: options.startup === true, single: options.maxConcurrency === 1 });
         if (typeof options.onOrderedChunk === "function") {
           await options.onOrderedChunk(bytes, range, null);
           return { bytes: null, byteLength: range.length, pieceCount: 1, streamed: true, total: null, hosts: [] };
@@ -298,6 +299,31 @@
 
   // The quota brought the forward buffer down to its floor of eight seconds, then playback
   // stalls. A recovery that kept waiting for ten seconds would never end.
+  // 音频加速 switched off: the audio is asked for as one piece over one connection and without
+  // the treatment a start gets, the video as always, and the video still starts. Switched
+  // on, the audio's first segment is a start like the video's.
+  async function plainAudio() {
+    const errors = [];
+    const kinds = (kind) => downloadedUrls.filter((item) => item.kind === kind);
+    const off = startPlayer(0, {}, errors, true, { audioAcceleration: false });
+    const started = await until(() => notes(off).includes("ready to play"), 6000);
+    await sleep(100);
+    const audioOff = kinds("audio"), videoOff = kinds("video");
+    off.destroy({ resumeNative: false });
+    const on = startPlayer(0, {}, errors, true);
+    const startedOn = await until(() => notes(on).includes("ready to play"), 6000);
+    await sleep(100);
+    const audioOn = kinds("audio");
+    on.destroy({ resumeNative: false });
+    const checks = {
+      audioOffIsOnePlainPiece: audioOff.length > 0 && audioOff.every((item) => item.single && !item.startup),
+      // The first segment and the one after it are asked for together and end in either order.
+      videoIsAsAlways: videoOff.every((item) => !item.single) && videoOff.some((item) => item.segment === 0 && item.startup),
+      audioOnStartsLikeTheVideo: audioOn.every((item) => !item.single) && audioOn.some((item) => item.segment === 0 && item.startup)
+    };
+    return { errors, started, startedOn, checks, pass: !errors.length && started && startedOn && Object.values(checks).every(Boolean) };
+  }
+
   async function recoveryUnderALoweredLimit() {
     const errors = [];
     // A slow first segment: the player then asks for the longest buffer, ten seconds, before
@@ -948,7 +974,7 @@
   root.__runQuotaRefreshTest = async function runQuotaRefreshTest() {
     const result = document.getElementById("quota-refresh-result");
     const output = {};
-    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, longWaitReadsAsPaused, refusedAutoplayReadsAsPaused, pauseDuringStartIsKept, viewersFirstPauseAfterTakeover, playDuringStartAfterPauseStarts, pauseDuringStartSurvivesQualitySwitch, pageStartsAStartNobodyPaused, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek })) {
+    for (const [name, scenario] of Object.entries({ scriptedQuota, fullBufferWaits, fullBufferWithNothingAhead, heldSegmentDiesWithItsSession, recoveryUnderALoweredLimit, aStallThatMeetsAFullBufferFails, decoderStallWithDataAhead, reportsTheViewersIntentWhileLoading, speedSetWhileLoadingIsKept, longWaitReadsAsPaused, refusedAutoplayReadsAsPaused, pauseDuringStartIsKept, viewersFirstPauseAfterTakeover, playDuringStartAfterPauseStarts, pauseDuringStartSurvivesQualitySwitch, pageStartsAStartNobodyPaused, backwardSeekKeepsBufferedRange, backwardSeekKeptToTheEnd, repeatedRefresh, olderAnswerKeepsNewerAddresses, olderAddressOfAnotherQuality, nativeRestoreAfterSeek, seekResetsHalfWrittenSegment, lateWriteAfterSeek, plainAudio })) {
       try { output[name] = await scenario(); }
       catch (error) { output[name] = { pass: false, crashed: String(error?.stack || error) }; }
     }

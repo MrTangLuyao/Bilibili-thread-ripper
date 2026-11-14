@@ -130,6 +130,19 @@
       output.steps.outsideFileSurvivesAnOutage = Boolean(down.failed) && back.status === 206 && back.right && back.requests > 1;
       output.outage = { down, back };
 
+      // 音频加速 switched off: the audio is the player's own request again, one request to the
+      // server it names, while the video is still fetched in pieces. Switched on, as before.
+      settings.audioAcceleration = false;
+      const plainAudio = await ask(LISTED_AUDIO, 0, 199999);
+      const videoBeside = await ask(LISTED_VIDEO, 5000000, 6999999);
+      output.steps.audioOffIsLeftToBilibili = plainAudio.status === 206 && plainAudio.right && plainAudio.requests === 1
+        && plainAudio.hosts[0] === new URL(LISTED_AUDIO).hostname;
+      output.steps.videoStillSpedUp = videoBeside.status === 206 && videoBeside.right && videoBeside.requests > 1;
+      settings.audioAcceleration = true;
+      const fastAudio = await ask(LISTED_AUDIO, 200000, 399999);
+      output.steps.audioOnIsSpedUp = fastAudio.status === 206 && fastAudio.right && fastAudio.requests > 1;
+      output.audio = { plainAudio, fastAudio };
+
       const debug = player.getDebug();
       output.steps.diagnosticsSayIt = debug.filesOutsidePlayinfo === 3
         && debug.timeline.some((entry) => entry.what === "file outside the playinfo")

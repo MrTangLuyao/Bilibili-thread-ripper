@@ -111,6 +111,19 @@ async function showTab(panel, name) {
   await panel.locator(`[role="tab"][data-tab="${name}"]`).click();
   await settle(panel);
 }
+// The bubble of a question mark: whether it shows, whether it opened under the mark, and
+// whether all of it is inside the panel (which it must not widen either).
+function bubble(help) {
+  return help.evaluate((node) => {
+    const style = getComputedStyle(node, "::after");
+    if (style.display === "none") return { shown: false };
+    const popup = node.closest(".btr-popup"), frame = popup.getBoundingClientRect(), box = node.getBoundingClientRect();
+    const left = box.left + parseFloat(style.left), top = box.top + parseFloat(style.top);
+    return { shown: true, low: node.classList.contains("is-low"),
+      inside: popup.scrollWidth <= popup.clientWidth && left >= frame.left && left + parseFloat(style.width) <= frame.left + popup.clientWidth
+        && top >= frame.top && top + parseFloat(style.height) <= frame.top + popup.clientHeight };
+  });
+}
 async function showMain(panel) {
   if (await panel.locator("#advanced").evaluate(node => node.open)) await panel.locator("#advanced-back").click();
   await settle(panel);
@@ -223,10 +236,10 @@ async function showMain(panel) {
     // The version sits under the title in small print.
     assert.equal(await panel.locator(".name .version").textContent(), `v${version}`);
     assert.equal(await panel.locator("#enabled").isChecked(), true);
-    // 剧集加速 and 直播加速 sit in a block of their own, 剧集加速 with a line of explanation:
-    // episodes are sped up by default, live rooms only once switched on.
-    assert.deepEqual(await panel.locator(".accel-controls input").evaluateAll(nodes => nodes.map(node => [node.id, node.checked])), [["episode-enabled", true], ["live-enabled", false]]);
-    assert.deepEqual(await panel.locator(".accel-controls .accel-row small").evaluateAll(nodes => nodes.map(node => node.closest("label").htmlFor)), ["episode-enabled"]);
+    // 音频加速, 剧集加速 and 直播加速 sit in a block of their own, the first two with a line of
+    // explanation: audio and episodes are sped up by default, live rooms only once switched on.
+    assert.deepEqual(await panel.locator(".accel-controls input").evaluateAll(nodes => nodes.map(node => [node.id, node.checked])), [["audio-acceleration", true], ["episode-enabled", true], ["live-enabled", false]]);
+    assert.deepEqual(await panel.locator(".accel-controls .row-help").evaluateAll(nodes => nodes.map(node => node.closest(".row").querySelector("input").id)), ["audio-acceleration", "episode-enabled"]);
     assert.equal(await panel.locator(".notice-controls #live-enabled").count(), 0);
     // The panel shows the script's own icon.
     assert.equal(await panel.locator("img.logo").getAttribute("src"), `data:image/png;base64,${fs.readFileSync(path.join(root, "icons/icon-128.png")).toString("base64")}`);
@@ -259,7 +272,7 @@ async function showMain(panel) {
     await panel.locator('input[name="takeover"][value="full"]').check({ force: true });
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().takeover === "full");
     assert.equal(await panel.locator("#thread-value").textContent(), "自动");
-    assert.match(await panel.locator('label[for="auto-concurrency"]').textContent(), /^自动线程数（推荐）/);
+    assert.equal(await panel.locator(".row", { has: page.locator("#auto-concurrency") }).locator(".row-name").textContent(), "自动线程数");
     // Nothing shows on the page any more: Debug 模式, 显示错误 and the message filters are gone.
     assert.equal(await panel.locator("#debug-notices, #error-notices, #debug-filters, [data-debug-category]").count(), 0);
     await page.waitForFunction(() => __userscriptTest.statusRequests > 0);
@@ -290,6 +303,61 @@ async function showMain(panel) {
     await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().concurrency === 16);
     assert.equal(await panel.locator("#thread-value").textContent(), "16");
     await showTab(panel, "features");
+    // 调试 comes first on this page.
+    assert.equal(await panel.locator("#panel-features .block-title").first().textContent(), "调试");
+    // The question mark beside a name shows the setting's explanation in a bubble over it while
+    // the pointer is on it, and no longer. The bubble takes no room in the row, and the mark
+    // is a larger target than it looks. A press on it changes nothing.
+    const audioRow = panel.locator(".row", { has: page.locator("#audio-acceleration") });
+    const audioHelp = audioRow.locator(".row-help");
+    const rowHeight = (await audioRow.boundingBox()).height;
+    const helpBox = await audioHelp.boundingBox();
+    assert.ok(helpBox.width >= 30 && helpBox.height >= 30, "the question mark is a small target");
+    assert.equal(await audioHelp.getAttribute("aria-label"), "关掉后只加速视频，音频照常下载。");
+    assert.deepEqual(await bubble(audioHelp), { shown: false });
+    await audioHelp.hover();
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    assert.equal((await audioRow.boundingBox()).height, rowHeight, "the bubble took room in the row");
+    await audioHelp.click();
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    assert.equal(await panel.locator("#audio-acceleration").isChecked(), true);
+    await panel.locator(".page-title").hover();
+    assert.deepEqual(await bubble(audioHelp), { shown: false }, "the bubble stayed after the pointer left");
+    // The keyboard shows it too.
+    await panel.locator("#audio-acceleration").focus();
+    await page.keyboard.press("Shift+Tab");
+    assert.deepEqual(await bubble(audioHelp), { shown: true, low: false, inside: true });
+    await page.keyboard.press("Tab");
+    assert.deepEqual(await bubble(audioHelp), { shown: false });
+    // The name itself belongs to the switch. A row without an explanation has no question mark.
+    await audioRow.locator(".row-name").click();
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === false);
+    await audioRow.locator(".row-name").click();
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === true);
+    assert.equal(await panel.locator(".row", { has: page.locator("#live-enabled") }).locator(".row-help").count(), 0);
+    // Every bubble of every page stays inside the panel.
+    for (const name of ["network", "buffer", "interface", "features"]) {
+      await showTab(panel, name);
+      const helps = await panel.locator(`#panel-${name} .row-help`).all();
+      assert.ok(helps.length > 0);
+      for (const help of helps) {
+        await help.hover();
+        assert.deepEqual(await bubble(help), { shown: true, low: false, inside: true }, `the bubble “${await help.getAttribute("aria-label")}” is not all inside the panel`);
+      }
+    }
+    // 音频加速 and the limit of 自动 are saved, and a slider off its default says so.
+    await panel.locator("#audio-acceleration").uncheck({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === false);
+    await panel.locator("#auto-quality-max").fill("2");
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().autoQualityMax === 80);
+    assert.equal(await panel.locator("#quality-value").textContent(), "1080P");
+    assert.equal(await panel.locator(".row.is-changed #auto-quality-max").count(), 1);
+    await panel.locator("#auto-quality-max").fill("5");
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().autoQualityMax === 0);
+    assert.equal(await panel.locator("#quality-value").textContent(), "不限");
+    assert.equal(await panel.locator(".row.is-changed #auto-quality-max").count(), 0);
+    await panel.locator("#audio-acceleration").check({ force: true });
+    await page.waitForFunction(() => __biliThreadRipperDebug.getSettings().audioAcceleration === true);
     // The GitHub mark next to the title opens the project in a new tab.
     const github = panel.locator("#github-link");
     assert.deepEqual([await github.getAttribute("href"), await github.getAttribute("target")], ["https://github.com/MrTangLuyao/Bilibili-thread-ripper", "_blank"]);
@@ -329,7 +397,7 @@ async function showMain(panel) {
     assert.equal(await panel.locator("#debug-copy").textContent(), "已复制");
     assert.equal(await panel.locator("#debug-copy-status").textContent(), "");
     await page.waitForTimeout(2700);
-    assert.equal(await panel.locator("#debug-copy").textContent(), "复制诊断信息");
+    assert.equal(await panel.locator("#debug-copy").textContent(), "复制");
     console.log("PASS 设置面板：开关、线程和实时线程数都能用；标题旁的 GitHub 图标指向项目；诊断信息是英文的，里面有记下的错误，没有带签名的地址");
 
     // Closing stops the status polling; opening again starts clean.
@@ -379,9 +447,17 @@ async function showMain(panel) {
     await page.locator(`${settingsHost} .btr-popup`).waitFor();
     const shortBox = await page.locator(`${settingsHost} .btr-close`).boundingBox();
     assert.ok(shortBox.y + shortBox.height <= 480, "关闭 is below the bottom of a short window");
-    // 恢复默认设置 is at the bottom with it, on the first page as on every other.
+    // 恢复默认设置 is at the bottom beside it, of the same height, on the first page as on every other.
     const resetBox = await page.locator(`${settingsHost} #reset-settings`).boundingBox();
-    assert.ok(resetBox && resetBox.y >= 0 && resetBox.y + resetBox.height <= shortBox.y, "恢复默认设置 is not in reach above 关闭");
+    assert.ok(resetBox && Math.abs(resetBox.y - shortBox.y) < 1 && Math.abs(resetBox.height - shortBox.height) < 1 && resetBox.x + resetBox.width <= shortBox.x, "恢复默认设置 is not in reach beside 关闭");
+    // In a window this short a question mark can be at the top of the panel with no room for
+    // its bubble above: the bubble opens under the mark, still inside the panel.
+    const shortPanel = page.locator(`${settingsHost} .btr-popup`);
+    await showTab(shortPanel, "features");
+    const topHelp = shortPanel.locator(".row", { has: page.locator("#episode-enabled") }).locator(".row-help");
+    await topHelp.evaluate((node) => node.closest(".row").scrollIntoView({ block: "start" }));
+    await topHelp.hover();
+    assert.deepEqual(await bubble(topHelp), { shown: true, low: true, inside: true });
     await clickClose(page);
     await page.setViewportSize({ width: 1100, height: 900 });
     console.log("PASS 页面自己的弹层或模态框开着时设置页仍在最上层，窗口很矮时“关闭”也点得到");

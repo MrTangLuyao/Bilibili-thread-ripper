@@ -182,7 +182,7 @@ test("the issue #65 fixture renders the format 1 layout",()=>{
   assert.equal(lines.find(line=>line.startsWith("== Settings ==")),"== Settings ==  (* = changed from default)");
   assert.deepEqual(section(text,"Settings"),[
     "enabled              yes","takeover             full","cdn                  mainland","custom hosts         none","threads              auto",
-    "buffer ahead         45 s","secondary buffer     no","episodes             yes","live                 no","block international  no"
+    "buffer ahead         45 s","secondary buffer     no","audio acceleration   n/a","auto quality limit   n/a","episodes             yes","live                 no","block international  no"
   ]);
   // Every row, in order: a row that goes missing or moves fails here.
   assert.deepEqual(section(text,"Playback"),[

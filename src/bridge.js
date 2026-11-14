@@ -3,7 +3,7 @@
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, audioAcceleration: true, autoQualityMax: 0, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false };
   // Settings of the old ArtPlayer version, of the compatibility modes removed before today's
   // 兼容模式 (that one is `takeover`), the flag of the first-run guide that 0.9.4.2 removed, and
   // 显示错误, the Debug message filters and Debug 模式 itself, now that BTR shows no messages
@@ -23,6 +23,8 @@
       blockInternational: input?.blockInternational === true,
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(input?.bufferAheadSeconds)) ? Number(input.bufferAheadSeconds) : 45,
       secondaryBuffer: input?.secondaryBuffer === true,
+      audioAcceleration: input?.audioAcceleration !== false,
+      autoQualityMax: [32, 64, 80, 116, 120].includes(Number(input?.autoQualityMax)) ? Number(input.autoQualityMax) : 0,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
