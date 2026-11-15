@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.14.1
+// @version      2026.11.15.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -350,8 +350,16 @@ const chrome = (() => {
     };
   }
 
+  // A speed in bytes a second, as the panels write it: KB/s, MB/s from one megabyte up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
+  }
+
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
     normalizeSettings,
@@ -3978,7 +3986,7 @@ const chrome = (() => {
       playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.14.1",
+        version: "2026.11.15.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -5776,13 +5784,6 @@ const chrome = (() => {
     for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
   }
 
-  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
-  function formatSpeed(bps) {
-    const value = Math.max(0, Number(bps) || 0);
-    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
-    return `${Math.round(value / 1024)} KB/s`;
-  }
-
   // One row of a settings list: a name (the label of its control, `id`), a question mark
   // beside it where the setting has an explanation (`tip`, the bubble over the mark, which
   // keeps the line breaks of the text), the control on the right, and what belongs under
@@ -5806,7 +5807,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.14.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.15.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5830,10 +5831,10 @@ const chrome = (() => {
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
-          <section class="run-state" aria-label="运行状态">
+          <button class="run-state" type="button" disabled>
             <span><b id="active-count">0</b> 条线程</span>
-            <b class="run-speed">0 KB/s</b>
-          </section>
+            <b class="run-speed">0 KB/s</b>${CHEVRON_ICON}
+          </button>
         </div>
       </div>
 
@@ -6065,7 +6066,15 @@ const chrome = (() => {
     .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 10px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    /* 运行状态. Where BTR 统计信息 can be opened (a page with a player), the card is the way
+       to it and says so with an arrow. */
+    .run-state { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 12px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease; }
+    .run-state:hover { background: var(--hover); }
+    .run-state:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .run-state:disabled { background: var(--surface); cursor: default; }
+    .run-state:disabled svg { display: none; }
+    .run-state svg { flex: none; align-self: center; width: 16px; height: 16px; color: var(--muted); transform: rotate(-90deg); }
+    .run-speed { margin-left: auto; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
     /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
        scrolling under them. */
@@ -6178,7 +6187,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.14.1",
+        version: "2026.11.15.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -6603,13 +6612,19 @@ const chrome = (() => {
     const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
     for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
 
+    // 运行状态 opens BTR 统计信息 over the player (stats-panel.js), and this panel, which
+    // would lie in front of it, closes.
+    const runState = panel.querySelector(".run-state");
+    runState.disabled = !root.__BILI_STATS_PANEL__?.available();
+    runState.addEventListener("click", () => { if (root.__BILI_STATS_PANEL__.open()) close(); });
+
     // The threads and the speed now: asking for stats makes the page send fresh ones. The
     // numbers run to their new values instead of jumping there.
     const shown = { threads: 0, speed: 0 };
     let rollFrame = 0;
     const showRunState = (threads, speed) => {
       activeCount.textContent = String(Math.round(threads));
-      totalSpeed.textContent = formatSpeed(speed);
+      totalSpeed.textContent = core.formatSpeed(speed);
     };
     const refresh = () => {
       const from = { ...shown };
@@ -6946,6 +6961,253 @@ const chrome = (() => {
   root.__BTR_SETTINGS_PANEL__ = Object.freeze({ open, close: () => current?.close(), toggle, isOpen: () => Boolean(current) });
 })(globalThis);
 
+/* src/stats-panel.js */
+(function installStatsPanel(root) {
+  "use strict";
+
+  // BTR 统计信息: BTR's own statistics panel. It lies over the video the way the player's own
+  // 视频统计信息 does, shows what BTR is doing with the video in numbers and small graphs, and
+  // has nothing to do with BTR's settings. "BTR 统计信息" in the menu of a right click on the
+  // player opens and closes it; 运行状态 in the settings panel opens it too. It reads BTR's
+  // numbers once a second while it is open, and costs nothing while it is closed.
+  // Of Bilibili's page it knows the player's container and the menu of the right click.
+  // Where that menu is gone the entry is not there, and nothing else is affected.
+  const HOST_ID = "__bilibili_thread_ripper_stats__";
+  const NAME = "BTR 统计信息";
+  // The graphs go back a minute. A node's speed is what it brought in ten seconds.
+  const HISTORY = 60;
+  const NODE_WINDOW = 10;
+  const NODE_ROWS = 16;
+  const WIDTH = 180;
+  const HEIGHT = 14;
+  const CODECS = [[/^av01|^av1/i, "AV1"], [/^hev1|^hvc1|^hevc/i, "HEVC"], [/^avc/i, "AVC"]];
+  // The rows from top to bottom, and the drawing in front of the value of some.
+  const ROWS = [["接管方式"], ["画面"], ["平均码率"], ["当前码率"], ["分段", "meter"], ["丢帧"], ["卡顿"], ["加速"], ["失败"], ["二级缓冲"], ["下载速度", "graph"], ["缓冲", "graph"], ["线程", "cells"]];
+
+  // The look is that of the player's own 视频统计信息 panel, as measured on the page: its
+  // surface, its distance from the corner, its title bar, its rows of 12 px text with a column
+  // of names 100 px wide. Everything has a fixed width and every row a fixed height, so a
+  // number that changes moves nothing. The pink is BTR's.
+  const CSS = `
+    .layer { width: 100%; height: 100%; container-type: size; }
+    .panel { position: absolute; top: 10px; left: 10px; box-sizing: border-box; width: 596px; max-width: calc(100% - 20px); max-height: calc(100% - 80px); overflow: auto; padding-bottom: 15px; border-radius: 4px; background: rgba(33, 33, 33, .9); color: #fff; font: 12px/18px -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; text-align: left; pointer-events: auto; user-select: none; -webkit-user-select: none; scrollbar-width: thin; }
+    /* No room for it in the mini player. */
+    @container (max-width: 480px) or (max-height: 260px) { .panel { display: none; } }
+    h2 { margin: 0; border-bottom: 1px solid rgba(255, 255, 255, .1); font-size: 16px; font-weight: 400; line-height: 40px; text-align: center; }
+    .close { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; padding: 5px; border: 0; background: transparent; color: #fff; cursor: pointer; }
+    .close svg { display: block; width: 12px; height: 12px; }
+    .rows { padding: 15px 26px 0; }
+    .row { display: flex; align-items: center; height: 18px; }
+    [hidden] { display: none !important; }
+    .name { flex: none; width: 100px; margin-right: 10px; font-weight: 500; text-align: right; }
+    .text, .node { overflow: hidden; color: #999; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    .graph, .meter, .cells { flex: none; width: ${WIDTH}px; margin-right: 10px; }
+    /* The nodes side by side in two columns, which keeps the panel a rectangle like the
+       player's own. */
+    .nodes { align-items: flex-start; height: auto; }
+    .grid { display: grid; grid-template-columns: repeat(2, 210px); column-gap: 14px; }
+    .grid div { display: flex; align-items: center; height: 18px; }
+    .node { flex: none; width: 100px; margin-right: 6px; }
+    .node + .meter { width: 40px; margin-right: 6px; }
+    .graph { height: ${HEIGHT}px; overflow: visible; }
+    .graph line { stroke: rgba(255, 255, 255, .6); }
+    .graph polyline { fill: none; stroke: #fb7299; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+    /* A meter fills from the left, the cell of a thread from the bottom. */
+    .meter, .cells i { position: relative; overflow: hidden; background: rgba(255, 255, 255, .16); }
+    .meter::after, .cells i::after { content: ""; position: absolute; bottom: 0; left: 0; background: #fb7299; }
+    .meter { height: 4px; border-radius: 2px; }
+    .meter::after { width: calc(100% * var(--at, 0)); height: 100%; }
+    .cells { display: flex; gap: 1px; height: 12px; overflow: hidden; }
+    .cells.many { gap: 0; }
+    .cells i { flex: 1 1 0; max-width: 4px; height: 100%; }
+    .cells i::after { width: 100%; height: calc(100% * var(--at, 0)); }
+  `;
+
+  const speedText = (bytes) => root.__BILI_RANGE_CORE__.formatSpeed(bytes);
+  const megabits = (bits) => `${(bits / 1e6).toFixed(1)} Mbps`;
+  const element = (tag, className, ...children) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.append(...children);
+    return node;
+  };
+  const drawn = (tag, attributes, ...children) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    node.append(...children);
+    return node;
+  };
+  // What only changes when it differs: a text, how far a meter or a cell is filled.
+  const say = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+  const fill = (node, share) => node.style.setProperty("--at", Math.max(0, Math.min(1, share || 0)).toFixed(3));
+  // As many children as there are items, each written by `write`.
+  function each(parent, items, create, write) {
+    while (parent.children.length > items.length) parent.lastElementChild.remove();
+    while (parent.children.length < items.length) parent.append(create());
+    items.forEach((item, index) => write(parent.children[index], item, index));
+  }
+  // The last minute as a line over its baseline.
+  function draw(graph, values, floor) {
+    const top = Math.max(floor, ...values);
+    graph.lastChild.setAttribute("points", values.map((value, index) => `${(WIDTH - (values.length - 1 - index) * WIDTH / (HISTORY - 1)).toFixed(1)},${(HEIGHT - 1 - value / top * (HEIGHT - 2)).toFixed(1)}`).join(" "));
+  }
+
+  let read = null, host = null, rows = null, timer = 0;
+  let speeds = [], buffers = [], recent = [], order = [], seen = null, lookedAt = 0, route = null;
+  const playerOf = (node) => (node instanceof Element && node.closest(".bpx-player-container")) || document.querySelector(".bpx-player-container");
+
+  function close() {
+    clearInterval(timer);
+    host?.remove();
+    host = null;
+  }
+
+  // Opens over the player of the page. False where there is none, or BTR is switched off.
+  function open(container = playerOf()) {
+    if (!container || !read?.()) return false;
+    close();
+    host = document.createElement("div");
+    host.id = HOST_ID;
+    // Where the player's own panel is: over the video and what lies on it, under the menu of
+    // a right click. The panel leaves the controls at the bottom free.
+    host.style.cssText = "all:initial!important;position:absolute!important;inset:0!important;z-index:80!important;pointer-events:none!important;";
+    const shut = element("button", "close", drawn("svg", { viewBox: "0 0 12 12", "aria-hidden": "true" }, drawn("path", { d: "M1 1l10 10M11 1L1 11", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round" })));
+    shut.type = "button";
+    shut.setAttribute("aria-label", "关闭");
+    shut.addEventListener("click", close);
+    rows = { list: element("div", "rows"), idle: element("div", "text", "这个视频现在由 B 站自己的播放器播放。"), nodes: element("div", "grid") };
+    for (const [name, kind] of ROWS) {
+      const part = kind === "graph" ? drawn("svg", { class: "graph" }, drawn("line", { x1: 0, x2: WIDTH, y1: HEIGHT - .5, y2: HEIGHT - .5 }), drawn("polyline", {}))
+        : kind ? element(kind === "meter" ? "i" : "span", kind) : null;
+      const text = element("span", "text");
+      rows[name] = { line: element("div", "row", element("span", "name", `${name}:`), ...(part ? [part] : []), text), part, text };
+      rows.list.append(rows[name].line);
+    }
+    rows.list.append(element("div", "row nodes", element("span", "name", "节点:"), rows.nodes));
+    const panel = element("section", "panel", element("h2", "", NAME), shut, element("div", "rows", rows.idle), rows.list);
+    panel.setAttribute("aria-label", NAME);
+    rows.idle.parentElement.hidden = true;
+    host.attachShadow({ mode: "open" }).append(element("style", "", CSS), element("div", "layer", panel));
+    seen = null;
+    route = null;
+    (container.querySelector(".bpx-player-video-area") || container).append(host);
+    look();
+    timer = setInterval(look, 1000);
+    return true;
+  }
+
+  // One look at BTR's numbers. Only what has changed is written.
+  function look() {
+    const data = host?.isConnected ? read() : null;
+    if (!data) { close(); return; }
+    const { stats, settings, debug } = data;
+    const now = performance.now();
+    // Another video (and the first look): its minute and its nodes start anew.
+    if (data.route !== route) {
+      route = data.route;
+      speeds = [];
+      buffers = [];
+      recent = [];
+      order = [];
+    }
+    // What every node brought since the last look: together, the download speed. The first
+    // look only notes where the counters stand.
+    if (seen) {
+      const fresh = [...data.received].map(([name, total]) => [name, total - (seen.get(name) || 0)]).filter(([, bytes]) => bytes > 0);
+      const elapsed = Math.max(.25, (now - lookedAt) / 1000);
+      speeds = speeds.concat(fresh.reduce((sum, [, bytes]) => sum + bytes, 0) / elapsed).slice(-HISTORY);
+      buffers = buffers.concat(Math.max(0, Number(stats.bufferedAhead) || 0)).slice(-HISTORY);
+      recent = recent.concat({ elapsed, fresh }).slice(-NODE_WINDOW);
+    }
+    seen = new Map(data.received);
+    lookedAt = now;
+    rows.idle.parentElement.hidden = data.playing;
+    rows.list.hidden = !data.playing;
+    if (!data.playing) return;
+
+    // A row is there while it has a value.
+    const write = (name, text) => {
+      rows[name].line.hidden = text === undefined;
+      if (text !== undefined) say(rows[name].text, text);
+    };
+    const full = data.takeover === "full";
+    const codec = CODECS.find(([pattern]) => pattern.test(String(debug.codec || "")))?.[1];
+    const track = (debug.tracks || []).find((item) => item.kind === "video");
+    write("接管方式", full ? "全接管" : "兼容模式");
+    write("画面", debug.width && debug.height ? `${debug.width} x ${debug.height}${debug.frameRate ? `@${Number(Number(debug.frameRate).toFixed(3))}` : ""}${codec ? ` [${codec}]` : ""}` : undefined);
+    // The average of the whole video, and the half minute that is about to be played.
+    write("平均码率", debug.videoBandwidth ? megabits(debug.videoBandwidth) : undefined);
+    write("当前码率", debug.videoKbpsAhead ? megabits(debug.videoKbpsAhead * 1000) : undefined);
+    write("分段", track?.segments ? `${track.nextIndex} / ${track.segments}` : undefined);
+    if (track?.segments) fill(rows["分段"].part, track.nextIndex / track.segments);
+    write("丢帧", data.frames ? `${data.frames.droppedVideoFrames} / ${data.frames.totalVideoFrames}` : undefined);
+    write("卡顿", full ? `${Number(debug.underflowRebuffers) || 0} 次` : undefined);
+    write("加速", full ? undefined : `${Number(debug.acceleratedRanges) || 0} 次`);
+    write("失败", full ? undefined : `${Number(debug.failedRanges) || 0} 次`);
+    write("二级缓冲", settings.secondaryBuffer && debug.reserve ? `${Math.round(debug.reserve.seconds)} 秒 [${Math.round(debug.reserve.bytes / 1048576)} MB]` : undefined);
+    write("下载速度", speedText(speeds.at(-1) ?? stats.totalSpeedBps));
+    draw(rows["下载速度"].part, speeds, 1);
+    // The compatibility mode leaves how far to buffer to Bilibili's player.
+    const target = full ? Number(debug.bufferAheadLimit) || Number(settings.bufferAheadSeconds) || 0 : 0;
+    write("缓冲", `${Math.round(Number(stats.bufferedAhead) || 0)}${target ? ` / ${target}` : ""} 秒`);
+    draw(rows["缓冲"].part, buffers, Math.max(1, target));
+    const threads = (stats.threadSpeeds || []).filter((item) => item.state === "active" && item.kind !== "meta");
+    const limit = settings.autoConcurrency ? Number(stats.autoThreads) || 0 : Number(settings.concurrency) || 0;
+    write("线程", `${threads.length}${limit ? ` / ${limit}` : ""}`);
+    rows["线程"].part.classList.toggle("many", threads.length > 36);
+    each(rows["线程"].part, threads, () => element("i", ""), (cell, item) => fill(cell, item.totalBytes > 0 ? item.loaded / item.totalBytes : 0));
+
+    // The nodes, each in the place it first took, so that no row moves: the ones BTR knows
+    // for this video, then any other that brought something. One that is neither any more
+    // (the video before this one had it) leaves the list.
+    const brought = new Map();
+    for (const item of recent) for (const [name, bytes] of item.fresh) brought.set(name, (brought.get(name) || 0) + bytes);
+    const span = recent.reduce((sum, item) => sum + item.elapsed, 0);
+    const refused = new Set((stats.cdnHosts || []).filter((item) => ["blocked", "banned"].includes(item.state)).map((item) => item.host));
+    const known = (stats.cdnHosts || []).map((item) => item.host);
+    order = order.filter((name) => known.includes(name) || brought.has(name));
+    for (const name of [...known, ...brought.keys()]) if (!order.includes(name)) order.push(name);
+    const most = Math.max(1, ...brought.values());
+    rows.nodes.parentElement.hidden = !order.length;
+    each(rows.nodes, order.slice(0, NODE_ROWS), () => element("div", "", element("span", "node"), element("i", "meter"), element("span", "text")), (cell, name) => {
+      say(cell.children[0], name.split(".")[0].replace(/^upos-/, ""));
+      cell.children[0].title = name;
+      fill(cell.children[1], (brought.get(name) || 0) / most);
+      say(cell.children[2], refused.has(name) && !brought.get(name) ? "已屏蔽" : speedText(span ? (brought.get(name) || 0) / span : 0));
+    });
+  }
+
+  function install(nextRead) {
+    read = nextRead;
+    // Bilibili's player builds the menu of a right click anew every time; the entry is added
+    // once it has, and a menu the entry pushes out of the player is moved up.
+    document.addEventListener("contextmenu", (event) => {
+      const container = event.target instanceof Element ? event.target.closest(".bpx-player-container") : null;
+      if (!container || !read()) return;
+      const add = () => {
+        const menu = container.querySelector(".bpx-player-contextmenu");
+        if (!menu?.children.length || menu.querySelector("[data-btr-stats]")) return;
+        const entry = element("li", "", NAME);
+        entry.dataset.btrStats = "";
+        // On the press, not on the click: the player takes its menu away a moment after the
+        // press, and a button held a little longer is released on the video. No click then.
+        entry.addEventListener("mousedown", (pressed) => {
+          if (pressed.button !== 0) return;
+          if (host?.isConnected) close();
+          else open(container);
+        });
+        menu.append(entry);
+        const over = menu.getBoundingClientRect().bottom - container.getBoundingClientRect().bottom;
+        if (over > 0 && menu.style.top.endsWith("px")) menu.style.top = `${parseFloat(menu.style.top) - over}px`;
+      };
+      setTimeout(add, 0);
+      setTimeout(add, 80);
+    }, true);
+  }
+
+  root.__BILI_STATS_PANEL__ = Object.freeze({ install, open, close, available: () => Boolean(read && playerOf()) });
+})(globalThis);
+
 /* src/page-hook.js */
 (function installPageHook(root) {
   "use strict";
@@ -7037,10 +7299,8 @@ const chrome = (() => {
   let syncedAutoQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
-  let infoPanel = null;
-  let infoPanelObserver = null;
-  const lastHostByKind = { video: "", audio: "" };
-  const recentBytes = [];
+  // Every byte downloaded, by the node it came from, for BTR 统计信息 (stats-panel.js).
+  const receivedByHost = new Map();
   // Every video byte downloaded, for the speed 自动 chooses by (measureAutoSpeed).
   let videoBytesIn = 0;
   // The video bytes of requests that are over, and those of them in pieces that were
@@ -7093,7 +7353,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.14.1",
+    version: "2026.11.15.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7322,8 +7582,6 @@ const chrome = (() => {
         expiresAt: Infinity
       });
       stats.lastHost = host;
-      if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
-      trackBusy(kind, now);
       // One segment starts and ends dozens of transfers within the same moment. Publishing
       // each of them at once posted the whole thread list every time.
       schedulePublish();
@@ -7335,9 +7593,7 @@ const chrome = (() => {
     countTransfer(item, event);
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
-      recentBytes.push({ at: now, bytes });
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      speedMeters[item.kind]?.samples.push({ at: now, bytes });
+      receivedByHost.set(item.host, (receivedByHost.get(item.host) || 0) + bytes);
       if (item.kind === "video") videoBytesIn += bytes;
       item.loaded += bytes;
       item.sampleBytes += bytes;
@@ -7355,7 +7611,6 @@ const chrome = (() => {
       if (item.kind === "video") videoBytesEnded += item.loaded;
       if (event.phase === "cancel") {
         transfers.delete(item.id);
-        trackBusy(item.kind, now);
         schedulePublish();
         return event.id;
       }
@@ -7363,7 +7618,6 @@ const chrome = (() => {
       if (event.phase === "done" && item.kind === "video") videoBytesUsed += item.loaded;
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
-      trackBusy(item.kind, now);
       schedulePublish();
     }
     return event.id;
@@ -8735,103 +8989,19 @@ const chrome = (() => {
     setTimeout(sync, 300);
   }
 
-  // Video Speed and Audio Speed in the native panel are how fast the latest data came in
-  // while it was being downloaded, and they keep that value between segments. Here it is
-  // all threads of a kind together over the last few seconds; the pauses between segments
-  // do not count, and the value stays until new data arrives.
-  const SPEED_WINDOW_MS = 3000;
-  const speedMeters = { video: { busySince: 0, spans: [], samples: [], shown: 0 }, audio: { busySince: 0, spans: [], samples: [], shown: 0 } };
-
-  // Measured while data comes in and once more when the downloads stop; the value then stays
-  // as it was instead of fading while the window slides past the last data.
-  function updateSpeed(meter, now) {
-    const from = now - SPEED_WINDOW_MS;
-    meter.spans = meter.spans.filter(([, end]) => end > from);
-    meter.samples = meter.samples.filter((sample) => sample.at > from);
-    const busyMs = meter.spans.reduce((sum, [start, end]) => sum + end - Math.max(start, from), 0)
-      + (meter.busySince ? now - Math.max(meter.busySince, from) : 0);
-    const bytes = meter.samples.reduce((sum, sample) => sum + sample.bytes, 0);
-    // Bytes per millisecond times 8 is kilobits per second.
-    if (bytes > 0 && busyMs >= 250) meter.shown = Math.round(bytes * 8 / busyMs);
-  }
-
-  function trackBusy(kind, now) {
-    const meter = speedMeters[kind];
-    if (!meter) return;
-    const busy = [...transfers.values()].some((item) => item.kind === kind && item.state === "active");
-    if (busy && !meter.busySince) meter.busySince = now;
-    else if (!busy && meter.busySince) {
-      meter.spans.push([meter.busySince, now]);
-      meter.busySince = 0;
-      updateSpeed(meter, now);
-    }
-  }
-
-  function measuredSpeed(kind, now) {
-    const meter = speedMeters[kind];
-    if (meter.busySince) updateSpeed(meter, now);
-    return meter.shown;
-  }
-
-  // Bilibili's "视频统计信息" panel reads its own player core, which downloads nothing while
-  // BTR plays the video, so its hosts, speeds and segment counts would be stale. The same
-  // rows show what BTR plays and downloads instead.
-  function nativeInfoValues() {
-    const info = player?.getDebug?.();
-    // In the compatibility mode the native core knows the codec, resolution and segments;
-    // only the download rows belong to BTR.
-    if (player?.nativeTransport) {
-      if (!player.transportActive) return null;
-      const now = Date.now();
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      return {
-        "Player Type": "BTR Native (兼容模式)",
-        "Video Host": lastHostByKind.video || undefined,
-        "Audio Host": lastHostByKind.audio || undefined,
-        "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-        "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-        "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
-      };
-    }
-    if (!info?.videoType || playerContainer?.dataset.btrMseActive !== "true") return null;
-    const now = Date.now();
-    while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-    const track = info.tracks?.find((item) => item.kind === "video");
-    const frames = player.video?.getVideoPlaybackQuality?.();
+  // BTR 统计信息 (stats-panel.js) shows what BTR is doing with the video. This is what it
+  // reads, once a second while it is open; nothing while BTR is switched off.
+  root.__BILI_STATS_PANEL__?.install(() => {
+    if (!settings.enabled) return null;
+    updateTransferStats();
+    let frames = null;
+    try { frames = player?.video?.getVideoPlaybackQuality?.() || null; } catch (_error) {}
     return {
-      "Mime Type": `${info.videoType}, ${info.audioType}`,
-      "Player Type": "BTR Native",
-      "Resolution": info.width && info.height ? `${info.width} x ${info.height}@${Number((Number(info.frameRate) || 0).toFixed(3))}` : undefined,
-      "Video DataRate": `${Math.round(info.videoBandwidth / 1000)} Kbps [${String(info.codec).toUpperCase()}]`,
-      "Audio DataRate": `${Math.round(info.audioBandwidth / 1000)} Kbps`,
-      "Segments": track ? `${track.nextIndex} / ${track.segments}${info.lastSeekMs ? `，跳转恢复 ${(info.lastSeekMs / 1000).toFixed(1)} 秒，之后卡顿 ${info.stallsAfterSeek} 次` : ""}` : undefined,
-      "Dropped Frames": frames ? `${frames.droppedVideoFrames} / ${frames.totalVideoFrames}` : undefined,
-      "Video Host": lastHostByKind.video || undefined,
-      "Audio Host": lastHostByKind.audio || undefined,
-      "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-      "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-      "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
+      takeover: !player ? "" : player.nativeTransport ? "compat" : "full",
+      playing: Boolean(player && (player.nativeTransport ? player.transportActive : playerContainer?.dataset.btrMseActive === "true")),
+      route: playerRoute, stats, settings, received: receivedByHost, debug: player?.getDebug?.() || {}, frames
     };
-  }
-
-  function updateNativeInfoPanel() {
-    const panel = playerContainer?.querySelector(".bpx-player-info-panel") || null;
-    if (panel !== infoPanel) {
-      infoPanelObserver?.disconnect();
-      infoPanel = panel;
-      infoPanelObserver = panel ? new MutationObserver(updateNativeInfoPanel) : null;
-      infoPanelObserver?.observe(panel, { childList: true, subtree: true, characterData: true });
-    }
-    const values = panel && nativeInfoValues();
-    if (!values) return;
-    for (const line of panel.querySelectorAll(".info-line")) {
-      const title = String(line.querySelector(".info-title")?.textContent || "").replace(/:\s*$/, "").trim();
-      const data = line.querySelector(".info-data");
-      if (data && values[title] !== undefined && data.textContent !== values[title]) data.textContent = values[title];
-    }
-    // Our own writes are not new native updates.
-    infoPanelObserver?.takeRecords();
-  }
+  });
 
   async function startPlayer() {
     clearTimeout(restartTimer);
@@ -8957,7 +9127,6 @@ const chrome = (() => {
     const preferredAudio = nativeAudio();
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
     const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
-    for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
       // video is taken over as usual (an episode never gets this far without it).
@@ -9178,7 +9347,6 @@ const chrome = (() => {
       suppressNativeSchedulers();
       refreshExpiringPlayinfo();
     }
-    updateNativeInfoPanel();
     syncSettingsMenu();
   }, 1000);
 
@@ -9229,7 +9397,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.14.1"
+      version: "2026.11.15.1"
     })
   });
   publish();
@@ -9482,7 +9650,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.14.1",
+    version: "2026.11.15.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -9961,7 +10129,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.14.1"
+      version: "2026.11.15.1"
     })
   });
   publish();
