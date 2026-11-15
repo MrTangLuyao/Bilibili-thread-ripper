@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.13.1
+// @version      2026.11.15.1
 // @description  解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -341,12 +341,25 @@ const chrome = (() => {
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(source.bufferAheadSeconds)) ? Number(source.bufferAheadSeconds) : 45,
       // 二级缓冲: what the browser's buffer has no room for waits in memory (native-mse-player.js).
       // Experimental, off unless switched on.
-      secondaryBuffer: source.secondaryBuffer === true
+      secondaryBuffer: source.secondaryBuffer === true,
+      // 音频加速: switched off, only the video is sped up. The full takeover then fetches the
+      // audio as one piece over one connection; the compatibility mode leaves it to Bilibili.
+      audioAcceleration: source.audioAcceleration !== false,
+      // 自动清晰度的最高档: the best quality 自动 may choose in the full takeover; 0 for no limit.
+      autoQualityMax: [32, 64, 80, 116, 120].includes(Number(source.autoQualityMax)) ? Number(source.autoQualityMax) : 0
     };
+  }
+
+  // A speed in bytes a second, as the panels write it: KB/s, MB/s from one megabyte up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
   }
 
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
     normalizeSettings,
@@ -2978,14 +2991,20 @@ const chrome = (() => {
       // Read again at every check of the downloader: a new playback rate, or the playhead
       // standing still during a stall, moves the deadline of pieces already on their way.
       const deadlineAt = () => playbackDeadlineAt(segment.startTime, Number(video.currentTime) || candidate.startTime, video.playbackRate);
+      // 音频加速 off: an audio segment comes as one piece over one connection, without the
+      // race for the first bytes a start opens with; only the video is sped up. Nothing is
+      // scheduled in stages then, so the start is told at once that it may go on.
+      const plain = track.kind === "audio" && core.normalizeSettings(getSettings()).audioAcceleration === false;
+      if (plain && downloadOptions.onStartupScheduled) Promise.resolve().then(downloadOptions.onStartupScheduled);
       return downloader.downloadRange(segment, track.resolver, {
         signal: generationSignal(candidate),
         parallel: true,
+        maxConcurrency: plain ? 1 : undefined,
         kind: track.kind,
         priority: downloadOptions.priority,
         deadlineAt,
-        startup: downloadOptions.startup === true,
-        onStartupScheduled: downloadOptions.onStartupScheduled,
+        startup: !plain && downloadOptions.startup === true,
+        onStartupScheduled: plain ? undefined : downloadOptions.onStartupScheduled,
         onOrderedChunk: downloadOptions.onOrderedChunk || null
       }).then(
         (result) => {
@@ -3967,7 +3986,7 @@ const chrome = (() => {
       playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.13.1",
+        version: "2026.11.15.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4228,6 +4247,8 @@ const chrome = (() => {
     if (!range || !Number.isSafeInteger(range.length)) return null;
     const track = owner.track(url);
     if (!track || !owner.sampleQuality()) return null;
+    // 音频加速 off: the audio is Bilibili's own request again.
+    if (track.kind === "audio" && owner.settings().audioAcceleration === false) return null;
     if (nativeSwitchPending()) owner.nativeSwitchRequest();
     return { owner, url, range, track };
   }
@@ -4826,7 +4847,7 @@ const chrome = (() => {
 
   // bridge.js DEFAULTS, the stored settings before anything is changed: Settings marks every
   // value that differs with *. dev/diagnostic-report-test.js checks that the two stay equal.
-  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false });
+  const DEFAULTS = Object.freeze({ enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, audioAcceleration: true, autoQualityMax: 0, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: Object.freeze([]), floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false });
 
   // English names of Bilibili's quality ids; the player's own labels are Chinese (1080P 60帧).
   const QUALITY_LABELS = Object.freeze({ 127: "8K", 126: "Dolby Vision", 125: "HDR", 120: "4K", 116: "1080P60", 112: "1080P+", 80: "1080P", 74: "720P60", 64: "720P", 32: "480P", 16: "360P", 6: "240P" });
@@ -5354,6 +5375,8 @@ const chrome = (() => {
       ["threads", !s ? "n/a" : s.autoConcurrency === true ? mark("auto", "autoConcurrency") : s.autoConcurrency === false ? mark(count(s.concurrency), "autoConcurrency", "concurrency") : "n/a"],
       ["buffer ahead", s ? mark(num(s.bufferAheadSeconds) === null ? "n/a" : `${count(s.bufferAheadSeconds)} s`, "bufferAheadSeconds") : "n/a"],
       ["secondary buffer", flag("secondaryBuffer")],
+      ["audio acceleration", flag("audioAcceleration")],
+      ["auto quality limit", !s || num(s.autoQualityMax) === null ? "n/a" : mark(s.autoQualityMax ? QUALITY_LABELS[s.autoQualityMax] || count(s.autoQualityMax) : "none", "autoQualityMax")],
       ["episodes", flag("episodeEnabled")],
       ["live", flag("liveEnabled")],
       ["block international", flag("blockInternational")]
@@ -5689,8 +5712,20 @@ const chrome = (() => {
   const DIALOG_ID = "__bilibili_thread_ripper_settings_dialog__";
   const LAUNCHER_ID = "__bilibili_thread_ripper_launcher__";
   const GUIDE_ID = "__bilibili_thread_ripper_guide__";
-  const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128];
-  const BUFFER_OPTIONS = [30, 45, 90, 180];
+  // The switches of 高级设置: the control's id, the setting it keeps, and whether that setting
+  // is on until someone switches it off.
+  const SWITCHES = [["auto-concurrency", "autoConcurrency", false], ["secondary-buffer", "secondaryBuffer", false],
+    ["audio-acceleration", "audioAcceleration", true], ["episode-enabled", "episodeEnabled", true], ["live-enabled", "liveEnabled", false],
+    ["block-international", "blockInternational", false], ["floating-button", "floatingButton", true]];
+  // 自动清晰度的最高档; 0 is no limit.
+  const QUALITY_NAMES = { 32: "480P", 64: "720P", 80: "1080P", 116: "1080P 60 帧", 120: "4K", 0: "不限" };
+  // The sliders of 高级设置, by the setting each keeps: the control's id, its stops from left to
+  // right, the default among them, and how a stop reads.
+  const SLIDERS = {
+    concurrency: { id: "concurrency", stops: [4, 8, 16, 32, 64, 128], usual: 8, text: String },
+    bufferAheadSeconds: { id: "buffer-ahead", stops: [30, 45, 90, 180], usual: 45, text: (seconds) => `${seconds} 秒` },
+    autoQualityMax: { id: "auto-quality-max", stops: [32, 64, 80, 116, 120, 0], usual: 0, text: (quality) => QUALITY_NAMES[quality] }
+  };
   const MAX_CUSTOM_HOSTS = 32;
   const HOST_GROUPS = [["大陆节点", cdn.MAINLAND_HOSTS], ["海外节点", cdn.OVERSEAS_HOSTS]];
   const PROJECT_URL = "https://github.com/MrTangLuyao/Bilibili-thread-ripper";
@@ -5705,6 +5740,8 @@ const chrome = (() => {
     + `<svg class="icon-auto" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="4"></circle><path d="M10 6a4 4 0 0 1 0 8z" fill="currentColor" stroke="none"></path><path d="M10 1.7v1.8M10 16.5v1.8M1.7 10h1.8M16.5 10h1.8M4.1 4.1l1.3 1.3M15.9 4.1l-1.3 1.3M4.1 15.9l1.3-1.3"></path><path d="M14.6 22.8l4.1-9 4.1 9M16 19.6h5.4"></path></svg>`;
   const THEME_LABELS = { auto: "自动（跟随系统）", light: "浅色", dark: "深色" };
   const CHEVRON_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>`;
+  // The question mark beside a setting's name; the setting's explanation is a bubble over it.
+  const HELP_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.5a2.5 2.5 0 1 1 3.8 2.1c-.9.6-1.4 1.1-1.4 2.1"/><path d="M12 16.7v.1"/></svg>`;
   const KNOWN_HOSTS = HOST_GROUPS.flatMap(([, hosts]) => hosts);
 
   // The ripple on everything that can be pressed, the same one as on louie1.com: a circle that
@@ -5747,12 +5784,21 @@ const chrome = (() => {
     for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
   }
 
-  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
-  function formatSpeed(bps) {
-    const value = Math.max(0, Number(bps) || 0);
-    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
-    return `${Math.round(value / 1024)} KB/s`;
-  }
+  // One row of a settings list: a name (the label of its control, `id`), a question mark
+  // beside it where the setting has an explanation (`tip`, the bubble over the mark, which
+  // keeps the line breaks of the text), the control on the right, and what belongs under
+  // that line.
+  const settingRow = ({ name, id = "", tip = "", control, under = "" }) => `
+                <div class="row">
+                  <div class="row-line">
+                    <span class="row-title">${id ? `<label class="row-name" for="${id}">${name}</label>` : `<span class="row-name">${name}</span>`}${tip ? `<button class="row-help" type="button" aria-label="${tip}">${HELP_ICON}</button>` : ""}</span>
+                    ${control}
+                  </div>${under}
+                </div>`;
+  const switchRow = (name, id, tip) => settingRow({ name, id, tip, control: `<label class="switch"><input id="${id}" type="checkbox"><span></span></label>` });
+  // A slider with a few stops (SLIDERS), its value on the right; the mark on it is the default.
+  const sliderRow = (name, key, value, tip) => settingRow({ name, id: SLIDERS[key].id, tip, control: `<output id="${value}" for="${SLIDERS[key].id}"></output>`, under: `
+                  <div class="slider"><i class="slider-fill" aria-hidden="true"></i><i class="slider-tick" aria-hidden="true"></i><input id="${SLIDERS[key].id}" type="range" min="0" max="${SLIDERS[key].stops.length - 1}" step="1"></div>` });
 
   const PANEL_HTML = `
     <main>
@@ -5761,7 +5807,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.13.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.15.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -5785,10 +5831,10 @@ const chrome = (() => {
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
-          <section class="run-state" aria-label="运行状态">
+          <button class="run-state" type="button" disabled>
             <span><b id="active-count">0</b> 条线程</span>
-            <b class="run-speed">0 KB/s</b>
-          </section>
+            <b class="run-speed">0 KB/s</b>${CHEVRON_ICON}
+          </button>
         </div>
       </div>
 
@@ -5825,7 +5871,7 @@ const chrome = (() => {
                   <div id="manual-hosts" class="manual-hosts"></div>
                   <form id="host-form" class="host-form">
                     <input id="host-input" type="text" placeholder="例如 upos-sz-mirrorali.bilivideo.com" spellcheck="false" autocomplete="off" aria-label="服务器地址">
-                    <button type="submit">添加</button>
+                    <button class="link" type="submit">添加</button>
                   </form>
                   <p id="host-error" class="host-error" role="alert"></p>
                 </fieldset>
@@ -5834,70 +5880,42 @@ const chrome = (() => {
             </div>
             <div class="block" data-needs-enabled>
               <h2 class="block-title">线程</h2>
-              <section class="controls">
-                <div class="control-title">
-                  <label for="concurrency">线程加载数</label>
-                  <output id="thread-value" for="concurrency">8</output>
-                </div>
-                <label class="auto-row" for="auto-concurrency"><span class="row-text">自动线程数（推荐）<small>BTR将智能选择需要的线程数。</small></span><span class="switch"><input id="auto-concurrency" type="checkbox" aria-label="自动线程数"><span></span></span></label>
-                <div class="slider">
-                  <div id="slider-fill" class="slider-fill" aria-hidden="true"></div>
-                  <input id="concurrency" type="range" min="0" max="5" step="1" value="1" aria-label="线程加载数" aria-valuetext="8">
-                </div>
-                <div class="scale" aria-hidden="true">
-                  <span>4</span><span>8</span><span>16</span><span>32</span><span>64</span><span>128</span>
-                </div>
+              <section class="controls list">${switchRow("自动线程数", "auto-concurrency", "按网络情况自动选择线程数，推荐打开。")}${sliderRow("线程数", "concurrency", "thread-value", "同时下载的连接数。\n打开自动线程数时不适用。")}
               </section>
             </div>
           </div>
           <div id="panel-buffer" class="tab-panel" role="tabpanel" aria-labelledby="tab-buffer" data-tab-panel="buffer" hidden>
             <div class="block" data-needs-enabled>
-              <section class="controls buffer-controls" aria-label="缓冲">
-                <div class="control-title">
-                  <label for="buffer-ahead" class="row-text">全接管预缓冲时长<small>可能受到浏览器150MiB限制</small></label>
-                  <output id="buffer-value" for="buffer-ahead">45s</output>
-                </div>
-                <div class="slider">
-                  <div id="buffer-fill" class="slider-fill" aria-hidden="true"></div>
-                  <input id="buffer-ahead" type="range" min="0" max="3" step="1" value="1" aria-label="全接管预缓冲时长" aria-valuetext="45 秒">
-                </div>
-                <div class="scale" aria-hidden="true">
-                  <span>30s</span><span>45s</span><span>90s</span><span>180s</span>
-                </div>
-                <label class="auto-row" for="secondary-buffer"><span class="row-text">开启二级缓冲（实验性）<small>尝试绕过浏览器视频缓冲容量限制</small></span><span class="switch"><input id="secondary-buffer" type="checkbox" aria-label="开启二级缓冲（实验性）"><span></span></span></label>
+              <section class="controls buffer-controls list" aria-label="缓冲">${sliderRow("预缓冲时长", "bufferAheadSeconds", "buffer-value", "全接管下往前缓冲多久。\n可能受浏览器 150 MiB 的限制。")}${switchRow("二级缓冲（实验性）", "secondary-buffer", "尝试绕过浏览器的视频缓冲容量限制。")}
               </section>
             </div>
           </div>
           <div id="panel-features" class="tab-panel" role="tabpanel" aria-labelledby="tab-features" data-tab-panel="features" hidden>
+            <div class="block">
+              <h2 class="block-title">调试</h2>
+              <section class="notice-controls list" aria-label="调试">${settingRow({ name: "诊断信息", tip: "反馈问题时点一下，把内容贴到 issue 里。\n里面没有 Cookie、账号信息和下载地址。", control: '<span class="row-action"><span id="debug-copy-status" class="debug-copy-status" role="status"></span><button id="debug-copy" class="link" type="button">复制</button></span>', under: `
+                  <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>` })}
+              </section>
+            </div>
             <div class="block" data-needs-enabled>
               <h2 class="block-title">加速范围</h2>
-              <section class="accel-controls" aria-label="加速范围">
-                <label class="accel-row" for="episode-enabled"><span class="row-text">剧集加速<small>加速番剧、电影、纪录片等剧集，使用兼容模式。</small></span><span class="switch"><input id="episode-enabled" type="checkbox" aria-label="剧集加速"><span></span></span></label>
-                <label class="accel-row" for="live-enabled"><span class="row-text">直播加速（实验性）</span><span class="switch"><input id="live-enabled" type="checkbox" aria-label="直播加速（实验性）"><span></span></span></label>
+              <section class="accel-controls list" aria-label="加速范围">${switchRow("音频加速", "audio-acceleration", "关掉后只加速视频，音频照常下载。")}${switchRow("剧集加速", "episode-enabled", "加速番剧、电影、纪录片等剧集，\n使用兼容模式。")}${switchRow("直播加速（实验性）", "live-enabled")}
+              </section>
+            </div>
+            <div class="block" data-needs-enabled>
+              <h2 class="block-title">自动清晰度</h2>
+              <section class="quality-controls list" aria-label="自动清晰度">${sliderRow("最高", "autoQualityMax", "quality-value", "菜单选“自动”时最高选到哪一档，\n只在全接管下生效。")}
               </section>
             </div>
             <div class="block" data-needs-enabled>
               <h2 class="block-title">网页版本</h2>
-              <section class="site-controls" aria-label="网页版本">
-                <label class="accel-row" for="block-international"><span class="row-text">阻止使用国际版<small>重定向B站到国内版网页</small></span><span class="switch"><input id="block-international" type="checkbox" aria-label="阻止使用国际版"><span></span></span></label>
-              </section>
-            </div>
-            <div class="block">
-              <h2 class="block-title">调试</h2>
-              <section class="notice-controls" aria-label="调试">
-                <div class="debug-copy">
-                  <button id="debug-copy" type="button">复制诊断信息</button>
-                  <span id="debug-copy-status" class="debug-copy-status" role="status"></span>
-                </div>
-                <p class="debug-copy-note">反馈问题时点一下，把复制下来的内容贴到 issue 里。里面没有 Cookie、账号信息和视频的下载地址。</p>
-                <textarea id="debug-copy-text" class="debug-copy-text" readonly hidden aria-label="诊断信息"></textarea>
+              <section class="site-controls list" aria-label="网页版本">${switchRow("阻止使用国际版", "block-international", "把 B 站重定向到国内版网页。")}
               </section>
             </div>
           </div>
           <div id="panel-interface" class="tab-panel" role="tabpanel" aria-labelledby="tab-interface" data-tab-panel="interface" hidden>
             <div class="block">
-              <section class="interface-controls" aria-label="界面">
-                <label class="notice-row" for="floating-button"><span class="row-text">悬浮按钮</span><span class="switch"><input id="floating-button" type="checkbox" aria-label="悬浮按钮"><span></span></span></label>
+              <section class="interface-controls list" aria-label="界面">${switchRow("悬浮按钮", "floating-button", "页面角落里打开这个面板的圆形按钮。")}
               </section>
             </div>
           </div>
@@ -5914,7 +5932,7 @@ const chrome = (() => {
       --divider: #343943; --control-border: #444b57;
       --text: #f5f7fb; --label: #c9ced9; --button-text: #d9dee8;
       --muted: #949baa; --subtle: #8a93a6; --switch: #313a4c; --track: #3a3e47;
-      --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943;
+      --error: #f28b85; --success: #9fd9a8; --focus: #fff; --tab: #343943; --tip: #464d5b;
       --shadow: 0 24px 60px rgba(0, 0, 0, .5), 0 2px 10px rgba(0, 0, 0, .3);
     }
     .btr-popup[data-theme="light"] {
@@ -5922,7 +5940,7 @@ const chrome = (() => {
       --divider: #d6dae2; --control-border: #aeb6c4;
       --text: #202532; --label: #363f50; --button-text: #363f50;
       --muted: #596579; --subtle: #596579; --switch: #758197; --track: #d6dae2;
-      --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff;
+      --error: #b42318; --success: #227536; --focus: #244e9b; --tab: #fff; --tip: #30353f;
       --shadow: 0 24px 60px rgba(15, 23, 42, .18), 0 2px 10px rgba(15, 23, 42, .08);
     }
     * { box-sizing: border-box; }
@@ -5986,57 +6004,82 @@ const chrome = (() => {
     .host-option { display: flex; align-items: center; gap: 7px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; cursor: pointer; }
     .host-option input { flex: none; width: 14px; height: 14px; margin: 0; accent-color: #fb7299; cursor: pointer; }
     .manual-host { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: var(--label); font-size: 11px; overflow-wrap: anywhere; }
-    .manual-host button { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--control-border); border-radius: 4px; background: var(--hover); color: var(--button-text); font: inherit; line-height: 20px; cursor: pointer; }
-    .host-form { display: flex; gap: 6px; margin-top: 10px; }
-    .host-form input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--control-border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
-    .host-form button { flex: none; padding: 6px 10px; border: 0; border-radius: 5px; background: #fb7299; color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+    .manual-host button { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font: inherit; line-height: 22px; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .host-form { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+    .host-form input { flex: 1; min-width: 0; padding: 7px 10px; border: 0; border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
     .host-error { min-height: 0; margin: 6px 0 0; color: var(--error); font-size: 11px; }
     .host-error:empty { display: none; }
     .host-form input:focus-visible, .host-form button:focus-visible, .manual-host button:focus-visible, .host-option input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .controls { padding: 12px 16px; border-radius: 12px; background: var(--surface); }
-    .control-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
-    .control-title label { color: var(--label); font-size: 13px; }
-    /* A switch row is pressed as a whole: it reaches to near the edge of its block, and its
-       padding stands in for the space the rows used to keep between them. */
-    .auto-row, .accel-row, .notice-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 -10px; padding: 6px 10px; border-radius: 6px; color: var(--label); font-size: 13px; cursor: pointer; transition: background 160ms ease; }
-    .auto-row:hover, .accel-row:hover, .notice-row:hover { background: var(--hover); }
-    .auto-row { margin-bottom: 7px; }
-    .auto-row .switch, .accel-row .switch, .notice-row .switch { flex: none; }
-    .row-text { display: flex; flex-direction: column; gap: 2px; }
-    .auto-row small, .accel-row small { color: var(--subtle); font-size: 11px; }
-    .controls.auto .slider, .controls.auto .scale { opacity: 0.4; pointer-events: none; }
-    output { min-width: 42px; padding: 4px 8px; border-radius: 5px; color: #fff; background: #fb7299; font-size: 13px; font-weight: 700; text-align: center; }
-    .slider { position: relative; width: 100%; height: 18px; border-radius: 9px; background: var(--track); }
-    .slider-fill { position: absolute; top: 0; bottom: 0; left: 0; width: 60%; border-radius: 9px; background: #fb7299; pointer-events: none; }
+    /* One kind of list for every setting: a card of rows, each a name with its control on the
+       right and a slider under it where there is one. */
+    .list { border-radius: 12px; background: var(--surface); }
+    .row { padding: 11px 16px 12px; }
+    .row + .row { border-top: 1px solid var(--divider); }
+    .row-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 24px; }
+    .row-title { display: flex; align-items: center; min-width: 0; }
+    .row-name { min-width: 0; color: var(--label); font-size: 13px; }
+    label.row-name { cursor: pointer; }
+    .row .switch { flex: none; }
+    output { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .row.is-changed output { color: #fb7299; font-weight: 600; }
+    .row.is-off .slider { opacity: .4; pointer-events: none; }
+    /* The question mark beside a name, larger to the pointer than it looks. The explanation is
+       its label, drawn as a bubble over it while the pointer or the keyboard is on it: it
+       takes no room in the row and is gone the moment the pointer leaves. Where there is no
+       room over the mark the bubble opens under it (.is-low). */
+    .row-help { position: relative; display: grid; flex: none; place-items: center; width: 32px; height: 32px; margin: -4px 0 -4px -3px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--subtle); cursor: help; transition: color 160ms ease; }
+    .row-help svg { width: 15px; height: 15px; }
+    .row-help:hover, .row-help:focus-visible { color: var(--text); }
+    .row-help:focus-visible { outline: 2px solid var(--focus); outline-offset: -7px; }
+    .row-help::before, .row-help::after { position: absolute; z-index: 3; display: none; pointer-events: none; animation: btr-tip 140ms ease-out; }
+    /* The tail: a triangle from the bubble's edge down to the mark, drawn over that edge and
+       over the bubble's shadow so the two read as one shape. */
+    .row-help::before { content: ""; bottom: calc(100% - 4px); left: 10px; z-index: 4; border: 6px solid transparent; border-bottom: 0; border-top-color: var(--tip); }
+    .row-help::after { content: attr(aria-label); bottom: calc(100% + 1px); left: -44px; box-sizing: border-box; background: var(--tip); width: max-content; max-width: 260px; padding: 8px 11px; border-radius: 9px; box-shadow: 0 6px 18px rgba(0, 0, 0, .28); color: #fff; font-size: 11.5px; line-height: 1.6; text-align: left; white-space: pre-line; }
+    .row-help.is-low::before { top: calc(100% - 4px); bottom: auto; border-top: 0; border-bottom: 6px solid var(--tip); }
+    .row-help.is-low::after { top: calc(100% + 1px); bottom: auto; }
+    .row-help:hover::before, .row-help:hover::after, .row-help:focus-visible::before, .row-help:focus-visible::after { display: block; }
+    @keyframes btr-tip { from { opacity: 0; } }
+    /* A slider: the mark (--mark) is the default, the colored part runs from it to the thumb (--at). */
+    .slider { position: relative; height: 18px; margin-top: 5px; }
+    .slider::before { content: ""; position: absolute; top: 7px; right: 0; left: 0; height: 4px; border-radius: 2px; background: var(--track); }
+    .slider-fill { position: absolute; top: 7px; left: calc(7px + (100% - 14px) * min(var(--at, 0), var(--mark, 0))); width: calc((100% - 14px) * (max(var(--at, 0), var(--mark, 0)) - min(var(--at, 0), var(--mark, 0)))); height: 4px; border-radius: 2px; background: #fb7299; pointer-events: none; }
+    .slider-tick { position: absolute; top: 4px; left: calc(7px + (100% - 14px) * var(--mark, 0)); width: 2px; height: 10px; margin-left: -1px; border-radius: 1px; background: var(--muted); opacity: .55; pointer-events: none; }
     input[type="range"] { position: absolute; inset: 0; width: 100%; height: 18px; margin: 0; appearance: none; -webkit-appearance: none; border: 0; outline: 0; background: transparent; cursor: pointer; }
     input[type="range"]::-webkit-slider-runnable-track { height: 18px; background: transparent; }
-    input[type="range"]::-webkit-slider-thumb { width: 24px; height: 24px; margin-top: -3px; appearance: none; -webkit-appearance: none; border: 2px solid #fff; border-radius: 50%; background: #fff; }
-    input[type="range"]:focus-visible::-webkit-slider-thumb { border-color: #fb7299; }
-    .scale { display: flex; justify-content: space-between; margin-top: 5px; color: var(--subtle); font-size: 10px; }
-    .scale span { width: 24px; text-align: center; }
-    .scale span:first-child { text-align: left; }
-    .scale span:last-child { text-align: right; }
-    .accel-controls, .site-controls, .notice-controls, .interface-controls { padding: 5px 16px; border-radius: 12px; background: var(--surface); }
-    .manual-host button:hover { border-color: #fb7299; }
-    .debug-copy { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
-    .debug-copy button { padding: 6px 12px; border: 1px solid #fb7299; border-radius: 6px; background: var(--hover); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
-    .debug-copy button:hover { background: #fb7299; }
-    .debug-copy button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
-    .debug-copy-status { color: var(--success); font-size: 12px; }
+    input[type="range"]::-webkit-slider-thumb { width: 14px; height: 14px; margin-top: 2px; appearance: none; -webkit-appearance: none; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .32); }
+    input[type="range"]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .32); }
+    input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px #fb7299, 0 1px 3px rgba(0, 0, 0, .32); }
+    /* A quiet button: the one kind for what a row or a form does. */
+    .link { flex: none; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: #fb7299; font: inherit; font-size: 12px; cursor: pointer; transition: background 160ms ease; }
+    .link:hover { background: var(--hover); }
+    .link:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .row-action { display: flex; flex: none; align-items: center; gap: 6px; min-width: 0; }
+    .manual-host button:hover { background: var(--hover); color: var(--text); }
+    .debug-copy-status { color: var(--success); font-size: 11px; }
     .debug-copy-status.failed { color: var(--error); }
-    .debug-copy-note { margin: 8px 0 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
-    .reset-settings { width: 100%; padding: 11px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    /* 恢复默认设置 and 关闭: the two buttons of the panel, side by side and of one shape. */
+    .reset-settings, .btr-close { min-width: 0; margin: 0; padding: 11px 8px; border: 0; border-radius: 12px; font: inherit; font-size: 13px; text-align: center; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+    .reset-settings { background: var(--surface); color: var(--label); }
     .reset-settings:hover { background: var(--hover); }
     .reset-settings[data-asking] { color: var(--error); font-weight: 600; }
     .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    .debug-copy-text { width: 100%; height: 120px; margin-top: 8px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--surface); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
+    .debug-copy-text { width: 100%; height: 120px; margin-top: 10px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    /* 运行状态. Where BTR 统计信息 can be opened (a page with a player), the card is the way
+       to it and says so with an arrow. */
+    .run-state { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 12px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease; }
+    .run-state:hover { background: var(--hover); }
+    .run-state:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .run-state:disabled { background: var(--surface); cursor: default; }
+    .run-state:disabled svg { display: none; }
+    .run-state svg { flex: none; align-self: center; width: 16px; height: 16px; color: var(--muted); transform: rotate(-90deg); }
+    .run-speed { margin-left: auto; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
     /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
        scrolling under them. */
-    .btr-footer { position: sticky; bottom: 0; display: grid; gap: 14px; padding: 8px 18px 16px; background: var(--bg); box-shadow: 0 -10px 12px var(--bg); }
-    .btr-close { display: block; width: 100%; margin: 0; padding: 8px; border: 0; border-radius: 6px; background: #4a515e; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btr-footer { position: sticky; bottom: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 18px 16px; background: var(--bg); box-shadow: 0 -10px 12px var(--bg); }
+    .btr-close { background: #4a515e; color: #fff; font-weight: 600; }
     .btr-close:hover { background: #565e6c; }
     .btr-popup[data-theme="light"] .btr-close { background: #dde1e8; color: #1f2329; }
     .btr-popup[data-theme="light"] .btr-close:hover { background: #d0d5de; }
@@ -6053,9 +6096,6 @@ const chrome = (() => {
     .tab-panel[hidden], [data-host-hidden] { display: none !important; }
     .block { min-width: 0; }
     .block-title { margin: 0 0 6px 2px; color: var(--subtle); font-size: 11px; font-weight: 600; line-height: 1.4; }
-    .control-title small { display: block; margin-top: 2px; color: var(--subtle); font-size: 11px; }
-    .buffer-controls .scale span { width: auto; }
-    .buffer-controls .auto-row { margin: 10px -10px 0; }
     /* 高级设置 is a page of its own: its entry leads in, its bar back, and its tabs keep each
        part short enough for one screen. */
     main.is-advanced .view-main, main.is-advanced .advanced > summary { display: none; }
@@ -6076,7 +6116,7 @@ const chrome = (() => {
     .host-option { border-radius: 4px; }
     .btr-popup { --ripple: rgba(251, 114, 153, .35); }
     .btr-popup[data-theme="light"] { --ripple: rgba(251, 114, 153, .3); }
-    .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span, .host-form button, .debug-copy button:hover { --ripple: rgba(255, 255, 255, .35); }
+    .mode-select input:checked + span, .takeover-select input:checked + span, .switch input:checked + span { --ripple: rgba(255, 255, 255, .35); }
     ${RIPPLE_CSS}
   `;
 
@@ -6147,7 +6187,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.13.1",
+        version: "2026.11.15.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -6341,20 +6381,17 @@ const chrome = (() => {
       next.focus();
       next.click();
     });
-    // A press ripples over a whole switch row, the colored part of any other switch or of a
-    // choice, otherwise over the control itself.
+    // A press ripples over the colored part of a switch or of a choice, otherwise over the
+    // control itself; not over a question mark, whose bubble the ripple would cut off.
     panel.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || !(event.target instanceof Element)) return;
-      const target = event.target.closest(".auto-row, .accel-row, .notice-row")
-        || event.target.closest("button, a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option");
+      const target = event.target.closest("button:not(.row-help), a[href], summary, .switch, .mode-select label, .takeover-select label, .host-option");
       if (!target || target.matches(":disabled")) return;
       ripple(target.matches(".switch, .mode-select label, .takeover-select label") ? target.querySelector("span") : target, event);
     });
     const enabled = $("enabled");
     const disabledNote = $("disabled-note");
     const needsEnabled = [...panel.querySelectorAll("[data-needs-enabled]")];
-    const concurrency = $("concurrency");
-    const autoConcurrency = $("auto-concurrency");
     const theme = $("theme");
     const systemTheme = root.matchMedia("(prefers-color-scheme: dark)");
     const systemColors = () => (systemTheme.matches ? "dark" : "light");
@@ -6368,16 +6405,6 @@ const chrome = (() => {
       applyTheme();
     };
     systemTheme.addEventListener("change", applyTheme);
-    const threadValue = $("thread-value");
-    const sliderFill = $("slider-fill");
-    const bufferAhead = $("buffer-ahead");
-    const bufferValue = $("buffer-value");
-    const bufferFill = $("buffer-fill");
-    const secondaryBuffer = $("secondary-buffer");
-    const liveEnabled = $("live-enabled");
-    const episodeEnabled = $("episode-enabled");
-    const blockInternational = $("block-international");
-    const floatingButton = $("floating-button");
     const resetSettings = $("reset-settings");
     const customSection = $("custom-hosts");
     const hostInput = $("host-input");
@@ -6388,23 +6415,22 @@ const chrome = (() => {
 
     const save = (update) => post("settings-update", update);
 
-    function setSlider(threads) {
-      const index = THREAD_OPTIONS.indexOf(Number(threads));
-      const safe = index < 0 ? 1 : index;
-      concurrency.value = String(safe);
-      // In the automatic mode the badge says so; the slider keeps the viewer's own count.
-      threadValue.value = autoConcurrency.checked ? "自动" : String(THREAD_OPTIONS[safe]);
-      concurrency.setAttribute("aria-valuetext", String(THREAD_OPTIONS[safe]));
-      sliderFill.style.width = `${safe / (THREAD_OPTIONS.length - 1) * 100}%`;
-    }
-
-    function setBufferSlider(seconds) {
-      const index = BUFFER_OPTIONS.indexOf(Number(seconds));
-      const safe = index < 0 ? 1 : index;
-      bufferAhead.value = String(safe);
-      bufferValue.value = `${BUFFER_OPTIONS[safe]}s`;
-      bufferAhead.setAttribute("aria-valuetext", `${BUFFER_OPTIONS[safe]} 秒`);
-      bufferFill.style.width = `${safe / (BUFFER_OPTIONS.length - 1) * 100}%`;
+    // A slider at the stop of `value`: the mark stays on the default, the colored part runs
+    // from it to the thumb, and the value turns pink once it is not the default. With 自动线程数
+    // on, the slider of the threads is out of use and says so; it keeps the viewer's own count.
+    function showSlider(key, value) {
+      const { id, stops, usual, text } = SLIDERS[key];
+      const input = $(id), row = input.closest(".row"), top = stops.length - 1;
+      const index = stops.indexOf(stops.includes(Number(value)) ? Number(value) : usual);
+      const off = key === "concurrency" && $("auto-concurrency").checked;
+      input.value = String(index);
+      input.disabled = off;
+      input.setAttribute("aria-valuetext", text(stops[index]));
+      input.parentElement.style.setProperty("--mark", String(stops.indexOf(usual) / top));
+      input.parentElement.style.setProperty("--at", String(index / top));
+      row.querySelector("output").value = off ? "自动" : text(stops[index]);
+      row.classList.toggle("is-off", off);
+      row.classList.toggle("is-changed", !off && stops[index] !== usual);
     }
 
     function setMode(mode) {
@@ -6463,19 +6489,11 @@ const chrome = (() => {
       panelMain.classList.toggle("is-off", settings.enabled === false);
       for (const node of needsEnabled) node.inert = settings.enabled === false;
       for (const radio of shadow.querySelectorAll('input[name="takeover"]')) radio.checked = radio.value === settings.takeover;
-      autoConcurrency.checked = settings.autoConcurrency === true;
-      setSlider(settings.concurrency);
-      setBufferSlider(settings.bufferAheadSeconds);
-      secondaryBuffer.checked = settings.secondaryBuffer === true;
-      concurrency.disabled = autoConcurrency.checked;
-      concurrency.closest(".controls").classList.toggle("auto", autoConcurrency.checked);
+      for (const [id, key, usual] of SWITCHES) $(id).checked = usual ? settings[key] !== false : settings[key] === true;
+      for (const key of Object.keys(SLIDERS)) showSlider(key, settings[key]);
       setMode(settings.mode);
       customHosts = settings.customHosts;
       renderHosts();
-      liveEnabled.checked = settings.liveEnabled === true;
-      episodeEnabled.checked = settings.episodeEnabled !== false;
-      blockInternational.checked = settings.blockInternational === true;
-      floatingButton.checked = settings.floatingButton !== false;
     }
 
     enabled.addEventListener("change", () => save({ enabled: enabled.checked }));
@@ -6489,22 +6507,21 @@ const chrome = (() => {
       showTheme(next);
       save({ theme: next });
     });
-    liveEnabled.addEventListener("change", () => save({ liveEnabled: liveEnabled.checked }));
-    episodeEnabled.addEventListener("change", () => save({ episodeEnabled: episodeEnabled.checked }));
-    blockInternational.addEventListener("change", () => save({ blockInternational: blockInternational.checked }));
-    floatingButton.addEventListener("change", () => save({ floatingButton: floatingButton.checked }));
-    concurrency.addEventListener("input", () => {
-      const threads = THREAD_OPTIONS[Number(concurrency.value)];
-      setSlider(threads);
-      save({ concurrency: threads });
-    });
-    autoConcurrency.addEventListener("change", () => save({ autoConcurrency: autoConcurrency.checked }));
-    bufferAhead.addEventListener("input", () => {
-      const seconds = BUFFER_OPTIONS[Number(bufferAhead.value)];
-      setBufferSlider(seconds);
-      save({ bufferAheadSeconds: seconds });
-    });
-    secondaryBuffer.addEventListener("change", () => save({ secondaryBuffer: secondaryBuffer.checked }));
+    for (const [id, key] of SWITCHES) $(id).addEventListener("change", (event) => save({ [key]: event.target.checked }));
+    for (const [key, { id, stops }] of Object.entries(SLIDERS)) {
+      $(id).addEventListener("input", (event) => {
+        const value = stops[Number(event.target.value)];
+        showSlider(key, value);
+        save({ [key]: value });
+      });
+    }
+    // A bubble that would leave the top of the panel opens under its question mark instead.
+    const placeBubble = (event) => {
+      const help = event.target instanceof Element ? event.target.closest(".row-help") : null;
+      if (help) help.classList.toggle("is-low", help.getBoundingClientRect().top - panel.getBoundingClientRect().top < 96);
+    };
+    panel.addEventListener("pointerover", placeBubble);
+    panel.addEventListener("focusin", placeBubble);
     for (const radio of shadow.querySelectorAll('input[name="mode"]')) {
       radio.addEventListener("change", () => {
         if (!radio.checked) return;
@@ -6587,7 +6604,7 @@ const chrome = (() => {
       if (!copied) return;
       if (!copyButton.style.minWidth) copyButton.style.minWidth = `${copyButton.offsetWidth}px`;
       copyButton.textContent = "已复制";
-      copyDoneTimer = root.setTimeout(() => { copyButton.textContent = "复制诊断信息"; }, 2500);
+      copyDoneTimer = root.setTimeout(() => { copyButton.textContent = "复制"; }, 2500);
     });
 
     // Keys typed into the panel belong to it. The shadow root hides the input from the page,
@@ -6595,13 +6612,19 @@ const chrome = (() => {
     const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
     for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
 
+    // 运行状态 opens BTR 统计信息 over the player (stats-panel.js), and this panel, which
+    // would lie in front of it, closes.
+    const runState = panel.querySelector(".run-state");
+    runState.disabled = !root.__BILI_STATS_PANEL__?.available();
+    runState.addEventListener("click", () => { if (root.__BILI_STATS_PANEL__.open()) close(); });
+
     // The threads and the speed now: asking for stats makes the page send fresh ones. The
     // numbers run to their new values instead of jumping there.
     const shown = { threads: 0, speed: 0 };
     let rollFrame = 0;
     const showRunState = (threads, speed) => {
       activeCount.textContent = String(Math.round(threads));
-      totalSpeed.textContent = formatSpeed(speed);
+      totalSpeed.textContent = core.formatSpeed(speed);
     };
     const refresh = () => {
       const from = { ...shown };
@@ -6938,6 +6961,253 @@ const chrome = (() => {
   root.__BTR_SETTINGS_PANEL__ = Object.freeze({ open, close: () => current?.close(), toggle, isOpen: () => Boolean(current) });
 })(globalThis);
 
+/* src/stats-panel.js */
+(function installStatsPanel(root) {
+  "use strict";
+
+  // BTR 统计信息: BTR's own statistics panel. It lies over the video the way the player's own
+  // 视频统计信息 does, shows what BTR is doing with the video in numbers and small graphs, and
+  // has nothing to do with BTR's settings. "BTR 统计信息" in the menu of a right click on the
+  // player opens and closes it; 运行状态 in the settings panel opens it too. It reads BTR's
+  // numbers once a second while it is open, and costs nothing while it is closed.
+  // Of Bilibili's page it knows the player's container and the menu of the right click.
+  // Where that menu is gone the entry is not there, and nothing else is affected.
+  const HOST_ID = "__bilibili_thread_ripper_stats__";
+  const NAME = "BTR 统计信息";
+  // The graphs go back a minute. A node's speed is what it brought in ten seconds.
+  const HISTORY = 60;
+  const NODE_WINDOW = 10;
+  const NODE_ROWS = 16;
+  const WIDTH = 180;
+  const HEIGHT = 14;
+  const CODECS = [[/^av01|^av1/i, "AV1"], [/^hev1|^hvc1|^hevc/i, "HEVC"], [/^avc/i, "AVC"]];
+  // The rows from top to bottom, and the drawing in front of the value of some.
+  const ROWS = [["接管方式"], ["画面"], ["平均码率"], ["当前码率"], ["分段", "meter"], ["丢帧"], ["卡顿"], ["加速"], ["失败"], ["二级缓冲"], ["下载速度", "graph"], ["缓冲", "graph"], ["线程", "cells"]];
+
+  // The look is that of the player's own 视频统计信息 panel, as measured on the page: its
+  // surface, its distance from the corner, its title bar, its rows of 12 px text with a column
+  // of names 100 px wide. Everything has a fixed width and every row a fixed height, so a
+  // number that changes moves nothing. The pink is BTR's.
+  const CSS = `
+    .layer { width: 100%; height: 100%; container-type: size; }
+    .panel { position: absolute; top: 10px; left: 10px; box-sizing: border-box; width: 596px; max-width: calc(100% - 20px); max-height: calc(100% - 80px); overflow: auto; padding-bottom: 15px; border-radius: 4px; background: rgba(33, 33, 33, .9); color: #fff; font: 12px/18px -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; text-align: left; pointer-events: auto; user-select: none; -webkit-user-select: none; scrollbar-width: thin; }
+    /* No room for it in the mini player. */
+    @container (max-width: 480px) or (max-height: 260px) { .panel { display: none; } }
+    h2 { margin: 0; border-bottom: 1px solid rgba(255, 255, 255, .1); font-size: 16px; font-weight: 400; line-height: 40px; text-align: center; }
+    .close { position: absolute; top: 10px; right: 10px; width: 22px; height: 22px; padding: 5px; border: 0; background: transparent; color: #fff; cursor: pointer; }
+    .close svg { display: block; width: 12px; height: 12px; }
+    .rows { padding: 15px 26px 0; }
+    .row { display: flex; align-items: center; height: 18px; }
+    [hidden] { display: none !important; }
+    .name { flex: none; width: 100px; margin-right: 10px; font-weight: 500; text-align: right; }
+    .text, .node { overflow: hidden; color: #999; white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+    .graph, .meter, .cells { flex: none; width: ${WIDTH}px; margin-right: 10px; }
+    /* The nodes side by side in two columns, which keeps the panel a rectangle like the
+       player's own. */
+    .nodes { align-items: flex-start; height: auto; }
+    .grid { display: grid; grid-template-columns: repeat(2, 210px); column-gap: 14px; }
+    .grid div { display: flex; align-items: center; height: 18px; }
+    .node { flex: none; width: 100px; margin-right: 6px; }
+    .node + .meter { width: 40px; margin-right: 6px; }
+    .graph { height: ${HEIGHT}px; overflow: visible; }
+    .graph line { stroke: rgba(255, 255, 255, .6); }
+    .graph polyline { fill: none; stroke: #fb7299; stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+    /* A meter fills from the left, the cell of a thread from the bottom. */
+    .meter, .cells i { position: relative; overflow: hidden; background: rgba(255, 255, 255, .16); }
+    .meter::after, .cells i::after { content: ""; position: absolute; bottom: 0; left: 0; background: #fb7299; }
+    .meter { height: 4px; border-radius: 2px; }
+    .meter::after { width: calc(100% * var(--at, 0)); height: 100%; }
+    .cells { display: flex; gap: 1px; height: 12px; overflow: hidden; }
+    .cells.many { gap: 0; }
+    .cells i { flex: 1 1 0; max-width: 4px; height: 100%; }
+    .cells i::after { width: 100%; height: calc(100% * var(--at, 0)); }
+  `;
+
+  const speedText = (bytes) => root.__BILI_RANGE_CORE__.formatSpeed(bytes);
+  const megabits = (bits) => `${(bits / 1e6).toFixed(1)} Mbps`;
+  const element = (tag, className, ...children) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.append(...children);
+    return node;
+  };
+  const drawn = (tag, attributes, ...children) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    node.append(...children);
+    return node;
+  };
+  // What only changes when it differs: a text, how far a meter or a cell is filled.
+  const say = (node, text) => { if (node.textContent !== text) node.textContent = text; };
+  const fill = (node, share) => node.style.setProperty("--at", Math.max(0, Math.min(1, share || 0)).toFixed(3));
+  // As many children as there are items, each written by `write`.
+  function each(parent, items, create, write) {
+    while (parent.children.length > items.length) parent.lastElementChild.remove();
+    while (parent.children.length < items.length) parent.append(create());
+    items.forEach((item, index) => write(parent.children[index], item, index));
+  }
+  // The last minute as a line over its baseline.
+  function draw(graph, values, floor) {
+    const top = Math.max(floor, ...values);
+    graph.lastChild.setAttribute("points", values.map((value, index) => `${(WIDTH - (values.length - 1 - index) * WIDTH / (HISTORY - 1)).toFixed(1)},${(HEIGHT - 1 - value / top * (HEIGHT - 2)).toFixed(1)}`).join(" "));
+  }
+
+  let read = null, host = null, rows = null, timer = 0;
+  let speeds = [], buffers = [], recent = [], order = [], seen = null, lookedAt = 0, route = null;
+  const playerOf = (node) => (node instanceof Element && node.closest(".bpx-player-container")) || document.querySelector(".bpx-player-container");
+
+  function close() {
+    clearInterval(timer);
+    host?.remove();
+    host = null;
+  }
+
+  // Opens over the player of the page. False where there is none, or BTR is switched off.
+  function open(container = playerOf()) {
+    if (!container || !read?.()) return false;
+    close();
+    host = document.createElement("div");
+    host.id = HOST_ID;
+    // Where the player's own panel is: over the video and what lies on it, under the menu of
+    // a right click. The panel leaves the controls at the bottom free.
+    host.style.cssText = "all:initial!important;position:absolute!important;inset:0!important;z-index:80!important;pointer-events:none!important;";
+    const shut = element("button", "close", drawn("svg", { viewBox: "0 0 12 12", "aria-hidden": "true" }, drawn("path", { d: "M1 1l10 10M11 1L1 11", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round" })));
+    shut.type = "button";
+    shut.setAttribute("aria-label", "关闭");
+    shut.addEventListener("click", close);
+    rows = { list: element("div", "rows"), idle: element("div", "text", "这个视频现在由 B 站自己的播放器播放。"), nodes: element("div", "grid") };
+    for (const [name, kind] of ROWS) {
+      const part = kind === "graph" ? drawn("svg", { class: "graph" }, drawn("line", { x1: 0, x2: WIDTH, y1: HEIGHT - .5, y2: HEIGHT - .5 }), drawn("polyline", {}))
+        : kind ? element(kind === "meter" ? "i" : "span", kind) : null;
+      const text = element("span", "text");
+      rows[name] = { line: element("div", "row", element("span", "name", `${name}:`), ...(part ? [part] : []), text), part, text };
+      rows.list.append(rows[name].line);
+    }
+    rows.list.append(element("div", "row nodes", element("span", "name", "节点:"), rows.nodes));
+    const panel = element("section", "panel", element("h2", "", NAME), shut, element("div", "rows", rows.idle), rows.list);
+    panel.setAttribute("aria-label", NAME);
+    rows.idle.parentElement.hidden = true;
+    host.attachShadow({ mode: "open" }).append(element("style", "", CSS), element("div", "layer", panel));
+    seen = null;
+    route = null;
+    (container.querySelector(".bpx-player-video-area") || container).append(host);
+    look();
+    timer = setInterval(look, 1000);
+    return true;
+  }
+
+  // One look at BTR's numbers. Only what has changed is written.
+  function look() {
+    const data = host?.isConnected ? read() : null;
+    if (!data) { close(); return; }
+    const { stats, settings, debug } = data;
+    const now = performance.now();
+    // Another video (and the first look): its minute and its nodes start anew.
+    if (data.route !== route) {
+      route = data.route;
+      speeds = [];
+      buffers = [];
+      recent = [];
+      order = [];
+    }
+    // What every node brought since the last look: together, the download speed. The first
+    // look only notes where the counters stand.
+    if (seen) {
+      const fresh = [...data.received].map(([name, total]) => [name, total - (seen.get(name) || 0)]).filter(([, bytes]) => bytes > 0);
+      const elapsed = Math.max(.25, (now - lookedAt) / 1000);
+      speeds = speeds.concat(fresh.reduce((sum, [, bytes]) => sum + bytes, 0) / elapsed).slice(-HISTORY);
+      buffers = buffers.concat(Math.max(0, Number(stats.bufferedAhead) || 0)).slice(-HISTORY);
+      recent = recent.concat({ elapsed, fresh }).slice(-NODE_WINDOW);
+    }
+    seen = new Map(data.received);
+    lookedAt = now;
+    rows.idle.parentElement.hidden = data.playing;
+    rows.list.hidden = !data.playing;
+    if (!data.playing) return;
+
+    // A row is there while it has a value.
+    const write = (name, text) => {
+      rows[name].line.hidden = text === undefined;
+      if (text !== undefined) say(rows[name].text, text);
+    };
+    const full = data.takeover === "full";
+    const codec = CODECS.find(([pattern]) => pattern.test(String(debug.codec || "")))?.[1];
+    const track = (debug.tracks || []).find((item) => item.kind === "video");
+    write("接管方式", full ? "全接管" : "兼容模式");
+    write("画面", debug.width && debug.height ? `${debug.width} x ${debug.height}${debug.frameRate ? `@${Number(Number(debug.frameRate).toFixed(3))}` : ""}${codec ? ` [${codec}]` : ""}` : undefined);
+    // The average of the whole video, and the half minute that is about to be played.
+    write("平均码率", debug.videoBandwidth ? megabits(debug.videoBandwidth) : undefined);
+    write("当前码率", debug.videoKbpsAhead ? megabits(debug.videoKbpsAhead * 1000) : undefined);
+    write("分段", track?.segments ? `${track.nextIndex} / ${track.segments}` : undefined);
+    if (track?.segments) fill(rows["分段"].part, track.nextIndex / track.segments);
+    write("丢帧", data.frames ? `${data.frames.droppedVideoFrames} / ${data.frames.totalVideoFrames}` : undefined);
+    write("卡顿", full ? `${Number(debug.underflowRebuffers) || 0} 次` : undefined);
+    write("加速", full ? undefined : `${Number(debug.acceleratedRanges) || 0} 次`);
+    write("失败", full ? undefined : `${Number(debug.failedRanges) || 0} 次`);
+    write("二级缓冲", settings.secondaryBuffer && debug.reserve ? `${Math.round(debug.reserve.seconds)} 秒 [${Math.round(debug.reserve.bytes / 1048576)} MB]` : undefined);
+    write("下载速度", speedText(speeds.at(-1) ?? stats.totalSpeedBps));
+    draw(rows["下载速度"].part, speeds, 1);
+    // The compatibility mode leaves how far to buffer to Bilibili's player.
+    const target = full ? Number(debug.bufferAheadLimit) || Number(settings.bufferAheadSeconds) || 0 : 0;
+    write("缓冲", `${Math.round(Number(stats.bufferedAhead) || 0)}${target ? ` / ${target}` : ""} 秒`);
+    draw(rows["缓冲"].part, buffers, Math.max(1, target));
+    const threads = (stats.threadSpeeds || []).filter((item) => item.state === "active" && item.kind !== "meta");
+    const limit = settings.autoConcurrency ? Number(stats.autoThreads) || 0 : Number(settings.concurrency) || 0;
+    write("线程", `${threads.length}${limit ? ` / ${limit}` : ""}`);
+    rows["线程"].part.classList.toggle("many", threads.length > 36);
+    each(rows["线程"].part, threads, () => element("i", ""), (cell, item) => fill(cell, item.totalBytes > 0 ? item.loaded / item.totalBytes : 0));
+
+    // The nodes, each in the place it first took, so that no row moves: the ones BTR knows
+    // for this video, then any other that brought something. One that is neither any more
+    // (the video before this one had it) leaves the list.
+    const brought = new Map();
+    for (const item of recent) for (const [name, bytes] of item.fresh) brought.set(name, (brought.get(name) || 0) + bytes);
+    const span = recent.reduce((sum, item) => sum + item.elapsed, 0);
+    const refused = new Set((stats.cdnHosts || []).filter((item) => ["blocked", "banned"].includes(item.state)).map((item) => item.host));
+    const known = (stats.cdnHosts || []).map((item) => item.host);
+    order = order.filter((name) => known.includes(name) || brought.has(name));
+    for (const name of [...known, ...brought.keys()]) if (!order.includes(name)) order.push(name);
+    const most = Math.max(1, ...brought.values());
+    rows.nodes.parentElement.hidden = !order.length;
+    each(rows.nodes, order.slice(0, NODE_ROWS), () => element("div", "", element("span", "node"), element("i", "meter"), element("span", "text")), (cell, name) => {
+      say(cell.children[0], name.split(".")[0].replace(/^upos-/, ""));
+      cell.children[0].title = name;
+      fill(cell.children[1], (brought.get(name) || 0) / most);
+      say(cell.children[2], refused.has(name) && !brought.get(name) ? "已屏蔽" : speedText(span ? (brought.get(name) || 0) / span : 0));
+    });
+  }
+
+  function install(nextRead) {
+    read = nextRead;
+    // Bilibili's player builds the menu of a right click anew every time; the entry is added
+    // once it has, and a menu the entry pushes out of the player is moved up.
+    document.addEventListener("contextmenu", (event) => {
+      const container = event.target instanceof Element ? event.target.closest(".bpx-player-container") : null;
+      if (!container || !read()) return;
+      const add = () => {
+        const menu = container.querySelector(".bpx-player-contextmenu");
+        if (!menu?.children.length || menu.querySelector("[data-btr-stats]")) return;
+        const entry = element("li", "", NAME);
+        entry.dataset.btrStats = "";
+        // On the press, not on the click: the player takes its menu away a moment after the
+        // press, and a button held a little longer is released on the video. No click then.
+        entry.addEventListener("mousedown", (pressed) => {
+          if (pressed.button !== 0) return;
+          if (host?.isConnected) close();
+          else open(container);
+        });
+        menu.append(entry);
+        const over = menu.getBoundingClientRect().bottom - container.getBoundingClientRect().bottom;
+        if (over > 0 && menu.style.top.endsWith("px")) menu.style.top = `${parseFloat(menu.style.top) - over}px`;
+      };
+      setTimeout(add, 0);
+      setTimeout(add, 80);
+    }, true);
+  }
+
+  root.__BILI_STATS_PANEL__ = Object.freeze({ install, open, close, available: () => Boolean(read && playerOf()) });
+})(globalThis);
+
 /* src/page-hook.js */
 (function installPageHook(root) {
   "use strict";
@@ -7029,10 +7299,8 @@ const chrome = (() => {
   let syncedAutoQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
-  let infoPanel = null;
-  let infoPanelObserver = null;
-  const lastHostByKind = { video: "", audio: "" };
-  const recentBytes = [];
+  // Every byte downloaded, by the node it came from, for BTR 统计信息 (stats-panel.js).
+  const receivedByHost = new Map();
   // Every video byte downloaded, for the speed 自动 chooses by (measureAutoSpeed).
   let videoBytesIn = 0;
   // The video bytes of requests that are over, and those of them in pieces that were
@@ -7085,7 +7353,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.13.1",
+    version: "2026.11.15.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -7314,8 +7582,6 @@ const chrome = (() => {
         expiresAt: Infinity
       });
       stats.lastHost = host;
-      if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
-      trackBusy(kind, now);
       // One segment starts and ends dozens of transfers within the same moment. Publishing
       // each of them at once posted the whole thread list every time.
       schedulePublish();
@@ -7327,9 +7593,7 @@ const chrome = (() => {
     countTransfer(item, event);
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
-      recentBytes.push({ at: now, bytes });
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      speedMeters[item.kind]?.samples.push({ at: now, bytes });
+      receivedByHost.set(item.host, (receivedByHost.get(item.host) || 0) + bytes);
       if (item.kind === "video") videoBytesIn += bytes;
       item.loaded += bytes;
       item.sampleBytes += bytes;
@@ -7347,7 +7611,6 @@ const chrome = (() => {
       if (item.kind === "video") videoBytesEnded += item.loaded;
       if (event.phase === "cancel") {
         transfers.delete(item.id);
-        trackBusy(item.kind, now);
         schedulePublish();
         return event.id;
       }
@@ -7355,7 +7618,6 @@ const chrome = (() => {
       if (event.phase === "done" && item.kind === "video") videoBytesUsed += item.loaded;
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
-      trackBusy(item.kind, now);
       schedulePublish();
     }
     return event.id;
@@ -8408,7 +8670,12 @@ const chrome = (() => {
     const stated = (playable.get(Number(debug.qualityId)) || 0) / 1000;
     const busier = stated > 0 && debug.videoKbpsAhead > stated ? Math.min(4, debug.videoKbpsAhead / stated) : 1;
     const kbpsOf = (quality) => (playable.get(quality) || 0) / 1000 * busier;
-    const allowed = range.qualities.filter((quality) => playable.has(quality));
+    // 自动清晰度的最高档 (高级设置): nothing above it is chosen; where a video has nothing at
+    // or below it, its lowest quality is.
+    const offered = range.qualities.filter((quality) => playable.has(quality));
+    const limit = Number(settings.autoQualityMax) || 0;
+    const within = limit ? offered.filter((quality) => quality <= limit) : offered;
+    const allowed = within.length ? within : offered.slice(0, 1);
     if (!allowed.length) return;
     const shown = nativeAutoQuality();
     const current = allowed.indexOf(shown);
@@ -8722,103 +8989,19 @@ const chrome = (() => {
     setTimeout(sync, 300);
   }
 
-  // Video Speed and Audio Speed in the native panel are how fast the latest data came in
-  // while it was being downloaded, and they keep that value between segments. Here it is
-  // all threads of a kind together over the last few seconds; the pauses between segments
-  // do not count, and the value stays until new data arrives.
-  const SPEED_WINDOW_MS = 3000;
-  const speedMeters = { video: { busySince: 0, spans: [], samples: [], shown: 0 }, audio: { busySince: 0, spans: [], samples: [], shown: 0 } };
-
-  // Measured while data comes in and once more when the downloads stop; the value then stays
-  // as it was instead of fading while the window slides past the last data.
-  function updateSpeed(meter, now) {
-    const from = now - SPEED_WINDOW_MS;
-    meter.spans = meter.spans.filter(([, end]) => end > from);
-    meter.samples = meter.samples.filter((sample) => sample.at > from);
-    const busyMs = meter.spans.reduce((sum, [start, end]) => sum + end - Math.max(start, from), 0)
-      + (meter.busySince ? now - Math.max(meter.busySince, from) : 0);
-    const bytes = meter.samples.reduce((sum, sample) => sum + sample.bytes, 0);
-    // Bytes per millisecond times 8 is kilobits per second.
-    if (bytes > 0 && busyMs >= 250) meter.shown = Math.round(bytes * 8 / busyMs);
-  }
-
-  function trackBusy(kind, now) {
-    const meter = speedMeters[kind];
-    if (!meter) return;
-    const busy = [...transfers.values()].some((item) => item.kind === kind && item.state === "active");
-    if (busy && !meter.busySince) meter.busySince = now;
-    else if (!busy && meter.busySince) {
-      meter.spans.push([meter.busySince, now]);
-      meter.busySince = 0;
-      updateSpeed(meter, now);
-    }
-  }
-
-  function measuredSpeed(kind, now) {
-    const meter = speedMeters[kind];
-    if (meter.busySince) updateSpeed(meter, now);
-    return meter.shown;
-  }
-
-  // Bilibili's "视频统计信息" panel reads its own player core, which downloads nothing while
-  // BTR plays the video, so its hosts, speeds and segment counts would be stale. The same
-  // rows show what BTR plays and downloads instead.
-  function nativeInfoValues() {
-    const info = player?.getDebug?.();
-    // In the compatibility mode the native core knows the codec, resolution and segments;
-    // only the download rows belong to BTR.
-    if (player?.nativeTransport) {
-      if (!player.transportActive) return null;
-      const now = Date.now();
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      return {
-        "Player Type": "BTR Native (兼容模式)",
-        "Video Host": lastHostByKind.video || undefined,
-        "Audio Host": lastHostByKind.audio || undefined,
-        "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-        "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-        "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
-      };
-    }
-    if (!info?.videoType || playerContainer?.dataset.btrMseActive !== "true") return null;
-    const now = Date.now();
-    while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-    const track = info.tracks?.find((item) => item.kind === "video");
-    const frames = player.video?.getVideoPlaybackQuality?.();
+  // BTR 统计信息 (stats-panel.js) shows what BTR is doing with the video. This is what it
+  // reads, once a second while it is open; nothing while BTR is switched off.
+  root.__BILI_STATS_PANEL__?.install(() => {
+    if (!settings.enabled) return null;
+    updateTransferStats();
+    let frames = null;
+    try { frames = player?.video?.getVideoPlaybackQuality?.() || null; } catch (_error) {}
     return {
-      "Mime Type": `${info.videoType}, ${info.audioType}`,
-      "Player Type": "BTR Native",
-      "Resolution": info.width && info.height ? `${info.width} x ${info.height}@${Number((Number(info.frameRate) || 0).toFixed(3))}` : undefined,
-      "Video DataRate": `${Math.round(info.videoBandwidth / 1000)} Kbps [${String(info.codec).toUpperCase()}]`,
-      "Audio DataRate": `${Math.round(info.audioBandwidth / 1000)} Kbps`,
-      "Segments": track ? `${track.nextIndex} / ${track.segments}${info.lastSeekMs ? `，跳转恢复 ${(info.lastSeekMs / 1000).toFixed(1)} 秒，之后卡顿 ${info.stallsAfterSeek} 次` : ""}` : undefined,
-      "Dropped Frames": frames ? `${frames.droppedVideoFrames} / ${frames.totalVideoFrames}` : undefined,
-      "Video Host": lastHostByKind.video || undefined,
-      "Audio Host": lastHostByKind.audio || undefined,
-      "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-      "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-      "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
+      takeover: !player ? "" : player.nativeTransport ? "compat" : "full",
+      playing: Boolean(player && (player.nativeTransport ? player.transportActive : playerContainer?.dataset.btrMseActive === "true")),
+      route: playerRoute, stats, settings, received: receivedByHost, debug: player?.getDebug?.() || {}, frames
     };
-  }
-
-  function updateNativeInfoPanel() {
-    const panel = playerContainer?.querySelector(".bpx-player-info-panel") || null;
-    if (panel !== infoPanel) {
-      infoPanelObserver?.disconnect();
-      infoPanel = panel;
-      infoPanelObserver = panel ? new MutationObserver(updateNativeInfoPanel) : null;
-      infoPanelObserver?.observe(panel, { childList: true, subtree: true, characterData: true });
-    }
-    const values = panel && nativeInfoValues();
-    if (!values) return;
-    for (const line of panel.querySelectorAll(".info-line")) {
-      const title = String(line.querySelector(".info-title")?.textContent || "").replace(/:\s*$/, "").trim();
-      const data = line.querySelector(".info-data");
-      if (data && values[title] !== undefined && data.textContent !== values[title]) data.textContent = values[title];
-    }
-    // Our own writes are not new native updates.
-    infoPanelObserver?.takeRecords();
-  }
+  });
 
   async function startPlayer() {
     clearTimeout(restartTimer);
@@ -8944,7 +9127,6 @@ const chrome = (() => {
     const preferredAudio = nativeAudio();
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
     const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
-    for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
       // video is taken over as usual (an episode never gets this far without it).
@@ -9165,7 +9347,6 @@ const chrome = (() => {
       suppressNativeSchedulers();
       refreshExpiringPlayinfo();
     }
-    updateNativeInfoPanel();
     syncSettingsMenu();
   }, 1000);
 
@@ -9216,7 +9397,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.13.1"
+      version: "2026.11.15.1"
     })
   });
   publish();
@@ -9469,7 +9650,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.13.1",
+    version: "2026.11.15.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -9948,7 +10129,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.13.1"
+      version: "2026.11.15.1"
     })
   });
   publish();
@@ -9960,7 +10141,7 @@ const chrome = (() => {
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const THREAD_OPTIONS = Object.freeze([4, 8, 16, 32, 64, 128]);
-  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false };
+  const DEFAULTS = { enabled: true, liveEnabled: false, episodeEnabled: true, blockInternational: false, bufferAheadSeconds: 45, secondaryBuffer: false, audioAcceleration: true, autoQualityMax: 0, theme: "auto", concurrency: 8, autoConcurrency: true, takeover: "full", mode: "mainland", customHosts: [], floatingButton: true, floatingButtonLeft: null, floatingButtonTop: null, guideDone: false };
   // Settings of the old ArtPlayer version, of the compatibility modes removed before today's
   // 兼容模式 (that one is `takeover`), the flag of the first-run guide that 0.9.4.2 removed, and
   // 显示错误, the Debug message filters and Debug 模式 itself, now that BTR shows no messages
@@ -9980,6 +10161,8 @@ const chrome = (() => {
       blockInternational: input?.blockInternational === true,
       bufferAheadSeconds: [30, 45, 90, 180].includes(Number(input?.bufferAheadSeconds)) ? Number(input.bufferAheadSeconds) : 45,
       secondaryBuffer: input?.secondaryBuffer === true,
+      audioAcceleration: input?.audioAcceleration !== false,
+      autoQualityMax: [32, 64, 80, 116, 120].includes(Number(input?.autoQualityMax)) ? Number(input.autoQualityMax) : 0,
       theme: ["light", "dark"].includes(input?.theme) ? input.theme : "auto",
       concurrency: THREAD_OPTIONS.includes(threads) ? threads : 8,
       autoConcurrency: input?.autoConcurrency !== false,
