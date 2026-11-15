@@ -95,13 +95,6 @@
     for (const circle of scope?.querySelectorAll(".btr-ripple") || []) circle.remove();
   }
 
-  // 运行状态's speed: KB/s, MB/s from one megabyte a second up.
-  function formatSpeed(bps) {
-    const value = Math.max(0, Number(bps) || 0);
-    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
-    return `${Math.round(value / 1024)} KB/s`;
-  }
-
   // One row of a settings list: a name (the label of its control, `id`), a question mark
   // beside it where the setting has an explanation (`tip`, the bubble over the mark, which
   // keeps the line breaks of the text), the control on the right, and what belongs under
@@ -149,10 +142,10 @@
         </div>
         <div class="block" data-needs-enabled>
           <h2 class="block-title">运行状态</h2>
-          <section class="run-state" aria-label="运行状态">
+          <button class="run-state" type="button" disabled>
             <span><b id="active-count">0</b> 条线程</span>
-            <b class="run-speed">0 KB/s</b>
-          </section>
+            <b class="run-speed">0 KB/s</b>${CHEVRON_ICON}
+          </button>
         </div>
       </div>
 
@@ -384,7 +377,15 @@
     .reset-settings:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
     .debug-copy-text { width: 100%; height: 120px; margin-top: 10px; padding: 6px; border: 1px solid var(--control-border); border-radius: 6px; background: var(--bg); color: var(--button-text); font: 11px/1.4 Consolas, monospace; resize: vertical; }
     .debug-copy-text[hidden] { display: none; }
-    .run-state { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-radius: 12px; background: var(--surface); color: var(--label); font-size: 13px; }
+    /* 运行状态. Where BTR 统计信息 can be opened (a page with a player), the card is the way
+       to it and says so with an arrow. */
+    .run-state { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 12px 16px; border: 0; border-radius: 12px; background: var(--surface); color: var(--label); font: inherit; font-size: 13px; text-align: left; cursor: pointer; transition: background 160ms ease; }
+    .run-state:hover { background: var(--hover); }
+    .run-state:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    .run-state:disabled { background: var(--surface); cursor: default; }
+    .run-state:disabled svg { display: none; }
+    .run-state svg { flex: none; align-self: center; width: 16px; height: 16px; color: var(--muted); transform: rotate(-90deg); }
+    .run-speed { margin-left: auto; }
     .run-state b { color: var(--text); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
     /* 恢复默认设置 and 关闭 stay at the bottom of every page of the panel, solid for the content
        scrolling under them. */
@@ -922,13 +923,19 @@
     const keepKeys = (event) => { if (event.key !== "Escape") event.stopPropagation(); };
     for (const type of ["keydown", "keyup", "keypress"]) panel.addEventListener(type, keepKeys);
 
+    // 运行状态 opens BTR 统计信息 over the player (stats-panel.js), and this panel, which
+    // would lie in front of it, closes.
+    const runState = panel.querySelector(".run-state");
+    runState.disabled = !root.__BILI_STATS_PANEL__?.available();
+    runState.addEventListener("click", () => { if (root.__BILI_STATS_PANEL__.open()) close(); });
+
     // The threads and the speed now: asking for stats makes the page send fresh ones. The
     // numbers run to their new values instead of jumping there.
     const shown = { threads: 0, speed: 0 };
     let rollFrame = 0;
     const showRunState = (threads, speed) => {
       activeCount.textContent = String(Math.round(threads));
-      totalSpeed.textContent = formatSpeed(speed);
+      totalSpeed.textContent = core.formatSpeed(speed);
     };
     const refresh = () => {
       const from = { ...shown };

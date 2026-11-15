@@ -88,10 +88,8 @@
   let syncedAutoQuality = 0;
   let codecPlayer = null;
   let syncedCodec = "";
-  let infoPanel = null;
-  let infoPanelObserver = null;
-  const lastHostByKind = { video: "", audio: "" };
-  const recentBytes = [];
+  // Every byte downloaded, by the node it came from, for BTR 统计信息 (stats-panel.js).
+  const receivedByHost = new Map();
   // Every video byte downloaded, for the speed 自动 chooses by (measureAutoSpeed).
   let videoBytesIn = 0;
   // The video bytes of requests that are over, and those of them in pieces that were
@@ -373,8 +371,6 @@
         expiresAt: Infinity
       });
       stats.lastHost = host;
-      if (host) lastHostByKind[event.kind === "audio" ? "audio" : "video"] = host;
-      trackBusy(kind, now);
       // One segment starts and ends dozens of transfers within the same moment. Publishing
       // each of them at once posted the whole thread list every time.
       schedulePublish();
@@ -386,9 +382,7 @@
     countTransfer(item, event);
     if (event.phase === "progress") {
       const bytes = Math.max(0, Number(event.bytes) || 0);
-      recentBytes.push({ at: now, bytes });
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      speedMeters[item.kind]?.samples.push({ at: now, bytes });
+      receivedByHost.set(item.host, (receivedByHost.get(item.host) || 0) + bytes);
       if (item.kind === "video") videoBytesIn += bytes;
       item.loaded += bytes;
       item.sampleBytes += bytes;
@@ -406,7 +400,6 @@
       if (item.kind === "video") videoBytesEnded += item.loaded;
       if (event.phase === "cancel") {
         transfers.delete(item.id);
-        trackBusy(item.kind, now);
         schedulePublish();
         return event.id;
       }
@@ -414,7 +407,6 @@
       if (event.phase === "done" && item.kind === "video") videoBytesUsed += item.loaded;
       item.finalBps = event.phase === "done" ? item.loaded * 1000 / Math.max(1, now - item.startedAt) : 0;
       item.expiresAt = now + 3500;
-      trackBusy(item.kind, now);
       schedulePublish();
     }
     return event.id;
@@ -1786,103 +1778,19 @@
     setTimeout(sync, 300);
   }
 
-  // Video Speed and Audio Speed in the native panel are how fast the latest data came in
-  // while it was being downloaded, and they keep that value between segments. Here it is
-  // all threads of a kind together over the last few seconds; the pauses between segments
-  // do not count, and the value stays until new data arrives.
-  const SPEED_WINDOW_MS = 3000;
-  const speedMeters = { video: { busySince: 0, spans: [], samples: [], shown: 0 }, audio: { busySince: 0, spans: [], samples: [], shown: 0 } };
-
-  // Measured while data comes in and once more when the downloads stop; the value then stays
-  // as it was instead of fading while the window slides past the last data.
-  function updateSpeed(meter, now) {
-    const from = now - SPEED_WINDOW_MS;
-    meter.spans = meter.spans.filter(([, end]) => end > from);
-    meter.samples = meter.samples.filter((sample) => sample.at > from);
-    const busyMs = meter.spans.reduce((sum, [start, end]) => sum + end - Math.max(start, from), 0)
-      + (meter.busySince ? now - Math.max(meter.busySince, from) : 0);
-    const bytes = meter.samples.reduce((sum, sample) => sum + sample.bytes, 0);
-    // Bytes per millisecond times 8 is kilobits per second.
-    if (bytes > 0 && busyMs >= 250) meter.shown = Math.round(bytes * 8 / busyMs);
-  }
-
-  function trackBusy(kind, now) {
-    const meter = speedMeters[kind];
-    if (!meter) return;
-    const busy = [...transfers.values()].some((item) => item.kind === kind && item.state === "active");
-    if (busy && !meter.busySince) meter.busySince = now;
-    else if (!busy && meter.busySince) {
-      meter.spans.push([meter.busySince, now]);
-      meter.busySince = 0;
-      updateSpeed(meter, now);
-    }
-  }
-
-  function measuredSpeed(kind, now) {
-    const meter = speedMeters[kind];
-    if (meter.busySince) updateSpeed(meter, now);
-    return meter.shown;
-  }
-
-  // Bilibili's "视频统计信息" panel reads its own player core, which downloads nothing while
-  // BTR plays the video, so its hosts, speeds and segment counts would be stale. The same
-  // rows show what BTR plays and downloads instead.
-  function nativeInfoValues() {
-    const info = player?.getDebug?.();
-    // In the compatibility mode the native core knows the codec, resolution and segments;
-    // only the download rows belong to BTR.
-    if (player?.nativeTransport) {
-      if (!player.transportActive) return null;
-      const now = Date.now();
-      while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-      return {
-        "Player Type": "BTR Native (兼容模式)",
-        "Video Host": lastHostByKind.video || undefined,
-        "Audio Host": lastHostByKind.audio || undefined,
-        "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-        "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-        "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
-      };
-    }
-    if (!info?.videoType || playerContainer?.dataset.btrMseActive !== "true") return null;
-    const now = Date.now();
-    while (recentBytes.length && now - recentBytes[0].at > 1000) recentBytes.shift();
-    const track = info.tracks?.find((item) => item.kind === "video");
-    const frames = player.video?.getVideoPlaybackQuality?.();
+  // BTR 统计信息 (stats-panel.js) shows what BTR is doing with the video. This is what it
+  // reads, once a second while it is open; nothing while BTR is switched off.
+  root.__BILI_STATS_PANEL__?.install(() => {
+    if (!settings.enabled) return null;
+    updateTransferStats();
+    let frames = null;
+    try { frames = player?.video?.getVideoPlaybackQuality?.() || null; } catch (_error) {}
     return {
-      "Mime Type": `${info.videoType}, ${info.audioType}`,
-      "Player Type": "BTR Native",
-      "Resolution": info.width && info.height ? `${info.width} x ${info.height}@${Number((Number(info.frameRate) || 0).toFixed(3))}` : undefined,
-      "Video DataRate": `${Math.round(info.videoBandwidth / 1000)} Kbps [${String(info.codec).toUpperCase()}]`,
-      "Audio DataRate": `${Math.round(info.audioBandwidth / 1000)} Kbps`,
-      "Segments": track ? `${track.nextIndex} / ${track.segments}${info.lastSeekMs ? `，跳转恢复 ${(info.lastSeekMs / 1000).toFixed(1)} 秒，之后卡顿 ${info.stallsAfterSeek} 次` : ""}` : undefined,
-      "Dropped Frames": frames ? `${frames.droppedVideoFrames} / ${frames.totalVideoFrames}` : undefined,
-      "Video Host": lastHostByKind.video || undefined,
-      "Audio Host": lastHostByKind.audio || undefined,
-      "Video Speed": `${measuredSpeed("video", now)} Kbps`,
-      "Audio Speed": `${measuredSpeed("audio", now)} Kbps`,
-      "Network Activity": `${Math.round(recentBytes.reduce((sum, item) => sum + item.bytes, 0) / 1024)} KB`
+      takeover: !player ? "" : player.nativeTransport ? "compat" : "full",
+      playing: Boolean(player && (player.nativeTransport ? player.transportActive : playerContainer?.dataset.btrMseActive === "true")),
+      route: playerRoute, stats, settings, received: receivedByHost, debug: player?.getDebug?.() || {}, frames
     };
-  }
-
-  function updateNativeInfoPanel() {
-    const panel = playerContainer?.querySelector(".bpx-player-info-panel") || null;
-    if (panel !== infoPanel) {
-      infoPanelObserver?.disconnect();
-      infoPanel = panel;
-      infoPanelObserver = panel ? new MutationObserver(updateNativeInfoPanel) : null;
-      infoPanelObserver?.observe(panel, { childList: true, subtree: true, characterData: true });
-    }
-    const values = panel && nativeInfoValues();
-    if (!values) return;
-    for (const line of panel.querySelectorAll(".info-line")) {
-      const title = String(line.querySelector(".info-title")?.textContent || "").replace(/:\s*$/, "").trim();
-      const data = line.querySelector(".info-data");
-      if (data && values[title] !== undefined && data.textContent !== values[title]) data.textContent = values[title];
-    }
-    // Our own writes are not new native updates.
-    infoPanelObserver?.takeRecords();
-  }
+  });
 
   async function startPlayer() {
     clearTimeout(restartTimer);
@@ -2008,7 +1916,6 @@
     const preferredAudio = nativeAudio();
     const retakeTime = takeRetakePosition(route, container.querySelector("video"));
     const resumeAfterStop = takeResumeHint(retakeTime !== undefined || (autoRetakeRoute === route && autoRetakeCount > 0));
-    for (const meter of Object.values(speedMeters)) meter.shown = 0;
     try {
       // The compatibility mode needs Bilibili's own playback core; without it an ordinary
       // video is taken over as usual (an episode never gets this far without it).
@@ -2229,7 +2136,6 @@
       suppressNativeSchedulers();
       refreshExpiringPlayinfo();
     }
-    updateNativeInfoPanel();
     syncSettingsMenu();
   }, 1000);
 

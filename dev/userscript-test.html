@@ -3,9 +3,11 @@
 <head><meta charset="utf-8"><title>BTR 油猴脚本测试</title></head>
 <body style="margin:0;background:#21232b;color:#eee;font:16px system-ui">
   <div style="padding:24px">BTR 油猴脚本测试（页面里没有扩展接口）</div>
-  <div id="bilibili-player"><div class="bpx-player-container" style="width:960px;height:540px;background:#2b2f40">
+  <div id="bilibili-player"><div class="bpx-player-container" style="position:relative;width:960px;height:540px;background:#2b2f40">
     <video style="width:100%;height:100%" muted></video>
     <div class="bpx-player-ctrl-setting-menu-right"><div class="bpx-player-ctrl-setting-others">其他设置</div></div>
+    <div class="bpx-player-context-area"><ul class="bpx-player-contextmenu" style="position:absolute;margin:0;top:100px;left:100px"></ul></div>
+    <div class="bpx-player-info-panel"><div class="info-line"><span class="info-title">Video Host:</span><span class="info-data">native-video.bilivideo.com</span></div></div>
   </div></div>
   <script>
     // ?mode=sandbox imitates a userscript manager that runs the script outside the page:
@@ -21,6 +23,18 @@
     window.__INITIAL_STATE__ = { videoData: { bvid: "BV1userA0001", cid: 101 } };
     window.__playinfo__ = { data: { dash: { video: [], audio: [] } } };
     window.__userscriptTest = { calls: [], menus: [], injected: 0, statusRequests: 0, replies: {} };
+    // Bilibili's player builds the menu of a right click anew every time, and takes it away
+    // a moment after the next press of a button, wherever that is.
+    document.querySelector(".bpx-player-container").addEventListener("contextmenu", event => {
+      event.preventDefault();
+      const menu = document.querySelector(".bpx-player-contextmenu");
+      menu.innerHTML = '<li data-action="keyboard">快捷键说明</li><li data-action="info">视频统计信息</li>';
+      menu.style.display = "";
+      clearTimeout(window.__menuGoes);
+    });
+    document.addEventListener("mousedown", event => {
+      if (event.button === 0) window.__menuGoes = setTimeout(() => { document.querySelector(".bpx-player-contextmenu").style.display = "none"; }, 100);
+    }, true);
     // How many answers each settings request gets from the manager's side of the script.
     document.addEventListener("btr-userscript-storage-reply", event => {
       try { const id = JSON.parse(event.detail).id; __userscriptTest.replies[id] = (__userscriptTest.replies[id] || 0) + 1; } catch (_error) {}
@@ -38,7 +52,8 @@
         const video = options.container.querySelector("video");
         __userscriptTest.calls.push({ options });
         setTimeout(() => options.onState({ playerState: "ready", quality: "1080P", codec: "av1", activeThreads: 3 }), 0);
-        return { video, applySettings() {}, destroy() {} };
+        return { video, applySettings() {}, destroy() {},
+          getDebug: () => ({ codec: "av1", videoBandwidth: 382000, audioBandwidth: 111000, width: 1280, height: 720, frameRate: 25, underflowRebuffers: 1, tracks: [{ kind: "video", nextIndex: 5, segments: 80 }] }) };
       }
     };
     Object.defineProperty(window, "__BILI_NATIVE_MSE_PLAYER_FACTORY__", { configurable: false, get: () => factory, set() {} });

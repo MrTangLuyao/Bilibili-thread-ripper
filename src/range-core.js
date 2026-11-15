@@ -138,8 +138,16 @@
     };
   }
 
+  // A speed in bytes a second, as the panels write it: KB/s, MB/s from one megabyte up.
+  function formatSpeed(bps) {
+    const value = Math.max(0, Number(bps) || 0);
+    if (value >= 1048576) return `${(value / 1048576).toFixed(value >= 10 * 1048576 ? 0 : 1)} MB/s`;
+    return `${Math.round(value / 1024)} KB/s`;
+  }
+
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
     normalizeSettings,

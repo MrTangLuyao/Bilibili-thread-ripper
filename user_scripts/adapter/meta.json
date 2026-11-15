@@ -34,6 +34,7 @@
     "src/runtime-notices.js",
     "src/diagnostic-report.js",
     "src/settings-panel.js",
+    "src/stats-panel.js",
     "src/page-hook.js",
     "src/live-core.js",
     "src/live-hook.js",
