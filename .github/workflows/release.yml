@@ -1,22 +1,33 @@
 name: Release
 
-# A version tag, pushed after scripts/release.mjs (`git push origin <version>`), gets the same
-# tests as main, real videos included; when they pass, a GitHub Release with the notice about
-# the old Chrome extension, that version's CHANGELOG section and the userscript
-# (scripts/release-notes.mjs, which first checks the script's version). Users still update
-# from the file on main: the Release is the record, and a copy to download. It can also be
-# run by hand for an existing tag.
+# Publishes a version with one click: Actions → Release → Run workflow, on main, with nothing
+# filled in. The tests run on main as it is, real videos included. When they pass,
+# scripts/release.mjs names the version, puts what is under "Unreleased" in CHANGELOG.md
+# under it and builds the userscript; that is committed and tagged as the Actions bot, and the
+# commit and the tag are pushed together. Then the GitHub Release: the notice about the old
+# Chrome extension, that version's CHANGELOG section and the userscript
+# (scripts/release-notes.mjs, which first checks the script's version). Users update from the
+# file on main; the Release is the record, and a copy to download.
+# Two other ways in, as before: a version tag pushed from a computer (after scripts/release.mjs
+# there) gets the same tests and the same GitHub Release, and a run by hand with a tag filled
+# in publishes the GitHub Release of that tag again.
 on:
   push:
     tags: ['20*.*.*.*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 版本 tag，例如 2026.10.24.1
-        required: true
+        description: 留空就从 main 发一个新版本。填已有的版本 tag（例如 2026.10.24.1）则重新发布那一版的 GitHub Release
+        required: false
+        default: ''
 
 permissions:
   contents: read
+
+# One at a time: two runs would name the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   tests:
@@ -27,23 +38,75 @@ jobs:
     permissions:
       contents: write
     with:
-      ref: ${{ inputs.tag || github.ref_name }}
+      # The tag, or the commit this run was started on (main as it was at that moment).
+      ref: ${{ inputs.tag || github.sha }}
       online: true
+
+  # Only a run by hand with no tag filled in makes a version.
+  cut:
+    name: 生成新版本
+    needs: tests
+    if: github.event_name == 'workflow_dispatch' && inputs.tag == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: 只能从 main 发版
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "发版只能在 main 上运行，这次是 $GITHUB_REF_NAME。" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit 1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: 测过的还是不是 main 的最新提交
+        run: |
+          head=$(git rev-parse HEAD)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "main 已经有更新的提交（${head:0:7}），测试跑的是 ${GITHUB_SHA:0:7}。请重新运行。" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: 定版本号、写更新日志、构建，提交并打 tag
+        id: release
+        env:
+          # A commit made by this workflow, under the name of the Actions bot.
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          node scripts/release.mjs --no-tests
+          git log -1 --format="作者: %an <%ae>%n提交者: %cn <%ce>%n%B"
+      # Both or neither: a commit on main without its tag would be a version nobody can name.
+      - name: 推送提交和 tag
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git push --atomic origin HEAD:main "refs/tags/$VERSION"
+          echo "已推送 **$VERSION**，装了脚本的人随后自动更新。" >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     name: 发布 GitHub Release
-    needs: tests
+    needs: [tests, cut]
+    # After the new version, or without that job where the tag exists already.
+    if: ${{ !cancelled() && needs.tests.result == 'success' && (needs.cut.result == 'success' || needs.cut.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      TAG: ${{ needs.cut.outputs.version || inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.cut.outputs.version || inputs.tag || github.ref_name }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:

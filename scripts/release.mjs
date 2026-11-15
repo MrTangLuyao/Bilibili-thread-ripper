@@ -1,4 +1,8 @@
-// Publishes a version: `node scripts/release.mjs` (or `npm run release`).
+// Publishes a version. Usually GitHub Actions runs it: Actions → Release → Run workflow
+// (.github/workflows/release.yml), which tests main first, runs this with --no-tests, and
+// pushes the commit and the tag itself. It also runs on a computer as
+// `node scripts/release.mjs` (or `npm run release`): it tests there, and leaves the pushing
+// to the person.
 //
 // 1. Checks: nothing uncommitted, on main, not behind origin, the tags fetched, and something
 //    written under "## [Unreleased]" in CHANGELOG.md.
@@ -6,13 +10,15 @@
 //    2026.9.26.1, 2026.9.26.2, …
 // 3. "## [Unreleased]" gets a new heading "## [2026.9.26.1] - 2026-09-26" under it, so what
 //    was written there becomes this release; older entries stay as they are.
-// 4. Builds user_scripts/bilibili-thread-ripper.user.js and runs dev/run-tests.js.
+// 4. Builds user_scripts/bilibili-thread-ripper.user.js and runs dev/run-tests.js (not with
+//    --no-tests: the workflow has tested the same code on its way here).
 // 5. Commits "release 2026.9.26.1" and tags it.
-// 6. Prints this release's CHANGELOG section and the push commands. It does not push: the
-//    file on main is what every user's script manager downloads. Pushing the tag makes
-//    .github/workflows/release.yml publish the GitHub Release.
+// 6. Prints this release's CHANGELOG section. It does not push: the file on main is what
+//    every user's script manager downloads. On a computer it prints the push commands, and
+//    pushing the tag makes release.yml publish the GitHub Release; in the workflow it hands
+//    the version over (GITHUB_OUTPUT), and the workflow pushes and publishes.
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RELEASE_OUTPUT, VERSION_PATTERN, root, writeUserscript } from "./build.mjs";
 
@@ -67,11 +73,14 @@ try {
   undo();
   stop(`构建失败：${error.message}`);
 }
-console.log(`构建完成：${version}，开始测试……`);
-const tests = spawnSync(process.execPath, [join(root, "dev/run-tests.js")], { cwd: root, stdio: "inherit" });
-if (tests.status !== 0) {
-  undo();
-  stop("测试没有全部通过，CHANGELOG.md 和油猴脚本已经改回原样。");
+if (process.argv.includes("--no-tests")) console.log(`构建完成：${version}`);
+else {
+  console.log(`构建完成：${version}，开始测试……`);
+  const tests = spawnSync(process.execPath, [join(root, "dev/run-tests.js")], { cwd: root, stdio: "inherit" });
+  if (tests.status !== 0) {
+    undo();
+    stop("测试没有全部通过，CHANGELOG.md 和油猴脚本已经改回原样。");
+  }
 }
 
 // ---- 5. Commit and tag ----
@@ -81,8 +90,11 @@ git("tag", version);
 
 // ---- 6. What to do next ----
 console.log(`\n已提交并打好 tag：${version}\n`);
-console.log("这一版的更新说明（推送 tag 后 Actions 会用它建 GitHub Release）：\n");
+console.log("这一版的更新说明（GitHub Release 用的就是它）：\n");
 console.log(section.slice(heading.length).trim());
-console.log("\n确认没问题后推送（推送到 main 就等于发给所有用户）：\n");
-console.log("  git push origin main");
-console.log(`  git push origin ${version}`);
+if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+else {
+  console.log("\n确认没问题后推送（推送到 main 就等于发给所有用户）：\n");
+  console.log("  git push origin main");
+  console.log(`  git push origin ${version}`);
+}
