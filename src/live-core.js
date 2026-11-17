@@ -2,8 +2,7 @@
   "use strict";
 
   // The parts of the live module that carry logic: playlist parsing, P2P/proxy URL handling
-  // and the host pool, plus a room playinfo parser that only the tests use. No DOM and no
-  // timers, so dev tests can run all of it in Node.
+  // and the host pool. No DOM and no timers, so dev tests can run all of it in Node.
 
   // fMP4 HLS nodes that accept each other's signatures, verified by probing real streams
   // (2026-09): a segment signed for one of them downloads from all of them with HTTP 206,
@@ -52,34 +51,6 @@
   function unwrapProxyUrl(value) {
     const match = PROXY_WRAP_RE.exec(String(value || ""));
     return match ? `${match[1]}//${match[2]}${match[3]}` : "";
-  }
-
-  // The playurl of getRoomPlayInfo, flattened to one entry per protocol/format/codec.
-  function parseRoomPlayInfo(payload) {
-    const playurl = payload?.data?.playurl_info?.playurl
-      || payload?.result?.playurl_info?.playurl
-      || payload?.playurl_info?.playurl;
-    const out = [];
-    for (const stream of playurl?.stream || []) {
-      for (const format of stream.format || []) {
-        for (const codec of format.codec || []) {
-          const urls = (codec.url_info || [])
-            .map((info) => ({ host: String(info?.host || ""), extra: String(info?.extra || "") }))
-            .filter((info) => info.host && !isP2pUrl(info.host));
-          if (!urls.length || !codec.base_url) continue;
-          out.push({
-            protocol: String(stream.protocol_name || ""),
-            format: String(format.format_name || ""),
-            codec: String(codec.codec_name || ""),
-            qn: Number(codec.current_qn) || 0,
-            acceptQn: Array.isArray(codec.accept_qn) ? codec.accept_qn.map(Number) : [],
-            baseUrl: String(codec.base_url),
-            urls
-          });
-        }
-      }
-    }
-    return out;
   }
 
   function segmentNumber(name) {
@@ -188,7 +159,6 @@
     isLiveSegmentUrl,
     isP2pUrl,
     parseM3u8,
-    parseRoomPlayInfo,
     segmentNumber,
     unwrapProxyUrl
   });
