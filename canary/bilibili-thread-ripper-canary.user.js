@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.15.1
+// @version      2026.11.18.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -3986,7 +3986,7 @@ const chrome = (() => {
       playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.15.1",
+        version: "2026.11.18.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -5807,7 +5807,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.15.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.18.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -6187,7 +6187,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.15.1",
+        version: "2026.11.18.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -7353,7 +7353,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.15.1",
+    version: "2026.11.18.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -9397,7 +9397,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.15.1"
+      version: "2026.11.18.1"
     })
   });
   publish();
@@ -9408,8 +9408,7 @@ const chrome = (() => {
   "use strict";
 
   // The parts of the live module that carry logic: playlist parsing, P2P/proxy URL handling
-  // and the host pool, plus a room playinfo parser that only the tests use. No DOM and no
-  // timers, so dev tests can run all of it in Node.
+  // and the host pool. No DOM and no timers, so dev tests can run all of it in Node.
 
   // fMP4 HLS nodes that accept each other's signatures, verified by probing real streams
   // (2026-09): a segment signed for one of them downloads from all of them with HTTP 206,
@@ -9458,34 +9457,6 @@ const chrome = (() => {
   function unwrapProxyUrl(value) {
     const match = PROXY_WRAP_RE.exec(String(value || ""));
     return match ? `${match[1]}//${match[2]}${match[3]}` : "";
-  }
-
-  // The playurl of getRoomPlayInfo, flattened to one entry per protocol/format/codec.
-  function parseRoomPlayInfo(payload) {
-    const playurl = payload?.data?.playurl_info?.playurl
-      || payload?.result?.playurl_info?.playurl
-      || payload?.playurl_info?.playurl;
-    const out = [];
-    for (const stream of playurl?.stream || []) {
-      for (const format of stream.format || []) {
-        for (const codec of format.codec || []) {
-          const urls = (codec.url_info || [])
-            .map((info) => ({ host: String(info?.host || ""), extra: String(info?.extra || "") }))
-            .filter((info) => info.host && !isP2pUrl(info.host));
-          if (!urls.length || !codec.base_url) continue;
-          out.push({
-            protocol: String(stream.protocol_name || ""),
-            format: String(format.format_name || ""),
-            codec: String(codec.codec_name || ""),
-            qn: Number(codec.current_qn) || 0,
-            acceptQn: Array.isArray(codec.accept_qn) ? codec.accept_qn.map(Number) : [],
-            baseUrl: String(codec.base_url),
-            urls
-          });
-        }
-      }
-    }
-    return out;
   }
 
   function segmentNumber(name) {
@@ -9594,7 +9565,6 @@ const chrome = (() => {
     isLiveSegmentUrl,
     isP2pUrl,
     parseM3u8,
-    parseRoomPlayInfo,
     segmentNumber,
     unwrapProxyUrl
   });
@@ -9650,7 +9620,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.15.1",
+    version: "2026.11.18.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -10129,7 +10099,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.15.1"
+      version: "2026.11.18.1"
     })
   });
   publish();
