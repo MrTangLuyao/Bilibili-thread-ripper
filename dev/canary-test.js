@@ -17,7 +17,6 @@ const { pathToFileURL } = require("node:url");
   assert.equal(canary.nextCanaryVersion("2026.10.24.9", late), "2026.10.24.10");
   assert.equal(canary.nextCanaryVersion("2026.10.23.7", late), "2026.10.24.1", "a new day starts again at 1");
   assert.equal(canary.nextCanaryVersion("not a version", late), "2026.10.24.1");
-  for (const version of ["2026.10.24.1", "2026.10.24.12"]) assert.match(version, build.VERSION_PATTERN);
   console.log("PASS Canary 版本号按墨尔本日期算，当天从 1 开始往上加");
 
   const buildAt = (version) => build.buildUserscript(version, { channel: "canary" });

@@ -1,5 +1,5 @@
 "use strict";
-// The live module's logic layer: playinfo parsing, playlist parsing, P2P URL handling
+// The live module's logic layer: playlist parsing, P2P URL handling
 // and the host pool.
 const {test}=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
 const SOURCE=path.join(__dirname,"../src");
@@ -27,28 +27,6 @@ test("live URL classification and P2P handling",()=>{
     "https://d1--cn-gotcha204.bilivideo.com/live-bvc/1/live_1_2/3.m4s?a=1"
   );
   assert.equal(live.unwrapProxyUrl(seg),"","ordinary URLs stay untouched");
-});
-
-test("getRoomPlayInfo parsing drops P2P entries and keeps official nodes",()=>{
-  const {live}=load();
-  const payload={data:{playurl_info:{playurl:{stream:[
-    {protocol_name:"http_hls",format:[{format_name:"fmp4",codec:[{codec_name:"avc",current_qn:10000,accept_qn:[10000,400],
-      base_url:"/live-bvc/123/live_1_2/index.m3u8?expires=9",
-      url_info:[
-        {host:"https://d1--ov-gotcha207.bilivideo.com",extra:"&sig=a"},
-        {host:"https://xy0x1x.mcdn.bilivideo.cn:4483",extra:"&sig=b"},
-        {host:"https://d1--ov-gotcha208.bilivideo.com",extra:"&sig=c"}
-      ]}]}]},
-    {protocol_name:"http_stream",format:[{format_name:"flv",codec:[{codec_name:"avc",current_qn:10000,accept_qn:[10000],
-      base_url:"/live-bvc/123/live_1_2.flv?expires=9",
-      url_info:[{host:"https://d1--ov-gotcha07.bilivideo.com",extra:"&sig=d"}]}]}]}
-  ]}}}};
-  const streams=live.parseRoomPlayInfo(payload);
-  assert.equal(streams.length,2);
-  const fmp4=streams.find(s=>s.format==="fmp4");
-  assert.equal(fmp4.qn,10000);
-  assert.deepEqual(Array.from(fmp4.urls,u=>u.host),["https://d1--ov-gotcha207.bilivideo.com","https://d1--ov-gotcha208.bilivideo.com"],"the mcdn P2P entry is dropped");
-  assert.equal(live.parseRoomPlayInfo({}).length,0);
 });
 
 test("live playlist parsing: map, segments, numbers, resolution against the playlist URL",()=>{

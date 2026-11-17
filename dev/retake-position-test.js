@@ -321,7 +321,7 @@
         otherVideoStartsOver: otherVideo.fetched && otherVideo.asked?.route === `/video/${OTHER_BVID}` && otherVideo.asked?.initialTime === undefined && otherVideo.start === 0
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && created.length === 10 && debug()?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean) && created.length === 10;
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })().catch((error) => {

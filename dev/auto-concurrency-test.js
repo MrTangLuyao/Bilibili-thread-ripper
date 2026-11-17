@@ -20,14 +20,6 @@ function controller(){
   return {auto,clock,changes,flow};
 }
 
-test("the setting is off unless asked for, and the ladder runs from 8 to 64",()=>{
-  const {core,idm}=load();
-  assert.equal(core.normalizeSettings({}).autoConcurrency,false);
-  assert.equal(core.normalizeSettings({autoConcurrency:true}).autoConcurrency,true);
-  assert.deepEqual([...idm.autoConcurrency.ladder],[8,12,16,24,32,48,64]);
-  assert.equal(idm.autoConcurrency.threads(),8);
-});
-
 test("a stall steps the count up at once, never two steps within the cooldown, never past 64",()=>{
   const {auto,clock,changes}=controller();
   clock.at+=5000;

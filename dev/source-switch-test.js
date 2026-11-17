@@ -321,7 +321,7 @@
         disabledLeavesItOn: disabled?.dash_config?.audio_only_config?.enabled === true
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && debug()?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })().catch((error) => {

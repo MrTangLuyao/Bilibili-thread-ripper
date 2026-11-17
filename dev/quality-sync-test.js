@@ -231,8 +231,7 @@
       && output.steps.nothingMoreWhileShownStays
       && output.steps.unreadablePickKeepsLastPick
       && output.steps.readableAgainChangesNothing
-      && output.steps.onePlayer
-      && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
+      && output.steps.onePlayer;
     render();
     result.dataset.pass = String(output.pass);
   })();

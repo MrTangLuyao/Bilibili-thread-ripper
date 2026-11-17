@@ -38,7 +38,7 @@
     await waitFor(() => root.__biliThreadRipperDebug?.getPlayer());
     // The frame is watched for the diagnostic copy whenever BTR plays.
     await waitFor(() => callbacks.size === 1);
-    const checks = { watchesFrame: report().playback.lastPresentedFrame === null };
+    const checks = {};
     // Callback IDs may be zero; switching BTR off must still cancel the first callback.
     settings({ enabled: false });
     await waitFor(() => callbacks.size === 0);

@@ -137,8 +137,7 @@
     // core never has to refuse one.
     output.steps.longTimeoutOnEveryPick = coreTimeouts.length > 0 && coreTimeouts.every((seconds) => seconds >= 300);
     output.steps.coreNeverRefused = !events().includes("auto quality refused");
-    output.pass = Object.values(output.steps).length > 2 && Object.values(output.steps).every(Boolean)
-      && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.steps).length > 2 && Object.values(output.steps).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   };

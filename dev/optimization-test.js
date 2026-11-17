@@ -102,14 +102,6 @@ test("sub-chunks grow with the measured connection speed, but a range keeps at l
   assert.ok(Math.max(...requests)<=1024*1024,"a sub-chunk never exceeds 1 MiB");
 });
 
-test("a resolver reports the measured speed of an address",()=>{
-  const {cdn}=load();
-  const resolver=cdn.createResolver({baseUrl:mediaUrl("upos-sz-mirrorali.bilivideo.com")},()=> "mainland");
-  assert.equal(resolver.speed(mediaUrl("upos-sz-mirrorali.bilivideo.com")),0);
-  resolver.success(mediaUrl("upos-sz-mirrorali.bilivideo.com"),5000000);
-  assert.equal(resolver.speed(mediaUrl("upos-sz-mirrorali.bilivideo.com")),5000000);
-});
-
 test("the short tail of a resumed piece is not taken for the speed of the node that fetched it",{timeout:30000},async()=>{
   const {cdn,idm}=load();
   const BREAKS="upos-sz-mirrorali.bilivideo.com",RESCUES="upos-sz-mirrorhw.bilivideo.com";

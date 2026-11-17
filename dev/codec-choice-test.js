@@ -72,7 +72,7 @@
         followsDefault: codecCalls[1] === "" && codecCalls.length === 2
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })();

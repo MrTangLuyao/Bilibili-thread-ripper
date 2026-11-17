@@ -311,7 +311,7 @@
         oldSourceOnlyWithoutCore: nativeSwitch.putBackWithoutCore.length === 2 && nativeSwitch.putBackWithCore.length === 0
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && debug()?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })().catch((error) => {

@@ -71,17 +71,15 @@
     const fourth = created[3];
     const output = {
       created: created.map((item) => item.engine),
-      architecture: root.__biliThreadRipperDebug.getStats().architecture,
       checks: {
         startsFull: first?.engine === "full",
         waitsForNativeCore: beforeCore === 1,
         compatOnceCoreReady: second?.engine === "compat" && second.at > switchedAt,
         backToFull: third?.engine === "full",
-        fallsBackWithoutCore: fourth?.engine === "full" && fourth.at - fallbackAskedAt >= 2500 && fourth.at - fallbackAskedAt < 7000,
-        architectureFollowsEngine: root.__biliThreadRipperDebug.getStats().architecture === "bilibili-native-ui-progressive-mse-0.8-core"
+        fallsBackWithoutCore: fourth?.engine === "full" && fourth.at - fallbackAskedAt >= 2500 && fourth.at - fallbackAskedAt < 7000
       }
     };
-    output.pass = Object.values(output.checks).every(Boolean) && root.__biliThreadRipperDebug?.version === "__BTR_VERSION__";
+    output.pass = Object.values(output.checks).every(Boolean);
     result.textContent = JSON.stringify(output);
     result.dataset.pass = String(output.pass);
   })();

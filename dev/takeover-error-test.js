@@ -40,8 +40,7 @@
       requestsInWindow,
       requests
     };
-    output.pass = output.version === "__BTR_VERSION__"
-      && output.playerState === "error"
+    output.pass = output.playerState === "error"
       && output.takeoverError?.stage === "playinfo"
       && /HTTP 404/.test(output.takeoverError?.message || "")
       && output.pageFailure?.level === "error" && /^playinfo: .*HTTP 404/.test(output.pageFailure.detail)

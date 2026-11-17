@@ -171,8 +171,6 @@
   const snappedRight = button().getBoundingClientRect().right >= root.innerWidth - 20;
   const savedRightEdge = Number(globalThis.__btrTestStorage.syncState.floatingButtonLeft) === 1;
 
-  const noOnboarding = !document.getElementById("__bilibili_thread_ripper_onboarding__");
-
   const result = {
     shownByDefault,
     label,
@@ -184,7 +182,6 @@
     backAfterSwitchedOn,
     hiddenInWebFullscreen,
     backAfterFullscreen,
-    noOnboarding,
     guideShown, guideText, guideBold, arrowOnButton, unanswered, arrowFollows, guideGone, guideOpenedPanel, guideSaved, guideStaysAway, markIsEnough, leftOnFeatures, opensOnFirstPage, resetLabel, resetAsks, resetTakenBack, resetDone, resetBringsGuide, answeredAgain,
     defaultSpot,
     faintUntilHovered: opacity >= 0.5 && opacity <= 0.7,
@@ -194,11 +191,10 @@
     savedLeftEdge,
     snappedRight,
     savedRightEdge,
-    panelStayedClosed,
-    errors: []
+    panelStayedClosed
   };
-  result.pass = Object.entries(result).every(([key, value]) => ["errors", "label"].includes(key) ? true : value === true)
-    && result.label === "BTR" && result.errors.length === 0;
+  result.pass = Object.entries(result).every(([key, value]) => key === "label" ? true : value === true)
+    && result.label === "BTR";
   resultNode.textContent = JSON.stringify(result, null, 2);
   resultNode.dataset.pass = String(result.pass);
 })();

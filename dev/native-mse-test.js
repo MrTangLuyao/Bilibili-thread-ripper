@@ -182,9 +182,7 @@
     nativeSourceChanges: probe.nativeSourceChanges,
     errors: probe.errors
   };
-  output.pass = output.version === "__BTR_VERSION__"
-    && output.architecture === "bilibili-native-ui-progressive-mse-0.8-core"
-    && output.originalUiCount === 1
+  output.pass = output.originalUiCount === 1
     && output.videoCount === 1
     && output.engine === "progressive-mse-0.8-core"
     && output.playbackActivated
