@@ -1,81 +1,61 @@
 <div align="center">
 
-<img src="icons/icon-128.png" width="112" alt="线程撕裂者图标">
+<img src="icons/icon-128.png" width="96" alt="线程撕裂者图标">
 
 # Bilibili 线程撕裂者
 
-**市面上能找到的效果最好的海外B站卡顿加载优化脚本**
+### 强大的海外 B 站卡顿优化脚本
 
-通过多线程并发以及调度器优化实现海外 B 站 8K、杜比视界流畅播放
+Bilibili Thread Ripper脚本，简称 BTR。把视频拆成小块，多线程从多个 CDN 节点同时下载，不只是换个 CDN。<br>在海外也能流畅播放 4K、8K 和杜比视界。
 
-[![版本](https://img.shields.io/github/v/tag/MrTangLuyao/Bilibili-thread-ripper?sort=date&label=%E7%89%88%E6%9C%AC&style=flat-square&color=fb7299)](CHANGELOG.md) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper?style=flat-square&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/stargazers) [![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-3b82f6?style=flat-square)](LICENSE)
+<sub>Bilibili Thread Ripper (BTR): a userscript that fixes Bilibili buffering outside mainland China by downloading each video in parallel from multiple CDN nodes.</sub>
 
-[![安装视频教程](https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1Teec6BE3s?p=2) [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+[![版本](https://img.shields.io/github/v/tag/MrTangLuyao/Bilibili-thread-ripper?sort=date&label=%E7%89%88%E6%9C%AC&style=flat-square&color=fb7299)](CHANGELOG.md) [![Stars](https://img.shields.io/github/stars/MrTangLuyao/Bilibili-thread-ripper?style=flat-square&label=Star&color=f5b301)](https://github.com/MrTangLuyao/Bilibili-thread-ripper/stargazers) [![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-3b82f6?style=flat-square)](LICENSE)
 
-[**安装**](#-安装) · [建议设置](#建议设置) · [原理](#原理解释) · [常见问题](#常见问题) · [反馈问题](#反馈问题) · [更新日志](CHANGELOG.md)
+<a href="https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js"><img src="https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-fb7299?style=for-the-badge&amp;logo=bilibili&amp;logoColor=white" alt="点击安装线程撕裂者" width="127"></a> <a href="https://www.bilibili.com/video/BV1Teec6BE3s?p=2"><img src="https://img.shields.io/badge/%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-6e7781?style=for-the-badge&amp;logo=bilibili&amp;logoColor=white" alt="安装视频教程" width="127"></a>
 
-<img src="pics/readme-main-dark.png" alt="线程撕裂者设置面板" width="32%"> <img src="pics/readme-network-dark.png" alt="高级设置：网络" width="32%"> <img src="pics/readme-buffer-dark.png" alt="高级设置：缓冲" width="32%">
-<br>
-<img src="docs/demo.gif" alt="线程撕裂者效果演示" width="96%">
+[效果](#效果) | [安装](#安装) | [设置](#设置) | [原理](#原理) | [其他平台](#其他平台) | [常见问题](#常见问题) | [更新日志](CHANGELOG.md)
+
+<img src="pics/readme-stats.jpg" alt="B 站播放器上的 BTR 统计信息：一个 4K60 视频正由 8 条线程从多个 CDN 节点同时下载" width="760">
+
+<sub>在播放器上右键打开的 BTR 统计信息：一个 4K60 视频正由 8 条线程从多个 CDN 节点同时下载</sub>
 
 </div>
 
-> [!NOTE]
-> 本项目是非官方、实验性质的开源项目。它不会绕过会员、登录、区域、清晰度、审核状态、数字版权保护或媒体签名限制。
-
-> [!IMPORTANT]
-> 本脚本是针对海外用户优化的，对于中国大陆用户优化有限，如果你在中国大陆，你应该优先检查自身的网络情况。
-
-> [!TIP]
-> 如果 BTR 帮到了你，欢迎分享给同样在海外看 B 站的朋友，也可以给项目点个 Star ⭐，让更多人看到它。
-
-> [!TIP]
-> 想在全平台使用？试试这些项目：
->
-> | 名字 | 适用平台 | 作者 | 链接 |
-> | --- | --- | --- | --- |
-> | Bilibili-thread-ripper-desktop | Windows 哔哩哔哩客户端 | LouieTang | [GitHub](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) |
-> | Bilibili-thread-ripper-mac | macOS 哔哩哔哩客户端 | Katsurama | [GitHub](https://github.com/Katsurama/Bilibili-thread-ripper-mac) |
-> | BiliFast | iOS | KaiC5504 | [GitHub](https://github.com/KaiC5504/BiliFast) |
-> | MyTVB-Speed-Boost | Android TV | nitansde | [GitHub](https://github.com/nitansde/MyTVB-Speed-Boost) |
-> | PiliPlus 海外加速版 | Android、iOS、Windows、macOS、Linux | lemonteaau | [GitHub](https://github.com/lemonteaau/PiliPlus) |
-> | PiliPlus-BTR | Android、iOS | nishuodedui1145-del | [GitHub](https://github.com/nishuodedui1145-del/PiliPlus) |
->
-> 它们由社区独立维护，效果不做保证。
-
-## 为什么需要它
-
-海外宽带明明很快，B 站的冷门视频、4K、高码率却总是卡，本插件具有以下功能特点：
-
-- **多线程下载**：多条连接、多个节点一起下
-- **智能选择 多个CDN**：智能优选多个大陆/海外 CDN
-- **智能调度**：自动决定线程数，并合理分配资源
-- **优化 B 站播放底层**：在全接管模式下，优化 B 站底层加载模式
-- **剧集加速**：番剧、电影、纪录片也能加速
-- **直播加速**：实验性，默认关闭
-- **不上传任何数据**：没有遥测
-
-### 速度对比：原生、[bilibili-accelerator](https://github.com/realzza/bilibili-accelerator) 以及 [bilibili CDN 加速插件](https://chromewebstore.google.com/detail/bilibilii-cdn%E5%8A%A0%E9%80%9F/kpjldkeakpnfeplfoofeklickdmakimn)
+## 效果
 
 <div align="center">
-<img src="pics/speed-comparison.png" alt="对比原生以及其他优化插件的下载速度" width="760">
+<img src="pics/speed-comparison.png" alt="下载速度对比：B 站原生无法顺利播放，bilibili-accelerator 13.9 Mbps，bilibili CDN 加速插件 15.2 Mbps，线程撕裂者 37.6 Mbps" width="760">
 </div>
-<sub>对比原生以及其他优化插件，墨尔本，运营商 Superloop 实测。测试视频是一个仅自己可见、几乎无播放的 4K60 视频（BV1Aou3zjEh1），3 次测试取平均，线程撕裂者版本 2026.10.8.1，仅供参考。</sub>
+<sub>对比原生以及其他优化插件，墨尔本，运营商 Superloop 实测。测试视频是一个仅自己可见、几乎无播放的 4K60 视频（BV1Aou3zjEh1），3 次测试取平均，线程撕裂者版本 2026.10.8.1。仅能代表当时的测试结果，仅供参考。</sub>
 
-## 📦 安装
+## 功能
 
-[![安装视频教程](https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%A7%86%E9%A2%91%E6%95%99%E7%A8%8B-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1Teec6BE3s?p=2) [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+- **多线程与多节点下载**：智能多线程和多节点并行下载，并合理分配各个节点的下载资源。
+- **自动线程数**：按网络情况调整最佳选项。
+- **两种接管方式**：支持替换播放器核心的全接管模式，以及让BTR适应播放节奏的兼容模式 使其兼容第三方插件。
+- **剧集和直播**：支持剧集，番剧，直播加速。
+- **调整缓冲策略**：支持调整缓冲的时长，绕过浏览器视频缓冲限制。
+- **阻止使用国际版**：支持阻止海外自动跳转国际版网页
+- **没有遥测**：不上传任何数据。
+
+## <a name="-安装"></a>安装
 
 1. 安装脚本管理器：[暴力猴 Violentmonkey](https://violentmonkey.github.io/)（推荐）或 [Tampermonkey](https://www.tampermonkey.net/)。部分用户反馈 Tampermonkey 正式版有时接管不稳定，换 beta 版可以解决。
-2. **Chrome、Edge 等 Chromium 内核浏览器必做**：扩展管理 → 暴力猴（或 Tampermonkey）→ 详情 → 打开 **允许运行用户脚本**（老版本是打开“开发者模式”）。
+2. **Chrome、Edge 等 Chromium 内核浏览器必做**：扩展管理 → 暴力猴（或 Tampermonkey）→ 详情 → 打开 **允许运行用户脚本**（老版本是打开 **开发者模式**）。
+
+   <details>
+   <summary>找不到？看动图</summary>
 
    <img src="pics/install-demo.gif" alt="在扩展程序里打开脚本管理器的“允许运行用户脚本”" width="640">
 
-3. 点这里安装：
+   </details>
 
-   [![点击安装线程撕裂者](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-%E7%BA%BF%E7%A8%8B%E6%92%95%E8%A3%82%E8%80%85-fb7299?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js)
+3. 安装脚本：
 
-4. 打开任意 B 站视频，页面上出现 BTR 悬浮球就装好了。以后有新版会自动更新，看到更新弹窗点“更新”即可。
+   <a href="https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/user_scripts/bilibili-thread-ripper.user.js"><img src="https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E5%AE%89%E8%A3%85-fb7299?style=for-the-badge&amp;logo=bilibili&amp;logoColor=white" alt="点击安装线程撕裂者" width="108"></a>
+
+4. 打开任意 B 站视频，页面右下角出现 BTR 悬浮球就装好了。你可以在脚本管理器内更新脚本。
 
 | 浏览器 | 支持 | 建议 | 说明 |
 | --- | :---: | --- | --- |
@@ -86,66 +66,31 @@
 > [!WARNING]
 > 如果你是早期通过视频了解到这个插件的：针对 Chrome 的独立插件版已经停止更新。请先在扩展管理里移除插件版，再按上面的步骤安装油猴脚本版，不要同时开启两个版本。
 
-## 建议设置
+## 设置
 
-下面只是参考，每个人的网络差别很大，最后以你自己看着顺不顺为准：
-
-| 情况 | CDN 模式 | 线程数 |
-| --- | --- | ---: |
-| ⭐ 推荐 | 大陆 CDN | 自动 |
-| 手动调优 | 大陆 CDN | 8 到 32 |
-| 设备性能弱 | 大陆 CDN | 4 到 8 |
-| 本地连大陆网络太差 | 海外 CDN | 自动 |
+默认设置就是最优的，如需修改，点页面上的 **BTR 悬浮球**，或者脚本管理器菜单里的 **线程撕裂者设置**
 
 <div align="center">
-<img src="pics/readme-advanced-light.png" alt="设置面板的高级设置：网络、缓冲和功能" width="96%">
+<img src="pics/readme-panels.png" alt="线程撕裂者的设置面板：首页，以及高级设置的网络页" width="760">
 </div>
 
-**设置在哪里**，三个入口都可以：
 
-- B 站任意页面上的 **BTR 悬浮球**
-- 脚本管理器菜单：暴力猴（或 Tampermonkey）→ **线程撕裂者设置**
-- 播放器里：⚙ → **更多播放设置**
-
-<table>
-  <tr>
-    <td align="center"><img src="pics/btr_ball.png" alt="B 站页面上的 BTR 悬浮球" height="200"><br><sub>BTR 悬浮球</sub></td>
-    <td align="center"><img src="pics/image-20260927005246460.png" alt="Tampermonkey 菜单里的线程撕裂者设置" height="200"><br><sub>Tampermonkey 菜单</sub></td>
-    <td align="center"><img src="pics/vio_mky_demo.png" alt="暴力猴菜单里的线程撕裂者设置" height="200"><br><sub>暴力猴菜单</sub></td>
-  </tr>
-</table>
-
-**悬浮球引导页**：第一次打开 B 站时会提示点悬浮球打开设置，之后不再出现。
-
-**自定义 CDN**：在设置面板的“高级设置”里，除了大陆和海外，还可以选“自定义”：勾选已知的服务器，或者手动添加 B 站的视频服务器地址（bilivideo.com、akamaized.net 等），插件只用你选的这些。一个都没选时按大陆 CDN 下载。
-
-**面板主题**：设置面板标题右边、GitHub 图标旁的按钮切换主题：☀️ 浅色、🌙 深色，右下角带个小 A 的是自动（跟随系统配色，默认）。每点一下换一种：自动 → 跟系统相反的颜色 → 跟系统相同的颜色 → 自动。选择会保存，并通过同一个脚本管理器在 B 站各个页面和标签页之间同步。
-
-## 怎么知道它在工作
-
-- 设置面板会显示**目前总线程**。偶尔显示 `0` 是正常的，说明当前已经缓冲了足够的内容。
-- 播放器右键 **BTR 统计信息** 会显示插件实际的下载速度、缓冲、线程和节点。
-- 播放器前方的缓存持续增长，说明下载的数据正在正常交给播放器。
-
-## 原理解释
-
-### 多线程思想
+## 原理
 
 B 站网页播放器下视频，一段数据只开一条连接。海外看冷门视频时这条连接经常只有几 Mbps，码率一高就卡。BTR 把这一段再切成很多小块，分给多条连接、多个节点一起下，下完核对位置，再按顺序拼起来交给播放器。
 
 ```mermaid
 flowchart TD
     A["播放器要下一段视频"] --> B["BTR 把这一段切成很多小块"]
-    B --> C1["连接 1 · 节点 A"] & C2["连接 2 · 节点 B"] & C3["连接 3 · 节点 C"] & C4["连接 4 ……"]
+    B --> C1["连接 1，节点 A"] & C2["连接 2，节点 B"] & C3["连接 3，节点 C"] & C4["连接 4 ……"]
     C1 & C2 & C3 & C4 --> D["核对每块的位置和长度，按顺序拼好"]
     D --> E["交给播放器"]
 ```
 
 每条连接下的是文件里不同的部分，不会把同一个文件下好几遍。哪一块回来的位置或长度不对，直接丢掉，不会塞进播放器。
 
-全接管模式下，BTR 直接把数据写进网页里的播放器，B 站的界面、弹幕、清晰度菜单都照常用；兼容模式下还是 B 站播放器自己放，BTR 只帮它下载。
-
-### 为什么用大陆 CDN
+<details>
+<summary><b>为什么用大陆 CDN</b></summary>
 
 B 站官方在 [《B站公网架构实践及演进》](https://www.bilibili.com/opus/740129406252482739) 里讲过他们的 CDN 分层，下面是原文截图：
 
@@ -157,7 +102,7 @@ B 站官方在 [《B站公网架构实践及演进》](https://www.bilibili.com/
 
 大陆 CDN 模式就是直接去大陆节点拿数据，不在海外没缓存的节点上干等。大陆离得远，单条连接还是慢，所以要和多线程一起用。
 
-普通的 CDN 优选插件是测几个节点、挑最快的那个，但下载还是一条连接，冷门视频照样卡。BTR 也变不出带宽：宽带本身跑不动这个码率，或者所有节点都堵在同一个出口，线程再多也没用。
+</details>
 
 <details>
 <summary><b>多线程下载调度：不只是多开几个线程</b></summary>
@@ -173,9 +118,9 @@ B 站官方在 [《B站公网架构实践及演进》](https://www.bilibili.com/
 <details>
 <summary><b>直播加速（实验性）</b></summary>
 
-BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，没有视频那么明显。后期有优化空间会优化。
+BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，没有视频那么明显。后面会继续优化。
 
-`0.9.4.0` 起，live.bilibili.com 的直播间也可以由插件接管下载：在设置里打开“直播加速”（默认关闭）。直播和点播的卡顿原因不一样：直播分片是一秒一片实时产生的，没法像点播那样往前猛下，但是海外分到的直播节点质量参差、经常波动，网页播放器还会开 P2P 从其他观众那里拉数据，海外观众稀少时反而更卡。所以直播模块做的是：
+live.bilibili.com 的直播间也可以由 BTR 接管下载：在设置里打开“直播加速”（默认关闭）。直播和点播的卡顿原因不一样：直播分片是一秒一片实时产生的，没法像点播那样往前猛下，但是海外分到的直播节点质量参差不齐、经常波动，网页播放器还会开 P2P 从其他观众那里拉数据，海外观众稀少时反而更卡。所以直播模块做的是：
 
 - 屏蔽直播 P2P 和 PCDN 中转，只走官方节点；
 - 每个分片在多个官方节点之间竞速，慢了 0.4 秒就开备份副本，坏节点整场停用；
@@ -185,9 +130,12 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 </details>
 
-## 和 B 站播放器的分工
+<details>
+<summary><b>和 B 站播放器的分工</b></summary>
 
-`0.9.x` 起使用 B 站原生播放器界面，不再自己重复造一套播放器。播放器功能归播放器，加速功能归线程撕裂者，少互相干扰：
+全接管模式下，BTR 直接把数据写进网页里的播放器，B 站的界面、弹幕、清晰度菜单都照常用；兼容模式下还是 B 站播放器自己放，BTR 只帮它下载。
+
+BTR 使用 B 站原生播放器界面，不自己重复造一套播放器。播放器功能归播放器，加速功能归线程撕裂者，少互相干扰：
 
 | B 站播放器继续负责 | 线程撕裂者只负责 |
 | --- | --- |
@@ -198,17 +146,29 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 | 合集、分 P、自动连播和站内切换 | 失败重试 |
 | B 站自己的快捷键与播放器设置 | |
 
+</details>
+
+## 其他平台
+
+| 项目 | 平台 | 作者 |
+| --- | --- | --- |
+| [Bilibili-thread-ripper-desktop](https://github.com/MrTangLuyao/Bilibili-thread-ripper-desktop) | Windows 哔哩哔哩客户端 | LouieTang |
+| [Bilibili-thread-ripper-mac](https://github.com/Katsurama/Bilibili-thread-ripper-mac) | macOS 哔哩哔哩客户端 | Katsurama |
+| [BiliFast](https://github.com/KaiC5504/BiliFast) | iOS | KaiC5504 |
+| [MyTVB-Speed-Boost](https://github.com/nitansde/MyTVB-Speed-Boost) | Android TV | nitansde |
+| [PiliPlus 海外加速版](https://github.com/lemonteaau/PiliPlus) | Android、iOS、Windows、macOS、Linux | lemonteaau |
+| [PiliPlus-BTR](https://github.com/nishuodedui1145-del/PiliPlus) | Android、iOS | nishuodedui1145-del |
+
+这些项目由社区独立维护，效果不做保证。
+
 ## 常见问题
 
-**效果明不明显，主要看你属于哪种情况：**
+<details>
+<summary><b>和 CDN 优选（CDN 替换）插件有什么区别？</b></summary>
 
-| ✅ 提升比较明显 | ❌ 解决不了 |
-| --- | --- |
-| 海外观看冷门视频、4K 或高码率视频 | 你的宽带本身就跑不动当前码率 |
-| 普通测速很快，但是 B 站单连接速度很低 | 所有节点共用同一个拥堵出口 |
-| 某些媒体 Range 经常卡住 | B 站网页、评论区或者接口本身加载慢 |
-| 不同 CDN 到你所在地的线路质量差异很大 | 当前账号没有播放权限 |
-| 原生播放器的下载速度长期低于视频实际码率 | B 站修改了播放器结构或者媒体接口 |
+CDN 优选插件测几个节点，挑最快的一个，把播放地址换过去，下载一般还是一条连接，冷门视频照样可能卡。BTR 把每段视频拆成小块，用多条连接从多个节点同时下载。2026 年 10 月的实测见[效果](#效果)，那些插件之后可能有变化。
+
+</details>
 
 <details>
 <summary><b>能不能解除地区、会员或者登录限制？</b></summary>
@@ -222,7 +182,7 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 
 对于普通用户，建议开启全接管模式；一个例外是 Safari 用户，建议开启兼容模式以避免一些播放问题。
 
-全接管模式会接管更多的播放器底层功能，自己重写了部分播放器的底层运行模式。如果遇到了任何播放问题，比如跳帧、部分设置不生效，建议开启兼容模式：这个模式下会更少地改写 B 站的播放器，而是让 BTR 的底层去适配 B 站的播放器。
+全接管模式会接管更多的播放器底层功能，自己重写了部分播放器的底层运行模式。如果遇到了任何播放问题，比如跳帧、部分设置不生效，建议开启兼容模式：这个模式尽量不改写 B 站的播放器，而是让 BTR 去适配它。
 
 如果你是桌面版 BTR 的用户，则没有这个选项：桌面版强制工作在类似网页版兼容模式的方式下，这是为了更好的版本兼容性。
 
@@ -231,14 +191,14 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 <details>
 <summary><b>为什么设置 32 线程却没有一直显示 32？</b></summary>
 
-`32` 是并发上限，不是要求插件每一秒都塞满 32 条连接。媒体分段较小、缓存足够、请求刚完成或者音视频任务数量变化时，真实线程数都会下降。
+`32` 是并发上限，不是要求 BTR 每一秒都塞满 32 条连接。媒体分段较小、缓存足够、请求刚完成或者音视频任务数量变化时，真实线程数都会下降。
 
 </details>
 
 <details>
 <summary><b>为什么第一次打开视频可能比热门视频原生起播慢一点？</b></summary>
 
-这个问题在兼容模式和桌面版的部分视频中更明显，但我相信这是值得的。插件要先读取音视频索引、确认可用节点并准备一段连续缓存。这个过程会有额外开销，目的是避免高码率视频刚播两秒就开始转圈。
+这个问题在兼容模式和桌面版的部分视频中更明显，但我相信这是值得的。BTR 要先读取音视频索引、确认可用节点并准备一段连续缓存。这个过程会有额外开销，目的是避免高码率视频刚播两秒就开始转圈。
 
 </details>
 
@@ -266,95 +226,51 @@ BTR 的直播加速刚刚开始适配，还在探索中，效果可能有限，�
 <details>
 <summary><b>会不会上传 Cookie、播放记录或者视频内容？</b></summary>
 
-不会。插件不提供遥测服务，也不会把视频内容上传到第三方服务器。媒体数据只进入当前页面的内存和浏览器媒体缓冲区。
+不会。BTR 没有遥测，也不会把视频内容上传到第三方服务器。媒体数据只进入当前页面的内存和浏览器媒体缓冲区。
 
 </details>
 
 <details>
 <summary><b>未来会提供手机或平板版吗？</b></summary>
 
-目前的结论是，为手机开发非侵入式的 BTR 很难。通过 Loon、圈X、Clash 去改写手机 B 站的优化效果有限；可行的方案比如魔改 B 站客户端或第三方客户端，即使能开发出来，安装与维护的难度也很大。所以暂时不开发 BTR 手机版，但是本项目欢迎各路大神移植手机。
-
-</details>
-
-## 反馈问题
-
-只说一句“没效果”，基本没办法判断到底是节点、带宽、编码、权限还是插件出错。如果你要反馈“还是卡”，最好一起提供这些信息：
-
-- [ ] 浏览器和暴力猴（或 Tampermonkey）的版本，BTR 的版本
-- [ ] 所在国家或地区，以及网络运营商
-- [ ] 视频 BV 号、清晰度和编码
-- [ ] CDN 模式与线程数
-- [ ] BTR 设置里 **高级设置 → 功能 → 调试 → 复制诊断信息** 复制下来的内容
-- [ ] 是首次加载慢、连续播放卡，还是大幅拖动后卡
-
-> [!CAUTION]
-> 请不要公开 Cookie、访问令牌或者完整的媒体签名地址。
-
-## 开发与构建
-
-[![点击测试 BTR Canary](https://img.shields.io/badge/%E7%82%B9%E5%87%BB%E6%B5%8B%E8%AF%95-BTR%20Canary-f5b301?style=for-the-badge&logo=bilibili&logoColor=white)](https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/canary/bilibili-thread-ripper-canary.user.js)
-
-**BTR Canary 测试版**：跟着开发中的最新代码自动更新的另一个脚本，给贡献者和想抢先试新改动的人用，可能不稳定。
-
-- 点上面的按钮安装，脚本管理器里会多出一个“Bilibili 线程撕裂者 Canary”，和正式版各自更新、各存一份设置。
-- main 上的代码每次有改动、自动测试全部通过后，Canary 就会更新。版本号是当天的日期加上当天第几个 Canary，比如 `2026.10.24.2`，和正式版的版本号各算各的。
-- 设置面板的版本号后面有黄色的 **Canary** 标记，诊断信息里也写着是哪一个。
-- 正式版和 Canary 只开一个。两个都开着时，只有先启动的那个在运行，设置面板会提醒你关掉一个。想回到正式版：在脚本管理器里停用 Canary，启用正式版。
-
-项目运行和构建没有任何依赖。单元测试只需要 Node.js，浏览器测试还需要 Playwright 和浏览器。
-
-<details>
-<summary><b>自动测试、Canary 和发版是怎么跑的（GitHub Actions）</b></summary>
-
-- **自动测试**（`.github/workflows/tests.yml`）
-  - 每次推送和 PR：跑离线测试。按 `node dev/run-tests.js --list` 的分组同时跑：单元测试一组，每个浏览器测试各一组。
-  - PR、推送到 main 和手动运行：再用真实 B 站视频跑 `dev/native-mse-end-test.js`，起播、拖动、播到结尾和跟随清晰度都测。两个视频同时跑；不登录，B 站只给 480P 和 360P，AVC、HEVC、AV1 三种编码都有。跑之前先用 `dev/network-probe.mjs` 看这台机器能不能用 B 站。GitHub 的 Linux 机器没有显卡，放不了 HEVC，HEVC 的两项会显示“跳过”。
-  - 手动运行（Actions → Tests → Run workflow）可以取消真实视频测试或更新 Canary（默认都勾选），还可以勾选：在 Windows 和 macOS 的 Chrome 上试 HEVC；测试没通过也照样更新 Canary。
-  - 每次运行的页面上都有一张汇总表。
-- **Canary**（`.github/workflows/canary.yml`）
-  - 默认：main 上的测试全部通过后自动运行；有测试没通过就不发。
-  - 手动：Actions → Canary → Run workflow，不跑测试，直接用 main 现在的代码生成。或者手动运行 Tests 时勾选“测试没通过也照样更新 Canary”。
-  - `scripts/canary.mjs` 生成 `canary/bilibili-thread-ripper-canary.user.js`。代码没变就什么都不写；变了就以 GitHub Actions 机器人的身份提交回 main，装了 Canary 的人随后自动更新。
-- **发版**（`.github/workflows/release.yml`）
-  - 一键发版：Actions → Release → Run workflow，在 main 上运行，什么都不用填。它先跑和 main 一样的全部测试（包括真实视频），通过后运行 `scripts/release.mjs`：定版本号、改好 CHANGELOG、构建脚本，以 GitHub Actions 机器人的身份提交并打 tag，把提交和 tag 一起推送；最后用 `scripts/release-notes.mjs` 核对脚本的版本号、取出 CHANGELOG 里这一版的说明（开头加上“Chrome 独立插件版已停止维护”的提示），建一个 GitHub Release，附上脚本。
-  - 用户照样从 main 上的 `user_scripts/bilibili-thread-ripper.user.js` 自动更新，Release 只是记录和下载备份。
-  - 另外两种用法照旧：在本地发版后推送的 tag 会触发同样的测试和 Release；手动运行时填一个已有的 tag，可以重新发布那一版的 Release。
+目前的结论是，为手机开发非侵入式的 BTR 很难。通过 Loon、圈 X、Clash 去改写手机 B 站的优化效果有限；可行的方案比如魔改 B 站客户端或第三方客户端，即使能开发出来，安装与维护的难度也很大。所以暂时不开发 BTR 手机版。社区已经有移植，见[其他平台](#其他平台)，也欢迎各路大神继续移植。
 
 </details>
 
 <details>
-<summary><b>目录结构、构建、测试和发版</b></summary>
+<summary><b>还是卡，怎么反馈？</b></summary>
 
-```text
-src/              原生播放器接管、多线程下载、Range 校验、CDN 选择和设置面板
-user_scripts/     油猴脚本（发版时生成）和它的适配层；adapter/meta.json 是脚本头和打包顺序
-canary/           Canary 测试版脚本（由 Actions 生成，不要手改）
-scripts/          构建、发版、Canary 和贡献者脚本
-dev/              测试
-.github/workflows 自动测试、Canary 和发版
-icons/            脚本图标
-pics/、docs/      README 里的图片，以及贡献者头像（pics/contributors.svg）
-```
+只说一句“没效果”，基本没办法判断到底是节点、带宽、编码、权限还是 BTR 出错。如果你要反馈“还是卡”，最好一起提供这些信息：
 
-- **构建**：`node scripts/build.mjs`（或 `npm run build`），生成 `dist/bilibili-thread-ripper.user.js`，版本号用最近一个 tag；加 `--canary` 生成 Canary 版 `dist/bilibili-thread-ripper-canary.user.js`。想在自己浏览器里试，就在脚本管理器里新建一个脚本，把文件内容整个贴进去保存。
-- **测试**：`node dev/run-tests.js`（或 `npm test`）。浏览器测试要用 Playwright（可通过 `NODE_PATH` 指向它所在的 node_modules），默认使用 `playwright install chromium` 安装的 Chromium，Windows、Linux、macOS 使用相同入口；Linux 可用 `playwright install --with-deps chromium` 安装系统依赖。要使用已安装的 Chrome，可设置 `BTR_CHROME_PATH` 为其可执行文件的完整路径。设置了 `BTR_TEST_BVID` 和 `BTR_TEST_CID` 时还会跑真实视频的测试（Playwright 自带的 Chromium 放不了 AAC 和 H.264，要用 Chrome）；CID 可以从 `https://api.bilibili.com/x/player/pagelist?bvid=<BV 号>` 返回的 `data[0].cid` 查到。
-- **发版**：先把改动写进 `CHANGELOG.md` 最上面的 `## [Unreleased]` 并推送到 main，然后在 GitHub 上运行 Actions → Release → Run workflow（见上面“自动测试、Canary 和发版”）。点下去就等于发给所有用户。也可以在本地的 main 上运行 `node scripts/release.mjs`（或 `npm run release`）：它会算出今天的版本号、改好 CHANGELOG、构建 `user_scripts/bilibili-thread-ripper.user.js`、跑测试、提交并打 tag，最后打印推送命令，推送要自己来；推送 tag 以后 GitHub Actions 会再测一遍并建 Release。
-- **Canary**：`node scripts/canary.mjs` 生成 `canary/` 里的文件，平时由 Actions 运行，本地一般不用。
-- **贡献者**：`node scripts/contributors.mjs` 按 GitHub 的贡献者列表重新画 `pics/contributors.svg`（“参与贡献”里的头像），有新贡献者时手动跑一下再提交。GitHub 的列表有几个小时的缓存。
+- 浏览器和暴力猴（或 Tampermonkey）的版本，BTR 的版本
+- 所在国家或地区，以及网络运营商
+- 视频 BV 号、清晰度和编码
+- CDN 模式与线程数
+- BTR 设置里 **高级设置 → 功能 → 调试 → 诊断信息** 点 **复制** 得到的内容
+- 是首次加载慢、连续播放卡，还是大幅拖动后卡
 
-源码里的版本号都写成 `__BTR_VERSION__`，是正式版还是 Canary 写成 `__BTR_CHANNEL__`，构建时才换成真实的值，不要手改。`src/` 里的 range-core、cdn-resolver、idm-downloader、runtime-notices、diagnostic-report、settings-panel 这 6 个文件桌面版也在用，改了要同步过去；diagnostic-report 要在 settings-panel 之前加载。
+**请不要公开 Cookie、访问令牌或者完整的媒体签名地址。**
+
+带上这些信息，到 [Issues](https://github.com/MrTangLuyao/Bilibili-thread-ripper/issues/new/choose) 反馈。
 
 </details>
 
-## 参与贡献
+## 贡献
 
 我个人能力有限，由衷希望各路大佬都来贡献代码、提提意见，我都会看的。希望有朝一日 B 站能优化好海外的 CDN，我们也不用搞这么多复杂的玩意了。
 
+<p>
 <a href="https://github.com/MrTangLuyao/Bilibili-thread-ripper/graphs/contributors">
   <img src="pics/contributors.svg" alt="贡献者">
 </a>
+</p>
 
-## 开源协议
+想改代码、提建议，或者抢先试用 Canary 测试版，请看[贡献指南](CONTRIBUTING.md)。
 
-项目采用 [MIT 开源协议](LICENSE)。你可以使用、复制、修改和分发，也可以用于商业项目，但必须保留原始版权声明和许可证文本。
+觉得有用，欢迎点个 Star，也分享给在海外看 B 站的朋友。
+
+## 协议与声明
+
+项目采用 [MIT 开源协议](LICENSE)。
+
+本项目是非官方、实验性质的开源项目，不会绕过会员、登录、地区、清晰度、审核状态、数字版权保护或媒体签名限制。
