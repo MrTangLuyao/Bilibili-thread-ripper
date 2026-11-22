@@ -5,6 +5,8 @@
   // every bilibili page, so the hostname decides. The dev fixtures run on 127.0.0.1 and
   // opt in explicitly.
   if (!/^live\.bilibili\.com$/i.test(root.location?.hostname || "") && root.__BTR_TEST_ALLOW_LIVE__ !== true) return;
+  // The clip pages (/web-cut/) play finished recordings, which are replay-hook.js's job.
+  if (/^\/web-cut\//i.test(root.location?.pathname || "") && root.__BTR_TEST_ALLOW_LIVE__ !== true) return;
 
   const CHANNEL = "__BILI_RANGE_ACCELERATOR_V1__";
   const INSTALL_FLAG = "__biliThreadRipperLiveInstalled";
@@ -344,6 +346,9 @@
     if (!liveOn() || requestedKey !== latestPlaylistKey) return;
     // Only fMP4 media playlists: a master playlist or a TS stream is not the module's business.
     if (/#EXT-X-STREAM-INF/.test(text) || !/#EXT-X-MAP/.test(text)) return;
+    // A finished recording is no live window: prefetching "the announced window" of one would
+    // queue hours of segments.
+    if (core.isVodPlaylist(text)) return;
     const parsed = core.parseM3u8(text, playlistUrl);
     if (!parsed.segments.length || !parsed.segments.every((segment) => /\.m4s$/i.test(segment.name))) return;
     const ctx = contextFor(playlistUrl);

@@ -210,7 +210,7 @@
             </div>
             <div class="block" data-needs-enabled>
               <h2 class="block-title">加速范围</h2>
-              <section class="accel-controls list" aria-label="加速范围">${switchRow("音频加速", "audio-acceleration", "关掉后只加速视频，音频照常下载。")}${switchRow("剧集加速", "episode-enabled", "加速番剧、电影、纪录片等剧集，\n使用兼容模式。")}${switchRow("直播加速（实验性）", "live-enabled")}
+              <section class="accel-controls list" aria-label="加速范围">${switchRow("音频加速", "audio-acceleration", "关掉后只加速视频，音频照常下载。")}${switchRow("剧集加速", "episode-enabled", "加速番剧、电影、纪录片等剧集，\n使用兼容模式。")}${switchRow("直播加速（实验性）", "live-enabled", "加速直播，也加速直播回放剪辑页\n（live.bilibili.com/web-cut）的播放和下载。")}
               </section>
             </div>
             <div class="block" data-needs-enabled>

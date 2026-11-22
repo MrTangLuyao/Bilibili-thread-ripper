@@ -102,6 +102,17 @@
     [/直播分片长度不对：?\s*收到\s*([^，,]*?)\s*[，,]\s*应为\s*/g, "live segment length wrong: got $1, expected "],
     [/没有可用直播节点/g, "no usable live node"],
     [/直播分片总超时/g, "live segment timed out"],
+    // Replay: replay-hook.js, on the live clip pages.
+    [/回放节点探测超时/g, "replay node probe timed out"],
+    [/回放分片响应异常：?\s*/g, "replay segment failed: "],
+    [/回放分片只返回了一部分/g, "replay segment came back partial"],
+    [/回放分片首字节超时/g, "replay segment first byte timed out"],
+    [/回放分片为空/g, "replay segment empty"],
+    [/回放分片长度不对：?\s*收到\s*([^，,]*?)\s*[，,]\s*应为\s*/g, "replay segment length wrong: got $1, expected "],
+    [/没有可用的回放节点/g, "no usable replay node"],
+    [/回放分片总超时/g, "replay segment timed out"],
+    [/回放位置已改变/g, "replay position changed"],
+    [/回放加速已关闭/g, "replay acceleration off"],
     [/直播/g, "live"],
     // 自动线程数: idm-downloader.js, and the stalls native-mse-player.js reports to it.
     [/开头已经跟上，?\s*线程数降到\s*(\d+)/g, "start caught up, down to $1"],
