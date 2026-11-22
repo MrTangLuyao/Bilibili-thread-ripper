@@ -84,6 +84,39 @@
     return { mapUrl, segments, lastNum: segments.at(-1)?.num || 0 };
   }
 
+  // A finished recording (a replay on the clip pages) rather than a live window: it says it
+  // ends, or calls itself VOD. The live module leaves these alone; the replay module takes them.
+  function isVodPlaylist(text) {
+    return /^#EXT-X-ENDLIST\b/m.test(String(text || "")) || /^#EXT-X-PLAYLIST-TYPE:\s*VOD\b/im.test(String(text || ""));
+  }
+
+  // A replay playlist: like parseM3u8, but every segment keeps its place and its start time,
+  // whatever its file is called (.m4s or .ts), so a request for one can tell what comes next.
+  function parseVodPlaylist(text, playlistUrl) {
+    const parsed = parseM3u8(text, playlistUrl);
+    let start = 0;
+    const segments = parsed.segments.map((segment, index) => {
+      const item = { url: segment.url, index, start, duration: segment.duration };
+      start += segment.duration;
+      return item;
+    });
+    return { mapUrl: parsed.mapUrl, segments, duration: start };
+  }
+
+  // The segments to fetch ahead of the one at `index`: everything up to `seconds` of video
+  // after it, at most `limit` of them.
+  function segmentsAhead(segments, index, seconds, limit) {
+    const list = [];
+    const from = segments[index];
+    if (!from) return list;
+    const until = from.start + from.duration + Math.max(0, Number(seconds) || 0);
+    for (let i = index + 1; i < segments.length && list.length < limit; i += 1) {
+      if (segments[i].start >= until) break;
+      list.push(segments[i]);
+    }
+    return list;
+  }
+
   // Node health for one live stream. Live pieces are one second long, so the pool acts
   // fast: it ranks by first-byte time, blocks a failing node briefly, and bans one that
   // twice sent nothing. Proven nodes rank first; unproven candidates follow them until a
@@ -158,8 +191,11 @@
     isLivePlaylistUrl,
     isLiveSegmentUrl,
     isP2pUrl,
+    isVodPlaylist,
     parseM3u8,
+    parseVodPlaylist,
     segmentNumber,
+    segmentsAhead,
     unwrapProxyUrl
   });
 })(globalThis);

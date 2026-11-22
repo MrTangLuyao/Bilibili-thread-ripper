@@ -53,6 +53,7 @@ Bilibili-thread-ripper/
 | `range-core.js` | 各部分共用的基础函数 |
 | `sidx.js` | 读视频的分段索引 |
 | `live-core.js`、`live-hook.js` | 直播加速：前一个是纯逻辑，后一个接到直播页上 |
+| `replay-hook.js` | 直播回放加速（直播剪辑页 `/web-cut/`）：并行预取回放分片，跟着直播加速开关 |
 | `settings-panel.js` | 设置面板 |
 | `stats-panel.js` | BTR 统计信息 |
 | `diagnostic-report.js` | 诊断信息的文字 |

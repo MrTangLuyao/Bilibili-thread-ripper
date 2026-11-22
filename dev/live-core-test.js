@@ -79,3 +79,25 @@ test("the host pool ranks by proof and first-byte time, blocks failures, bans si
   pool.success("cand-b.bilivideo.com",50,5e6);
   assert.ok(pool.pick(3).includes("cand-b.bilivideo.com"));
 });
+
+test("replay playlists: VOD detection, segment times, the window ahead",()=>{
+  const {live}=load();
+  const vod=[
+    "#EXTM3U","#EXT-X-VERSION:7","#EXT-X-TARGETDURATION:6","#EXT-X-PLAYLIST-TYPE:VOD",
+    '#EXT-X-MAP:URI="h1.m4s"',
+    "#EXTINF:6.0,","0.m4s","#EXTINF:6.0,","1.m4s","#EXTINF:6.0,","2.m4s","#EXTINF:4.5,","3.m4s",
+    "#EXT-X-ENDLIST",""
+  ].join("\n");
+  const url="https://rec.bilivideo.com/live-rec/1/index.m3u8?sign=x";
+  assert.equal(live.isVodPlaylist(vod),true);
+  assert.equal(live.isVodPlaylist("#EXTM3U\n#EXTINF:1,\n5.m4s\n"),false,"a live window is not VOD");
+  assert.equal(live.isVodPlaylist("#EXTM3U\n#EXTINF:1,\n5.ts\n#EXT-X-ENDLIST\n"),true,"an ended playlist is VOD");
+  const parsed=live.parseVodPlaylist(vod,url);
+  assert.equal(parsed.mapUrl,"https://rec.bilivideo.com/live-rec/1/h1.m4s");
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.segments.map(s=>[s.index,s.start]))),[[0,0],[1,6],[2,12],[3,18]]);
+  assert.equal(parsed.duration,22.5);
+  assert.deepEqual(Array.from(live.segmentsAhead(parsed.segments,0,5,10),s=>s.index),[1],"segments starting within 5 s after the end of segment 0");
+  assert.deepEqual(Array.from(live.segmentsAhead(parsed.segments,0,100,2),s=>s.index),[1,2],"capped by count");
+  assert.equal(live.segmentsAhead(parsed.segments,3,100,10).length,0,"nothing after the last");
+  assert.equal(live.segmentsAhead(parsed.segments,9,100,10).length,0,"an unknown index");
+});
