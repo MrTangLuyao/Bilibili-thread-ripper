@@ -24,6 +24,28 @@
     return dash;
   }
 
+  // Bilibili's core can also take pieces from other viewers over WebRTC: NC, and the P2P it
+  // calls RP, each switched on for a share of the viewers by a remote setting. Those pieces
+  // never come through the requests BTR downloads, so they are not sped up. Overseas, where
+  // few viewers are near, the attempts mostly fail after seconds of waiting while the buffer
+  // runs low. The full takeover never uses them, and the live module turns them off too.
+  // While BTR speeds up a player, its core is told not to use them, and told again whenever
+  // Bilibili switches them back on; Bilibili's own choice comes back when BTR lets go.
+  function holdPeerLoading(dash, held) {
+    if (typeof dash.setUseNC !== "function" && typeof dash.setUseP2P !== "function") return held;
+    if (held?.dash !== dash) held = { dash, nc: dash.getUseNC?.(), p2p: dash.getUseP2P?.() };
+    if (typeof dash.setUseNC === "function" && dash.getUseNC?.() !== false) dash.setUseNC(false);
+    if (typeof dash.setUseP2P === "function" && dash.getUseP2P?.() !== false) dash.setUseP2P(false);
+    return held;
+  }
+  function releasePeerLoading(held) {
+    if (!held) return;
+    try {
+      if (typeof held.nc === "boolean") held.dash.setUseNC?.(held.nc);
+      if (typeof held.p2p === "boolean") held.dash.setUseP2P?.(held.p2p);
+    } catch (_error) {}
+  }
+
   function nativeSwitchPending() {
     try {
       const quality = root.player?.getQuality?.();
@@ -434,7 +456,7 @@
     let tracks = [], lastVideo = null, lastAudio = null;
     let delivered = 0, failures = 0, nativeSwitchRequests = 0;
     let qualityState = "", guardedDash = null, releaseGuard = null;
-    let coreWaitStarted = null, coreWaitTimer = null;
+    let coreWaitStarted = null, coreWaitTimer = null, peers = null;
     const cache = new Map(), jobs = new Set(), timeline = [];
     let lastError = "";
     const settings = () => core.normalizeSettings(options.getSettings());
@@ -541,6 +563,11 @@
           releaseGuard = attachQualityGuard(dash, video, note, unavailable);
           guardedDash = dash;
         }
+        const held = holdPeerLoading(dash, peers);
+        if (held !== peers) {
+          peers = held;
+          note("peer loading off", `Bilibili had NC ${peers.nc}, P2P ${peers.p2p}`);
+        }
         const quality = root.player?.getQuality?.();
         const value = `${quality?.nowQ}/${quality?.newQ}/${quality?.realQ}`;
         if (value !== qualityState) { qualityState = value; note("native quality now/target/rendered", value); }
@@ -608,6 +635,7 @@
         owner.disposed = true;
         clearTimeout(coreWaitTimer); coreWaitTimer = null;
         releaseGuard?.(); releaseGuard = null; guardedDash = null;
+        releasePeerLoading(peers); peers = null;
         for (const controller of jobs) controller.abort();
         events.abort();
         if (active === owner) active = null;
@@ -645,6 +673,7 @@
           return d ? n / d : 0;
         })(),
         acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
+        peerLoading: peers ? `off, Bilibili had NC ${peers.nc} P2P ${peers.p2p}` : "untouched",
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });
