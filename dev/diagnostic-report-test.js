@@ -511,12 +511,12 @@ test("a long report is cut to 48000 chars and long lines to 200",()=>{
 test("compat, native, live and a takeover failure print their own lines",()=>{
   const compat=fixture();
   compat.settings.takeover="compat";
-  Object.assign(compat.video,{actualTakeover:"compat",player:{architecture:"native-player-range-transport",transportRevision:6,qualityGuardRevision:11,nativeQualityGuard:true,qualityId:80,downloadedQualityId:64,width:1920,height:1080,currentTime:3,videoType:"video/mp4",audioType:"audio/mp4",videoBandwidth:900000,audioBandwidth:130000,codec:"avc1.640028",frameRate:29.97,acceleratedRanges:40,failedRanges:1,nativeSwitchRequests:2,nativeQuality:"80/80/80",nativeSwitchPending:false,activeRequests:3,timeline:[]}});
+  Object.assign(compat.video,{actualTakeover:"compat",player:{architecture:"native-player-range-transport",transportRevision:6,qualityGuardRevision:11,nativeQualityGuard:true,qualityId:80,downloadedQualityId:64,width:1920,height:1080,currentTime:3,videoType:"video/mp4",audioType:"audio/mp4",videoBandwidth:900000,audioBandwidth:130000,codec:"avc1.640028",frameRate:29.97,acceleratedRanges:40,failedRanges:1,memoryRanges:12,memoryRangeBytes:25165824,memoryBytes:104857600,nativeSwitchRequests:2,nativeQuality:"80/80/80",nativeSwitchPending:false,activeRequests:3,timeline:[]}});
   let text=report.render(compat);
   grammar(text,"compat");
   assert.ok(section(text,"Summary").includes("video         avc1.640028 1920x1080 29.97 fps 0.90 Mbit/s"));
   assert.ok(section(text,"Summary").includes("quality       playing qn 64 (720P), menu auto (shows qn 80)"));
-  for(const line of ["transport        revision 6, quality guard yes (revision 11)","ranges           40 served, 1 failed, 3 active","quality pick     downloaded qn 64 (720P), menu now 80 new 0 real 80, core now/target/rendered 80/80/80","ready state      4 HAVE_ENOUGH_DATA"]) assert.ok(section(text,"Playback").includes(line),line);
+  for(const line of ["transport        revision 6, quality guard yes (revision 11)","ranges           40 served, 1 failed, 3 active","memory           12 ranges from memory (24.00 MiB), 100.00 MiB kept","quality pick     downloaded qn 64 (720P), menu now 80 new 0 real 80, core now/target/rendered 80/80/80","ready state      4 HAVE_ENOUGH_DATA"]) assert.ok(section(text,"Playback").includes(line),line);
 
   const native=fixture();
   Object.assign(native.video,{actualTakeover:"native",player:{}});

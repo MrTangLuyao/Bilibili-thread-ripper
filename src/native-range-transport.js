@@ -13,6 +13,9 @@
   // switching. Nothing is intercepted until a player of this mode is created.
   let active = null;
   let passthroughFetch = nativeFetch;
+  // The bytes a player keeps for its seeks (download()): about nine minutes of 1080P, or
+  // under two of 4K at 20 Mbps.
+  const MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 
   function nativeCore(video) {
     const wrapper = root.player?.__core?.(), dash = wrapper?.getCorePlayer?.();
@@ -206,6 +209,22 @@
     const { owner, range, track } = plan;
     if (signal?.aborted) throw signal.reason;
     if (owner.disposed) throw new DOMException("加速任务已停止", "AbortError");
+    // Bytes delivered before, asked for again after Bilibili's player emptied its buffer on a
+    // seek. Answered at once: dash.js takes a download faster than a few milliseconds (25 ms
+    // for the video in Bilibili's core) for a cache hit and leaves it out of its throughput,
+    // so this does not make the network look faster than it is.
+    const file = fileKey(plan.url);
+    const kept = owner.memory.get(file, range.start, range.end);
+    if (kept) {
+      // Not inside send(): an XHR never reports before send() has returned.
+      await null;
+      if (signal?.aborted) throw signal.reason;
+      if (owner.disposed) throw new DOMException("加速任务已停止", "AbortError");
+      progress(range.length, kept.total);
+      if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
+      owner.remembered(track, range.length);
+      return { bytes: kept.bytes, headers: rangeHeaders(track, range, kept.total) };
+    }
     const controller = new AbortController();
     const cancel = () => controller.abort(signal.reason);
     signal?.addEventListener("abort", cancel, { once: true });
@@ -237,12 +256,9 @@
       const bytes = core.concatChunks(chunks, received);
       // The init segment and the index are small and come first; media follows them.
       if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
+      owner.memory.put(file, range.start, bytes, total);
       owner.delivered(track, result);
-      return { bytes, headers: new Headers({
-        "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
-        "Content-Length": String(range.length), "Content-Range": `bytes ${range.start}-${range.end}/${total}`,
-        "Accept-Ranges": "bytes"
-      }) };
+      return { bytes, headers: rangeHeaders(track, range, total) };
     } catch (error) {
       track.warmEnd = 0;
       if (!controller.signal.aborted && !owner.disposed) owner.failed(error, track);
@@ -253,6 +269,22 @@
       owner.jobs.delete(controller);
       track.jobs?.delete(controller);
     }
+  }
+
+  function rangeHeaders(track, range, total) {
+    return new Headers({
+      "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
+      "Content-Length": String(range.length), "Content-Range": `bytes ${range.start}-${range.end}/${total}`,
+      "Accept-Ranges": "bytes"
+    });
+  }
+
+  // A file is known by its name: the same file has other paths on other servers
+  // (/upgcxcode/… and /v1/resource/upgcxcode/…), and each quality, codec and audio track of
+  // a video is a file of its own.
+  function fileKey(url) {
+    try { const path = new URL(url).pathname; return path.slice(path.lastIndexOf("/") + 1); }
+    catch (_error) { return String(url); }
   }
 
   function responseURL(response, url) {
@@ -432,10 +464,12 @@
     installInterception();
     if (active) active.destroy();
     let tracks = [], lastVideo = null, lastAudio = null;
-    let delivered = 0, failures = 0, nativeSwitchRequests = 0;
+    let delivered = 0, failures = 0, nativeSwitchRequests = 0, remembered = 0, rememberedBytes = 0;
     let qualityState = "", guardedDash = null, releaseGuard = null;
     let coreWaitStarted = null, coreWaitTimer = null;
     const cache = new Map(), jobs = new Set(), timeline = [];
+    // What this player was delivered, for its seeks (download()). A new player starts empty.
+    const memory = core.createRangeCache(MEMORY_LIMIT_BYTES);
     let lastError = "";
     const settings = () => core.normalizeSettings(options.getSettings());
     // In English for the diagnostic copy; an error goes in as the message it was thrown with.
@@ -564,7 +598,7 @@
       return 0;
     }
     const owner = {
-      disposed: false, jobs, settings, sampleQuality,
+      disposed: false, jobs, memory, settings, sampleQuality,
       track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || outsideTrack(url),
       resolver(url, track) {
         const parsed = new URL(url), key = parsed.pathname + parsed.search;
@@ -584,6 +618,13 @@
         delivered++;
         note("native range delivered", `${track.kind} ${result.byteLength} bytes / ${result.pieceCount} pieces`);
         options.onSegment?.({ kind: track.kind, bytes: result.byteLength, pieces: result.pieceCount, hosts: result.hosts });
+        publish();
+      },
+      remembered(track, bytes) {
+        if (owner.disposed) return;
+        remembered++;
+        rememberedBytes += bytes;
+        note("native range from memory", `${track.kind} ${bytes} bytes`);
         publish();
       },
       nativeSwitchRequest() {
@@ -609,6 +650,7 @@
         clearTimeout(coreWaitTimer); coreWaitTimer = null;
         releaseGuard?.(); releaseGuard = null; guardedDash = null;
         for (const controller of jobs) controller.abort();
+        memory.clear();
         events.abort();
         if (active === owner) active = null;
         // The native media source, buffers, playback position and pause state are untouched.
@@ -645,6 +687,7 @@
           return d ? n / d : 0;
         })(),
         acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
+        memoryRanges: remembered, memoryRangeBytes: rememberedBytes, memoryBytes: memory.size,
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });
