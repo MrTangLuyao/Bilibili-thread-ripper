@@ -31,11 +31,17 @@
   // runs low. The full takeover never uses them, and the live module turns them off too.
   // While BTR speeds up a player, its core is told not to use them, and told again whenever
   // Bilibili switches them back on; Bilibili's own choice comes back when BTR lets go.
-  function holdPeerLoading(dash, held) {
+  function holdPeerLoading(wrapper, dash, held) {
     if (typeof dash.setUseNC !== "function" && typeof dash.setUseP2P !== "function") return held;
-    if (held?.dash !== dash) held = { dash, nc: dash.getUseNC?.(), p2p: dash.getUseP2P?.() };
-    if (typeof dash.setUseNC === "function" && dash.getUseNC?.() !== false) dash.setUseNC(false);
-    if (typeof dash.setUseP2P === "function" && dash.getUseP2P?.() !== false) dash.setUseP2P(false);
+    if (held?.dash !== dash) {
+      // The core has setters only; Bilibili's choice for this viewer is in its strategy.
+      const strategy = wrapper?.components?.ncDisableStrategy;
+      held = { dash, nc: strategy?.isUseNC, p2p: strategy?.isUseP2P };
+    }
+    // Each setter is a plain assignment in Bilibili's core (its settings model), so it is
+    // simply made again at every look: Bilibili's configuration may run again.
+    dash.setUseNC?.(false);
+    dash.setUseP2P?.(false);
     return held;
   }
   function releasePeerLoading(held) {
@@ -563,7 +569,7 @@
           releaseGuard = attachQualityGuard(dash, video, note, unavailable);
           guardedDash = dash;
         }
-        const held = holdPeerLoading(dash, peers);
+        const held = holdPeerLoading(root.player?.__core?.(), dash, peers);
         if (held !== peers) {
           peers = held;
           note("peer loading off", `Bilibili had NC ${peers.nc}, P2P ${peers.p2p}`);

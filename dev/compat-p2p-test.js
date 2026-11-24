@@ -11,13 +11,15 @@
   const VIDEO = `https://upos-sz-mirrorali.bilivideo.com/upgcxcode/11/22/${CID}/${CID}-1-100026.m4s?sig=video`;
   const AUDIO = `https://upos-sz-mirrorali.bilivideo.com/upgcxcode/11/22/${CID}/${CID}-1-30280.m4s?sig=audio`;
   const video = document.querySelector("video");
+  // As in Bilibili's core (client 1.20.0 and the web player): setters only on the core, and
+  // the choice for this viewer in the wrapper's ncDisableStrategy.
   let useNC = true, useP2P = true;
   const dash = { getVideoElement: () => video, on() {}, off() {}, getQualityFor: () => 0,
-    getUseNC: () => useNC, setUseNC: (value) => { useNC = value; },
-    getUseP2P: () => useP2P, setUseP2P: (value) => { useP2P = value; } };
+    setUseNC: (value) => { useNC = value; }, setUseP2P: (value) => { useP2P = value; } };
   const plain = { getVideoElement: () => video, on() {}, off() {}, getQualityFor: () => 0 };
   let core = dash;
-  const wrapper = { getCorePlayer: () => core, fire() {}, getQualityChangedData: (event) => event };
+  const wrapper = { getCorePlayer: () => core, fire() {}, getQualityChangedData: (event) => event,
+    components: { ncDisableStrategy: { isUseNC: true, isUseP2P: true } } };
   root.player = { __core: () => wrapper, getQuality: () => ({ nowQ: 80, newQ: 80, realQ: 80 }) };
 
   const result = document.getElementById("compat-p2p-result");
