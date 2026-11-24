@@ -283,3 +283,62 @@ test("the custom CDN mode uses only the servers picked in the settings, and only
   hosts=["upos-sz-mirrorbos.bilivideo.com"];
   assert.deepEqual(hostsOf(resolver.urls()),["upos-sz-mirrorbos.bilivideo.com"]);
 });
+
+test("range cache: answers only what it holds whole, and holds overlapping bytes once",()=>{
+  const {core}=load();
+  const cache=core.createRangeCache(1000);
+  const bytes=(from,to)=>Uint8Array.from({length:to-from+1},(_,i)=>(from+i)&255);
+  const same=(got,from,to)=>got&&got.bytes.length===to-from+1&&got.bytes.every((value,i)=>value===((from+i)&255));
+  assert.equal(cache.get("a.m4s",0,9),null);
+  cache.put("a.m4s",100,bytes(100,199),5000);
+  assert.ok(same(cache.get("a.m4s",100,199),100,199));
+  assert.ok(same(cache.get("a.m4s",120,150),120,150));
+  assert.equal(cache.get("a.m4s",100,200),null);
+  assert.equal(cache.get("a.m4s",99,150),null);
+  assert.equal(cache.get("b.m4s",100,199),null);
+  assert.equal(cache.get("a.m4s",100,199).total,5000);
+  // 100-199 and then 150-249: the second only adds 200-249.
+  cache.put("a.m4s",150,bytes(150,249),5000);
+  assert.equal(cache.size,150);
+  assert.ok(same(cache.get("a.m4s",100,249),100,249));
+  // A gap in the middle: not answered until it is filled.
+  cache.put("a.m4s",300,bytes(300,399),5000);
+  assert.equal(cache.get("a.m4s",200,350),null);
+  cache.put("a.m4s",240,bytes(240,309),5000);
+  assert.equal(cache.size,300);
+  assert.ok(same(cache.get("a.m4s",100,399),100,399));
+});
+
+test("range cache: copies in and out, drops a file of another length, and the least used first",()=>{
+  const {core}=load();
+  const cache=core.createRangeCache(300);
+  const source=new Uint8Array(100).fill(7);
+  cache.put("a.m4s",0,source,1000);
+  source.fill(0);
+  const first=cache.get("a.m4s",0,99);
+  assert.ok(first.bytes.every((value)=>value===7));
+  first.bytes.fill(1);
+  assert.ok(cache.get("a.m4s",0,99).bytes.every((value)=>value===7));
+  // The response's buffer is the range itself, not a view of something larger.
+  assert.equal(cache.get("a.m4s",10,19).bytes.buffer.byteLength,10);
+  // The same name with another length is another file.
+  cache.put("a.m4s",0,new Uint8Array(100).fill(9),2000);
+  assert.equal(cache.size,100);
+  assert.equal(cache.get("a.m4s",0,99).total,2000);
+  // Ranges beyond the file, empty ones and ones bigger than the limit are not kept.
+  cache.put("b.m4s",950,new Uint8Array(100),1000);
+  cache.put("c.m4s",0,new Uint8Array(0),1000);
+  cache.put("d.m4s",0,new Uint8Array(301),1000);
+  assert.equal(cache.size,100);
+  // Past the limit, the ranges used least recently go first.
+  cache.put("b.m4s",0,new Uint8Array(100),1000);
+  cache.put("c.m4s",0,new Uint8Array(100),1000);
+  assert.ok(cache.get("a.m4s",0,99));
+  cache.put("d.m4s",0,new Uint8Array(100),1000);
+  assert.equal(cache.size,300);
+  assert.equal(cache.get("b.m4s",0,99),null);
+  assert.ok(cache.get("a.m4s",0,99)&&cache.get("c.m4s",0,99)&&cache.get("d.m4s",0,99));
+  cache.clear();
+  assert.equal(cache.size,0);
+  assert.equal(cache.get("a.m4s",0,99),null);
+});
