@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili 线程撕裂者 Canary
 // @namespace    https://github.com/MrTangLuyao/Bilibili-thread-ripper
-// @version      2026.11.18.1
+// @version      2026.11.25.1
 // @description  测试版：跟着开发中的最新代码自动更新，可能不稳定。解决海外B站卡顿的最后一个脚本
 // @icon         https://raw.githubusercontent.com/MrTangLuyao/Bilibili-thread-ripper/main/icons/icon-128.png
 // @author       MrTangLuyao
@@ -274,6 +274,88 @@ const chrome = (() => {
     return output;
   }
 
+  // The bytes the compatibility mode delivered, kept in memory (native-range-transport.js).
+  // Bilibili's player empties its whole buffer when it seeks to a place it has not buffered,
+  // what lies after the old position included, and then asks for the same bytes again.
+  //
+  // Each file (the key) keeps byte ranges that never overlap: new bytes only fill the gaps,
+  // so 1-4 and then 2-5 are held once. A request is answered only when the ranges hold every
+  // byte of it; otherwise it is downloaded as before. Past the limit, the ranges used least
+  // recently go first. Bytes go in and come out as copies: the caller keeps its own buffer.
+  function createRangeCache(limitBytes) {
+    const limit = Math.max(0, Number(limitBytes) || 0);
+    const files = new Map();
+    let size = 0, clock = 0;
+    function drop(key) {
+      const file = files.get(key);
+      if (!file) return;
+      for (const piece of file.pieces) size -= piece.bytes.byteLength;
+      files.delete(key);
+    }
+    function evict() {
+      while (size > limit) {
+        let oldest = null, owner = null;
+        for (const [key, file] of files) {
+          for (const piece of file.pieces) if (!oldest || piece.used < oldest.used) { oldest = piece; owner = key; }
+        }
+        if (!oldest) return;
+        const file = files.get(owner);
+        file.pieces.splice(file.pieces.indexOf(oldest), 1);
+        size -= oldest.bytes.byteLength;
+        if (!file.pieces.length) files.delete(owner);
+      }
+    }
+    return {
+      // The bytes from start to end (both included) and the file's length, or null.
+      get(key, start, end) {
+        const file = files.get(key);
+        if (!file || !(end >= start) || end >= file.total) return null;
+        const output = new Uint8Array(end - start + 1), used = [];
+        let at = start;
+        for (const piece of file.pieces) {
+          if (piece.end < at) continue;
+          if (piece.start > at) return null;
+          const to = Math.min(piece.end, end);
+          output.set(piece.bytes.subarray(at - piece.start, to - piece.start + 1), at - start);
+          used.push(piece);
+          at = to + 1;
+          if (at > end) break;
+        }
+        if (at <= end) return null;
+        clock += 1;
+        for (const piece of used) piece.used = clock;
+        return { bytes: output, total: file.total };
+      },
+      put(key, start, bytes, total) {
+        const end = start + bytes.byteLength - 1;
+        if (!bytes.byteLength || bytes.byteLength > limit || !Number.isSafeInteger(total) || end >= total) return;
+        let file = files.get(key);
+        // Another length is another file: what was kept of the old one is no use.
+        if (file && file.total !== total) { drop(key); file = null; }
+        if (!file) { file = { total, pieces: [] }; files.set(key, file); }
+        clock += 1;
+        const gaps = [];
+        let at = start;
+        for (const piece of file.pieces) {
+          if (piece.end < at) continue;
+          if (piece.start > end) break;
+          if (piece.start > at) gaps.push([at, piece.start - 1]);
+          at = Math.max(at, piece.end + 1);
+          if (at > end) break;
+        }
+        if (at <= end) gaps.push([at, end]);
+        for (const [from, to] of gaps) {
+          file.pieces.push({ start: from, end: to, bytes: bytes.slice(from - start, to - start + 1), used: clock });
+          size += to - from + 1;
+        }
+        file.pieces.sort((a, b) => a.start - b.start);
+        evict();
+      },
+      clear() { files.clear(); size = 0; },
+      get size() { return size; }
+    };
+  }
+
   function isBilibiliMediaUrl(value) {
     try {
       const url = new URL(value, root.location?.href);
@@ -359,6 +441,7 @@ const chrome = (() => {
 
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    createRangeCache,
     formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
@@ -3986,7 +4069,7 @@ const chrome = (() => {
       playableQualities: () => selection.videos.map((item) => ({ id: Number(item.id) || 0, bandwidth: Number(item.bandwidth) || 0 })).filter((item) => item.id),
       video,
       getDebug: () => ({
-        version: "2026.11.18.1",
+        version: "2026.11.25.1",
         architecture: "bilibili-native-ui-progressive-mse-0.8-core",
         quality: qualityLabel(selectedVideo),
         qualityId: Number(selectedVideo?.id) || 0,
@@ -4068,6 +4151,9 @@ const chrome = (() => {
   // switching. Nothing is intercepted until a player of this mode is created.
   let active = null;
   let passthroughFetch = nativeFetch;
+  // The bytes a player keeps for its seeks (download()): about nine minutes of 1080P, or
+  // under two of 4K at 20 Mbps.
+  const MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 
   function nativeCore(video) {
     const wrapper = root.player?.__core?.(), dash = wrapper?.getCorePlayer?.();
@@ -4261,6 +4347,22 @@ const chrome = (() => {
     const { owner, range, track } = plan;
     if (signal?.aborted) throw signal.reason;
     if (owner.disposed) throw new DOMException("加速任务已停止", "AbortError");
+    // Bytes delivered before, asked for again after Bilibili's player emptied its buffer on a
+    // seek. Answered at once: dash.js takes a download faster than a few milliseconds (25 ms
+    // for the video in Bilibili's core) for a cache hit and leaves it out of its throughput,
+    // so this does not make the network look faster than it is.
+    const file = fileKey(plan.url);
+    const kept = owner.memory.get(file, range.start, range.end);
+    if (kept) {
+      // Not inside send(): an XHR never reports before send() has returned.
+      await null;
+      if (signal?.aborted) throw signal.reason;
+      if (owner.disposed) throw new DOMException("加速任务已停止", "AbortError");
+      progress(range.length, kept.total);
+      if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
+      owner.remembered(track, range.length);
+      return { bytes: kept.bytes, headers: rangeHeaders(track, range, kept.total) };
+    }
     const controller = new AbortController();
     const cancel = () => controller.abort(signal.reason);
     signal?.addEventListener("abort", cancel, { once: true });
@@ -4292,12 +4394,9 @@ const chrome = (() => {
       const bytes = core.concatChunks(chunks, received);
       // The init segment and the index are small and come first; media follows them.
       if (track.warmEnd || range.length > 64 * 1024) track.warmEnd = range.end + 1;
+      owner.memory.put(file, range.start, bytes, total);
       owner.delivered(track, result);
-      return { bytes, headers: new Headers({
-        "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
-        "Content-Length": String(range.length), "Content-Range": `bytes ${range.start}-${range.end}/${total}`,
-        "Accept-Ranges": "bytes"
-      }) };
+      return { bytes, headers: rangeHeaders(track, range, total) };
     } catch (error) {
       track.warmEnd = 0;
       if (!controller.signal.aborted && !owner.disposed) owner.failed(error, track);
@@ -4308,6 +4407,22 @@ const chrome = (() => {
       owner.jobs.delete(controller);
       track.jobs?.delete(controller);
     }
+  }
+
+  function rangeHeaders(track, range, total) {
+    return new Headers({
+      "Content-Type": track.representation.mimeType || track.representation.mime_type || `${track.kind}/mp4`,
+      "Content-Length": String(range.length), "Content-Range": `bytes ${range.start}-${range.end}/${total}`,
+      "Accept-Ranges": "bytes"
+    });
+  }
+
+  // A file is known by its name: the same file has other paths on other servers
+  // (/upgcxcode/… and /v1/resource/upgcxcode/…), and each quality, codec and audio track of
+  // a video is a file of its own.
+  function fileKey(url) {
+    try { const path = new URL(url).pathname; return path.slice(path.lastIndexOf("/") + 1); }
+    catch (_error) { return String(url); }
   }
 
   function responseURL(response, url) {
@@ -4487,10 +4602,12 @@ const chrome = (() => {
     installInterception();
     if (active) active.destroy();
     let tracks = [], lastVideo = null, lastAudio = null;
-    let delivered = 0, failures = 0, nativeSwitchRequests = 0;
+    let delivered = 0, failures = 0, nativeSwitchRequests = 0, remembered = 0, rememberedBytes = 0;
     let qualityState = "", guardedDash = null, releaseGuard = null;
     let coreWaitStarted = null, coreWaitTimer = null;
     const cache = new Map(), jobs = new Set(), timeline = [];
+    // What this player was delivered, for its seeks (download()). A new player starts empty.
+    const memory = core.createRangeCache(MEMORY_LIMIT_BYTES);
     let lastError = "";
     const settings = () => core.normalizeSettings(options.getSettings());
     // In English for the diagnostic copy; an error goes in as the message it was thrown with.
@@ -4619,7 +4736,7 @@ const chrome = (() => {
       return 0;
     }
     const owner = {
-      disposed: false, jobs, settings, sampleQuality,
+      disposed: false, jobs, memory, settings, sampleQuality,
       track: url => tracks.find(track => urls(track.representation).some(candidate => pathOf(candidate) === pathOf(url))) || outsideTrack(url),
       resolver(url, track) {
         const parsed = new URL(url), key = parsed.pathname + parsed.search;
@@ -4639,6 +4756,13 @@ const chrome = (() => {
         delivered++;
         note("native range delivered", `${track.kind} ${result.byteLength} bytes / ${result.pieceCount} pieces`);
         options.onSegment?.({ kind: track.kind, bytes: result.byteLength, pieces: result.pieceCount, hosts: result.hosts });
+        publish();
+      },
+      remembered(track, bytes) {
+        if (owner.disposed) return;
+        remembered++;
+        rememberedBytes += bytes;
+        note("native range from memory", `${track.kind} ${bytes} bytes`);
         publish();
       },
       nativeSwitchRequest() {
@@ -4664,6 +4788,7 @@ const chrome = (() => {
         clearTimeout(coreWaitTimer); coreWaitTimer = null;
         releaseGuard?.(); releaseGuard = null; guardedDash = null;
         for (const controller of jobs) controller.abort();
+        memory.clear();
         events.abort();
         if (active === owner) active = null;
         // The native media source, buffers, playback position and pause state are untouched.
@@ -4700,6 +4825,7 @@ const chrome = (() => {
           return d ? n / d : 0;
         })(),
         acceleratedRanges: delivered, failedRanges: failures, nativeSwitchRequests, filesOutsidePlayinfo: outside.size,
+        memoryRanges: remembered, memoryRangeBytes: rememberedBytes, memoryBytes: memory.size,
         nativeQuality: qualityState, nativeSwitchPending: nativeSwitchPending(), activeRequests: jobs.size,
         mediaSourceReplacements: 0, timeline: timeline.slice() })
     });
@@ -5408,6 +5534,7 @@ const chrome = (() => {
       return pairs([
         ["transport", `revision ${count(p.transportRevision)}, quality guard ${yesNo(bool(p.nativeQualityGuard))} (revision ${count(p.qualityGuardRevision)})`],
         ["ranges", `${count(p.acceleratedRanges)} served, ${count(p.failedRanges)} failed, ${count(p.activeRequests)} active`],
+        ["memory", `${count(p.memoryRanges)} ranges from memory (${size(p.memoryRangeBytes)}), ${size(p.memoryBytes)} kept`],
         ["switch requests", count(p.nativeSwitchRequests)],
         ["switch pending", yesNo(bool(p.nativeSwitchPending))],
         ["quality pick", `downloaded ${downloaded > 0 ? qn(downloaded) : "n/a"}, ${menuState(video.nativeQuality)}, core now/target/rendered ${word(p.nativeQuality)}`],
@@ -5807,7 +5934,7 @@ const chrome = (() => {
         <div class="title">
           <div class="name">
             <h1>线程撕裂者</h1>
-            <span class="version">v2026.11.18.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
+            <span class="version">v2026.11.25.1${SCRIPT_CHANNEL === "canary" ? '<b class="canary">Canary</b>' : ""}</span>
           </div>
           <a id="github-link" class="github-link" href="${PROJECT_URL}" target="_blank" rel="noopener noreferrer" title="在 GitHub 上查看项目" aria-label="在 GitHub 上查看项目">${GITHUB_ICON}</a>
           <button id="theme" class="theme-toggle" type="button" data-value="auto">${THEME_ICONS}</button>
@@ -6187,7 +6314,7 @@ const chrome = (() => {
       timeOrigin: performance.timeOrigin,
       now: performance.now(),
       btr: read("btr", () => ({
-        version: "2026.11.18.1",
+        version: "2026.11.25.1",
         channel: SCRIPT_CHANNEL,
         otherBuild: ["stable", "canary"].includes(otherScript()) ? otherScript() : "",
         scriptManager: document.documentElement?.getAttribute("data-btr-userscript-manager") || "",
@@ -7353,7 +7480,7 @@ const chrome = (() => {
 
   const FULL_ARCHITECTURE = "bilibili-native-ui-progressive-mse-0.8-core";
   const stats = {
-    version: "2026.11.18.1",
+    version: "2026.11.25.1",
     architecture: FULL_ARCHITECTURE,
     mode: settings.mode,
     playerState: "waiting",
@@ -9397,7 +9524,7 @@ const chrome = (() => {
           bans: bans.map((ban) => ({ ...ban }))
         }, null, 1);
       },
-      version: "2026.11.18.1"
+      version: "2026.11.25.1"
     })
   });
   publish();
@@ -9620,7 +9747,7 @@ const chrome = (() => {
 
   // ---- stats for the settings panel ----
   const stats = {
-    version: "2026.11.18.1",
+    version: "2026.11.25.1",
     architecture: "live-segment-ripper",
     mode: "live",
     playerState: "waiting",
@@ -10099,7 +10226,7 @@ const chrome = (() => {
       },
       getStats: () => ({ ...stats }),
       getEvents: () => events.map((event) => ({ ...event })),
-      version: "2026.11.18.1"
+      version: "2026.11.25.1"
     })
   });
   publish();

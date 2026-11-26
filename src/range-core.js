@@ -62,6 +62,88 @@
     return output;
   }
 
+  // The bytes the compatibility mode delivered, kept in memory (native-range-transport.js).
+  // Bilibili's player empties its whole buffer when it seeks to a place it has not buffered,
+  // what lies after the old position included, and then asks for the same bytes again.
+  //
+  // Each file (the key) keeps byte ranges that never overlap: new bytes only fill the gaps,
+  // so 1-4 and then 2-5 are held once. A request is answered only when the ranges hold every
+  // byte of it; otherwise it is downloaded as before. Past the limit, the ranges used least
+  // recently go first. Bytes go in and come out as copies: the caller keeps its own buffer.
+  function createRangeCache(limitBytes) {
+    const limit = Math.max(0, Number(limitBytes) || 0);
+    const files = new Map();
+    let size = 0, clock = 0;
+    function drop(key) {
+      const file = files.get(key);
+      if (!file) return;
+      for (const piece of file.pieces) size -= piece.bytes.byteLength;
+      files.delete(key);
+    }
+    function evict() {
+      while (size > limit) {
+        let oldest = null, owner = null;
+        for (const [key, file] of files) {
+          for (const piece of file.pieces) if (!oldest || piece.used < oldest.used) { oldest = piece; owner = key; }
+        }
+        if (!oldest) return;
+        const file = files.get(owner);
+        file.pieces.splice(file.pieces.indexOf(oldest), 1);
+        size -= oldest.bytes.byteLength;
+        if (!file.pieces.length) files.delete(owner);
+      }
+    }
+    return {
+      // The bytes from start to end (both included) and the file's length, or null.
+      get(key, start, end) {
+        const file = files.get(key);
+        if (!file || !(end >= start) || end >= file.total) return null;
+        const output = new Uint8Array(end - start + 1), used = [];
+        let at = start;
+        for (const piece of file.pieces) {
+          if (piece.end < at) continue;
+          if (piece.start > at) return null;
+          const to = Math.min(piece.end, end);
+          output.set(piece.bytes.subarray(at - piece.start, to - piece.start + 1), at - start);
+          used.push(piece);
+          at = to + 1;
+          if (at > end) break;
+        }
+        if (at <= end) return null;
+        clock += 1;
+        for (const piece of used) piece.used = clock;
+        return { bytes: output, total: file.total };
+      },
+      put(key, start, bytes, total) {
+        const end = start + bytes.byteLength - 1;
+        if (!bytes.byteLength || bytes.byteLength > limit || !Number.isSafeInteger(total) || end >= total) return;
+        let file = files.get(key);
+        // Another length is another file: what was kept of the old one is no use.
+        if (file && file.total !== total) { drop(key); file = null; }
+        if (!file) { file = { total, pieces: [] }; files.set(key, file); }
+        clock += 1;
+        const gaps = [];
+        let at = start;
+        for (const piece of file.pieces) {
+          if (piece.end < at) continue;
+          if (piece.start > end) break;
+          if (piece.start > at) gaps.push([at, piece.start - 1]);
+          at = Math.max(at, piece.end + 1);
+          if (at > end) break;
+        }
+        if (at <= end) gaps.push([at, end]);
+        for (const [from, to] of gaps) {
+          file.pieces.push({ start: from, end: to, bytes: bytes.slice(from - start, to - start + 1), used: clock });
+          size += to - from + 1;
+        }
+        file.pieces.sort((a, b) => a.start - b.start);
+        evict();
+      },
+      clear() { files.clear(); size = 0; },
+      get size() { return size; }
+    };
+  }
+
   function isBilibiliMediaUrl(value) {
     try {
       const url = new URL(value, root.location?.href);
@@ -147,6 +229,7 @@
 
   root.__BILI_RANGE_CORE__ = Object.freeze({
     concatChunks,
+    createRangeCache,
     formatSpeed,
     isBilibiliMediaUrl,
     normalizeCdnHost,
