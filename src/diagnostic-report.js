@@ -588,6 +588,7 @@
       return pairs([
         ["transport", `revision ${count(p.transportRevision)}, quality guard ${yesNo(bool(p.nativeQualityGuard))} (revision ${count(p.qualityGuardRevision)})`],
         ["ranges", `${count(p.acceleratedRanges)} served, ${count(p.failedRanges)} failed, ${count(p.activeRequests)} active`],
+        ["peer loading", word(p.peerLoading)],
         ["memory", `${count(p.memoryRanges)} ranges from memory (${size(p.memoryRangeBytes)}), ${size(p.memoryBytes)} kept`],
         ["switch requests", count(p.nativeSwitchRequests)],
         ["switch pending", yesNo(bool(p.nativeSwitchPending))],

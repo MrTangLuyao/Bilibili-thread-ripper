@@ -41,6 +41,7 @@ const { chromium } = require("playwright");
     ["takeover-mode-test.html", "takeover-mode-result"],
     ["compat-switch-test.html", "compat-switch-result"],
     ["compat-outside-test.html", "compat-outside-result", 30000],
+    ["compat-p2p-test.html", "compat-p2p-result"],
     ["compat-cache-test.html", "compat-cache-result", 30000],
     ["playback-diagnostics-test.html", "playback-diagnostics-result"],
     ["native-core-lock-test.html", "native-core-lock-result", 30000],
